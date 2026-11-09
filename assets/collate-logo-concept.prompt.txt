@@ -1,0 +1,6 @@
+Generated with the built-in image_gen tool.
+
+Use case: logo-brand
+Asset type: standalone macOS application icon for Collate, a fast Git diff viewer.
+Primary request: Create one polished, distinctive app logo. A bold sculptural C made from two precisely aligned overlapping code-review sheets, with a few broad horizontal cutouts suggesting diff lines. Make the silhouette immediately legible at small sizes. Use the project's existing charcoal, soft white, coral-red and fresh green colors; small coral and green accents evoke removed and added code. Restrained premium dimensional finish with subtly beveled edges, soft studio highlights and clean geometry. Center the emblem inside a dark charcoal rounded-square app tile, front-facing, with balanced generous padding. Transparent canvas outside the rounded tile. The mark should feel simple, confident, crafted and specific to a developer tool, with no tiny interface details.
+Constraints: one icon only, square image, no words, no lettering beyond the abstract C silhouette, no watermark, no mockup scene, no extra objects, no neon glow. True transparent background outside the tile.
