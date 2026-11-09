@@ -1750,3 +1750,398 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k, layer);
     }
 
+    if let Some(w) = &s.words {
+        let mono = rune::TextStyle { size: 12.5, line_height: 19.0, ..k.ty.mono };
+        let rows = w.edits.iter().enumerate().map(|(i, e)| {
+            let (before, after) = (&w.old[e.old.clone()], &w.new[e.new.clone()]);
+            let show = |t: &str| if t.is_empty() { "∅".to_owned() } else { t.to_owned() };
+            row()
+                .key(format!("w{i}"))
+                .w_full()
+                .gap(10.0)
+                .items_center()
+                .child(Checkbox::new(w.picked[i]).label(format!("{before} → {after}")).hide_label().on_toggle(move |s: &mut Collate| {
+                    if let Some(w) = &mut s.words {
+                        w.picked[i] ^= true;
+                    }
+                }).build(k))
+                .child(text(show(before)).font(mono).color(k.c.danger.fg))
+                .child(text("→").font(mono).color(k.c.text_faint))
+                .child(text(show(after)).font(mono).color(k.c.success.fg))
+        });
+        let preview = apply_edits(&w.old, &w.new, &w.edits, &w.picked);
+        let any = w.picked.iter().any(|&p| p);
+        let mut buttons = row().key("word-buttons").w_full().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.words = None).build(k));
+        buttons = match s.scope {
+            Scope::Staged => buttons.child(Button::new("Unstage picked").variant(ButtonVariant::Contrast).disabled(!any).on_press(|s: &mut Collate| s.act_on_words(Scope::Staged)).build(k).key("words-unstage")),
+            _ => buttons
+                .child(Button::new("Discard picked").variant(ButtonVariant::Danger).disabled(!any).on_press(|s: &mut Collate| s.act_on_words(Scope::Uncommitted)).build(k).key("words-discard"))
+                .child(Button::new("Stage picked").variant(ButtonVariant::Contrast).disabled(!any).on_press(|s: &mut Collate| s.act_on_words(Scope::Unstaged)).build(k).key("words-stage")),
+        };
+        let body = col()
+            .key("words")
+            .w_full()
+            .px(24.0)
+            .pb(20.0)
+            .gap(10.0)
+            .children(rows)
+            .child(text("The old line with just the ticked changes:").font(k.ty.text_small).color(k.c.text_muted).pt(6.0))
+            .child(text(preview).font(mono).color(k.c.text_base).wrap())
+            .child(buttons.pt(8.0));
+        Dialog::new("words", format!("Word changes in {}", w.path.rsplit('/').next().unwrap_or(&w.path)))
+            .open(true)
+            .fit()
+            .width(600.0)
+            .on_close(|s: &mut Collate| s.words = None)
+            .child(body)
+            .build(k, layer);
+    }
+
+    if let Some(d) = &s.confirm {
+        let (title, what) = match d.hunk {
+            Some(_) => ("Discard this hunk?".to_owned(), format!("The hunk's changes to {} are undone in the working tree.", d.path)),
+            None => (format!("Discard changes to {}?", d.path.rsplit('/').next().unwrap_or(&d.path)), format!("{} goes back to how it was{}.", d.path, if s.scope == Scope::Unstaged { " when staged" } else { " at the last commit" })),
+        };
+        let buttons = row()
+            .key("confirm-buttons")
+            .w_full()
+            .gap(8.0)
+            .justify_end()
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.confirm = None).build(k))
+            .child(Button::new("Discard").variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_discard()).build(k).key("confirm-discard"));
+        Dialog::new("discard", title)
+            .open(true)
+            .fit()
+            .description(format!("{what} A copy of the file is kept in .git/collate-backup."))
+            .on_close(|s: &mut Collate| s.confirm = None)
+            .child(buttons)
+            .build(k, layer);
+    }
+
+    let lights = cx.titlebar_inset();
+    let split = SplitView::new(body)
+        .sidebar(&s.sidebar, |s: &mut Collate| &mut s.sidebar, sidebar)
+        .inspector(&s.inspector, |s: &mut Collate| &mut s.inspector, inspector)
+        .toolbar(toolbar)
+        .titlebar_inset(lights)
+        // Room after the traffic lights, as T3 Code leaves, so the toggle doesn't crowd them.
+        .sidebar_toggle(shell::SidebarToggle::new().past_lights(16.0))
+        .reduced_motion(cx.is_reduced_motion())
+        .build(k);
+    if no_project {
+        return split;
+    }
+    // Back and forward just past the sidebar's toggle (24 points, 8 after it), as T3 Code has
+    // them, in the title band whether the sidebar is open or not.
+    let toggle_end = if lights > 0.0 { lights + 16.0 } else { 12.0 } + 24.0;
+    let arrow = |icon: &'static Icon, back: bool, label: &str, keys: &str| {
+        IconButton::new(icon)
+            .variant(IconButtonVariant::GhostMuted)
+            .disabled(!s.can_go(back))
+            .label(label.to_owned())
+            .help(label.to_owned())
+            .shortcut(keys.to_owned())
+            .on_press(move |s: &mut Collate| s.go(back))
+            .build(k)
+            .key(if back { "nav-back" } else { "nav-forward" })
+    };
+    let arrows = row().key("nav").gap(2.0).items_center().absolute(toggle_end + 8.0, (48.0 - 24.0) / 2.0)
+        .child(arrow(&BACK_ICON, true, "Back", "⌘["))
+        .child(arrow(&FORWARD_ICON, false, "Forward", "⌘]"));
+    col().key("window").w_full().h_full().child(split).child(arrows)
+}
+
+/// The back and forward buttons' width together.
+const NAV_W: f32 = 24.0 * 2.0 + 2.0;
+
+/// The leading sidebar: the places to look, with how much is in each. Working Copy is what
+/// isn't committed; Review is what is.
+fn views_sidebar(s: &Collate, k: &Kit) -> El {
+    let place = |key: &str, label: &str, scope: Scope, badge: Option<usize>, detail: Option<String>| {
+        let mut r = SidebarRow::new(label.to_owned()).selected(s.scope == scope && !s.map.open).on_select(move |s: &mut Collate, _: &mut Tx| {
+            s.map.open = false;
+            s.set_scope(scope);
+        });
+        if let Some(n) = badge.filter(|&n| n > 0) {
+            r = r.badge(n.to_string());
+        }
+        if let Some(d) = detail {
+            r = r.detail(d);
+        }
+        r.build(k).key(key.to_owned())
+    };
+    let working = SidebarSection::new("Working Copy").rows([
+        place("view-all", "All Changes", Scope::Uncommitted, Some(s.total), None),
+        place("view-unstaged", "Unstaged", Scope::Unstaged, Some(s.unstaged), None),
+        place("view-staged", "Staged", Scope::Staged, Some(s.staged_shown), None),
+    ]);
+    let review = SidebarSection::new("Review").rows([
+        place("view-history", "Git Graph", Scope::History, None, None),
+        // The whole repository, with this view's changes on it.
+        SidebarRow::new("Map").selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| s.open_map()).build(k).key("view-map"),
+    ]);
+    let apart = col().key("sections-apart").w_full().h(12.0).a11y_hidden();
+    // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
+    // 24 pt row, so 2 less here centres "Working Copy" in the same 28 pt band.
+    col().key("sidebar").w_full().h_full().pt(COLUMN_TOP - 2.0).child(Sidebar::new().section(working).child(apart).section(review).build(k))
+}
+
+/// The staging panel's inset, shared by its filter, list titles, rows and commit box.
+const PANEL_INSET: f32 = 12.0;
+/// The one top inset every column uses: each first row (the sidebar's "Working Copy", the
+/// diff's summary, the panel's filter) is a 28 pt band this far below the card's top edge.
+const COLUMN_TOP: f32 = 6.0;
+
+/// A list's bulk action: its label and what it does.
+type Bulk<'a> = (&'a str, fn(&mut Collate));
+
+/// One list of the staging panel: a header with its count and its bulk action, then the
+/// files. A row's trailing button stages or unstages that file at once.
+fn file_section(k: &Kit, key: &str, title: &str, count: usize, bulk: Option<Bulk>, list: El, empty: &str) -> El {
+    let mut head = row()
+        .key(format!("{key}-head"))
+        .w_full()
+        // As tall as a sidebar row, so the first title is level with the sidebar's first row.
+        .h(28.0)
+        .px(PANEL_INSET)
+        .gap(4.0)
+        .items_center()
+        // Set as the sidebar sets "Working Copy", so the two columns' titles read as one kind.
+        .child(text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted))
+        .child(text(count.to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint))
+        .child(row().grow(1.0));
+    if let Some((label, f)) = bulk.filter(|_| count > 0) {
+        // A ghost button pads its label; pull it out by that much so the label, not the
+        // invisible box, ends on the panel's edge with the filter above it.
+        head = head.child(Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(f).build(k).key(format!("{key}-bulk")).mr(-GHOST_PAD));
+    }
+    // An empty list says so in one line and gives its space to the list that has files.
+    if count == 0 {
+        return col().key(key.to_owned()).w_full().child(head).child(row().key(format!("{key}-empty")).w_full().h(28.0).px(PANEL_INSET).items_center().child(text(empty.to_owned()).font(k.ty.text_small).color(k.c.text_faint)));
+    }
+    col().key(key.to_owned()).w_full().grow(1.0).min_h(0.0).child(head).child(list)
+}
+
+/// A file list for the staging panel. `quick` is the row button: stage (`true`) or unstage.
+fn file_list(s: &Collate, k: &Kit, staged_list: bool, quick: Option<bool>) -> El {
+    let c = k.c;
+    let small = k.ty.text_xsmall_medium;
+    let hover = k.alpha(k.c.text_base, 0.08);
+    let get: fn(&Collate) -> &TreeModel<FileNode<Stat>> = if staged_list { |s| &s.staged_tree } else { |s| &s.tree };
+    let get_mut: fn(&mut Collate) -> &mut TreeModel<FileNode<Stat>> = if staged_list { |s| &mut s.staged_tree } else { |s| &mut s.tree };
+    let mut style = rune_kit::TreeStyle::from_kit(k);
+    // The chevron's box is wider than its glyph: start the box so the glyph is on the inset.
+    style.padding = PANEL_INSET - 4.0;
+    Tree::new(get, get_mut, label)
+        .name(if staged_list { "Staged files" } else { "Changed files" })
+        .style(style)
+        .row(move |n, r| {
+            let item = TreeItem::file(n, r);
+            let Some(st) = n.data else { return item };
+            let color = match st.letter {
+                'A' | 'U' => c.success.icon,
+                'D' => c.danger.icon,
+                _ => c.warning.icon,
+            };
+            let item = if st.letter == 'D' || st.viewed { item.label_color(c.text_faint) } else { item };
+            // The tree pads rows 4 pt less than the panel's inset (for its chevron); give it back
+            // on the right so the row buttons end on the inset like Stage All.
+            let mut trail = row().key("trail").gap(4.0).mr(4.0).items_center().child(text(st.letter.to_string()).key("status").font(small).color(color).w(10.0));
+            if let Some(stage) = quick {
+                let path = n.path.clone();
+                let (glyph, what) = if stage { ("+", "Stage file") } else { ("−", "Unstage file") };
+                trail = trail.child(
+                    row()
+                        .key("quick")
+                        .size(16.0, 20.0)
+                        .center()
+                        .radius(5.0)
+                        .hover(hover)
+                        .cursor(Cursor::Pointer)
+                        .role("button")
+                        .label(format!("{what} {path}"))
+                        .help(what)
+                        .on_press(move |s: &mut Collate| if stage { s.stage_path(path.clone()) } else { s.unstage_path(path.clone()) })
+                        .child(text(glyph.to_owned()).font(small).color(c.text_muted)),
+                );
+            }
+            item.changes(st.added, st.removed).trailing(trail)
+        })
+        .on_select(reveal)
+        .on_open(reveal)
+        .build(s, k)
+        // A focused tree takes typed letters (type-to-select) before the app's shortcuts see
+        // them, so after a click j, k, a, x and the rest would jump around the file list. The
+        // list stays click-only; the filter field and ] [ do its keyboard work.
+        .focusable(false)
+        .grow(1.0)
+        .min_h(0.0)
+}
+
+/// The trailing staging panel, as GitKraken lays it out: what's unstaged, what's staged, and
+/// the commit composer under them. Branch and History, being read-only, list their files.
+fn staging_panel(s: &Collate, k: &Kit) -> El {
+    let mut filter = TextInput::new(&s.filter).placeholder("Filter files").leading_icon(k.glyph.search);
+    // A clear button only once there's something to clear.
+    if !s.filter.text.is_empty() {
+        filter = filter.clear_button();
+    }
+    let filter = filter.on_edit(|s: &mut Collate| &mut s.filter).on_change(|s: &mut Collate, _| s.apply_filter()).build(k).key("filter");
+    let unstaged_n = s.info.iter().filter(|i| i.staged != Staged::Fully).count();
+    let staged_n = s.info.iter().filter(|i| i.staged != Staged::No).count();
+    let all = s.info.len();
+    // Everything in the panel hangs off one 12 pt inset: the filter's edge, the list titles,
+    // the rows' chevrons and the trailing buttons.
+    let mut p = col().key("staging").w_full().h_full().pt(COLUMN_TOP).gap(4.0);
+    // History leads with the chosen commit; its files follow, as in Zed's commit view.
+    if s.scope == Scope::History
+        && let Some(card) = commit_card(s, k)
+    {
+        p = p.child(card);
+    }
+    // The first list title follows the filter with no gap, as the sidebar's first row follows
+    // its section title: both second rows then sit on one line too.
+    p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).mb(-4.0).child(filter.w_full()));
+    p = match s.scope {
+        Scope::Uncommitted => p
+            .child(file_section(k, "unstaged", "Unstaged Files", unstaged_n, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged"))
+            .child(col().key("between").w_full().h(1.0).fill(k.c.border_weak))
+            .child(file_section(k, "staged", "Staged Files", staged_n, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged yet"))
+            .child(commit_box(s, k)),
+        Scope::Unstaged => p.child(file_section(k, "unstaged", "Unstaged Files", all, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged")).child(commit_box(s, k)),
+        Scope::Staged => p.child(file_section(k, "staged", "Staged Files", all, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged")).child(commit_box(s, k)),
+        Scope::Branch | Scope::History => p.child(file_section(k, "changed", "Changed Files", all, None, file_list(s, k, false, None), "No files changed")),
+    };
+    p
+}
+
+/// The commit composer at the foot of the staging panel: a message and the screen's one
+/// prominent action, which commits what's staged.
+fn commit_box(s: &Collate, k: &Kit) -> El {
+    let ready = s.staged > 0 && !s.message.text.trim().is_empty() && !s.committing;
+    let field = TextInput::new(&s.message)
+        .placeholder(if s.staged == 0 { "Stage files to write a commit".to_owned() } else { "Summary".to_owned() })
+        .on_edit(|s: &mut Collate| &mut s.message)
+        .on_key(|s: &mut Collate, ev: &KeyEvent, _: &mut Tx| {
+            if ev.key == Key::Enter && ev.mods.cmd {
+                s.commit();
+                return true;
+            }
+            false
+        })
+        .width(None)
+        .build(k)
+        .key("message")
+        // Fill the column exactly, not a field's default width.
+        .w_full()
+        .min_w(0.0);
+    let label = match (s.committing, s.staged) {
+        (true, _) => "Committing…".to_owned(),
+        (_, 0) => "Commit".to_owned(),
+        (_, 1) => "Commit 1 File".to_owned(),
+        (_, n) => format!("Commit {n} Files"),
+    };
+    let button = Button::new(label).variant(ButtonVariant::Contrast).shortcut("⌘↩").disabled(!ready).help(if s.staged == 0 { "Stage files first" } else { "Commit what's staged (⌘↩)" }).on_press(|s: &mut Collate| s.commit()).build(k).key("commit").w_full();
+    col()
+        .key("commit-box")
+        .w_full()
+        .px(PANEL_INSET)
+        .pt(10.0)
+        .pb(12.0)
+        .gap(8.0)
+        .child(col().key("rule").w_full().h(1.0).fill(k.c.border_weak))
+        .child(text("Commit").font(k.ty.text_small).color(k.c.text_base))
+        .child(field)
+        .child(button)
+}
+
+/// What the diff is, above it: the count, what it's measured against, the totals and how much
+/// of it has been read.
+/// What a Branch or History view compares, as a control on the summary's basis line.
+fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
+    match s.scope {
+        Scope::Branch => {
+            let base = Select::new("base", &s.branches)
+                .current(s.base.as_deref())
+                .placeholder("Base branch")
+                .label("Compare against")
+                .width(200.0)
+                .open(s.base_open)
+                .on_toggle(|s: &mut Collate| s.base_open = !s.base_open)
+                .on_close(|s: &mut Collate| s.base_open = false)
+                .on_choose(|s: &mut Collate, v: &str, _: &mut Tx| s.set_base(v))
+                .build(k, layer);
+            Some(row().key("compare").gap(8.0).items_center().child(text("Compare against").font(k.ty.text_small).color(k.c.text_muted)).child(base))
+        }
+        Scope::History => {
+            let at = s.commit.as_ref().and_then(|c| s.commit_ids.iter().position(|x| x == c));
+            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help("Older commit (<)").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).key("older");
+            let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help("Newer commit (>)").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).key("newer");
+            Some(row().key("compare").gap(6.0).items_center().child(older).child(newer))
+        }
+        _ => None,
+    }
+}
+
+/// The graph's geometry: a row's height and the spacing of its lanes.
+const GRAPH_ROW: f32 = 28.0;
+const LANE: f32 = 16.0;
+/// The fixed columns after the description: author, date and short hash.
+const AUTHOR_W: f32 = 112.0;
+const DATE_W: f32 = 126.0;
+const HASH_W: f32 = 64.0;
+
+/// A lane's colour, as Git Graph cycles them: each branch line keeps its lane's colour.
+fn lane_color(lane: usize) -> rune::Color {
+    const LANES: [&str; 8] = ["#4c9df0", "#e0609e", "#3fbf6a", "#e09a3c", "#a678e8", "#e5584f", "#36bfb5", "#b8c440"];
+    rune::color::hex(LANES[lane % LANES.len()]).unwrap()
+}
+
+fn graph_width(lanes: usize) -> f32 {
+    lanes.max(1) as f32 * LANE + 8.0
+}
+
+// Keep topology order: sorting by author or date independently would break graph edges.
+fn history_graph(s: &Collate, k: &Kit) -> El {
+    let width = graph_width(s.graph_lanes);
+    let label = |t: &str| text(t.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint);
+    // Outside the scroll, so the column names stay put while the rows move under them.
+    let header = row().key("graph-header").w_full().h(24.0).px(EDGE).gap(12.0).items_center()
+        .child(label("Graph").w(width))
+        .child(label("Description").grow(1.0).min_w(0.0))
+        .child(label("Author").w(AUTHOR_W))
+        .child(label("Date").w(DATE_W))
+        .child(label("Commit").w(HASH_W));
+    let kit = k.clone();
+    let rows = col().key("graph-rows").growth(rune::GrowthSpec::default()).w_full()
+        .virtual_rows(s.graph_commits.len(), GRAPH_ROW,
+            |s: &Collate, i| format!("graph-{}", s.graph_commits[i].id).into(),
+            move |s: &Collate, i| graph_row(s, &kit, i, width))
+        .virtual_rows_version(s.graph_version)
+        // Within a hundred rows of the end, the next page starts loading.
+        .on_visible_rows(|s: &mut Collate, rows| {
+            if rows.end + 100 >= s.graph_commits.len() && !s.graph_loading && s.commit_ids.len() >= s.graph_limit {
+                s.load_more_history();
+                return true;
+            }
+            false
+        });
+    let refresh = IconButton::new(&REFRESH_ICON)
+        .variant(IconButtonVariant::GhostMuted)
+        .label("Refresh history")
+        .help("Read the history again (⌘R)")
+        .on_press(|s: &mut Collate| { s.load_history(); refresh(); })
+        .build(k)
+        .key("graph-refresh");
+    let shown = s.commit_ids.len();
+    let title = row().key("graph-title").w_full().h(36.0).px(EDGE).gap(8.0).items_center()
+        .child(text("Commits").font(k.ty.text_small_medium).color(k.c.text_base))
+        .child(text(format!("{shown}{} on all branches{}", if shown >= s.graph_limit { "+" } else { "" }, if s.graph_loading { " - loading more…" } else { "" })).font(k.ty.text_small).color(k.c.text_muted).grow(1.0).truncate().min_w(0.0))
+        .child(refresh.mr(-4.0));
+    col().key("history-graph").w_full().grow(1.0).min_h(0.0)
+        .child(title)
+        .child(header)
+        .child(col().w_full().h(1.0).fill(k.c.border_weak))
+        .child(col().key("graph-scroll").w_full().grow(1.0).min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows))
+}
+
