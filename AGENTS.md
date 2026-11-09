@@ -1,0 +1,55 @@
+# Collate
+
+A git diff viewer for macOS, in Rust, on the Rune UI framework. One binary crate.
+
+## Commands
+
+- `cargo build`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test` (needs nothing set up; view tests build their own repository in the temp folder)
+- `cargo run -- <repo>` to look at a change; `scripts/install.sh` installs the app.
+
+Run all three checks before saying a change is done. Never run `cargo fmt`: the code is
+laid out by hand and `rustfmt.toml` disables the formatter.
+
+## Layout
+
+- `src/main.rs`: app state (`Collate`), views outside the diff, keys, the watcher thread, view tests.
+- `src/git.rs`: every `git` call. `src/patch.rs`: patches for staging hunks, lines, words.
+- `src/diff/`: `model.rs` (files, hunks, parsing), `myers.rs` (line and word diff),
+  `state.rs` (rows, folds, selection), `view.rs` (drawing).
+- `src/graph.rs`: commit graph. `src/map.rs`, `src/map_view.rs`: repository map.
+- `src/settings.rs`, `src/avatars.rs`, `src/nav.rs`.
+
+Rune's source is the reference for its API: `~/.cargo/git/checkouts/rune-*/<rev>/crates/`
+(`rune` for layout and runtime, `rune-kit` for components). Read it instead of guessing.
+
+## How a refresh flows
+
+The watcher thread runs `git status`, fingerprints it, takes a snapshot (`Repo::snapshot_with`),
+diffs the files in parallel (`prepare`), and hands the result to the UI thread
+(`Collate::apply`), which sets the diff state and rebuilds its rows. Keep `git` and diffing
+off the UI thread.
+
+## Rules
+
+- Small, reviewable changes. Match the file you are in: naming, comment density, long lines.
+- Comments say why. Keep doc comments on non-obvious functions.
+- No new dependencies without a stated reason.
+- Don't hide errors or fall back silently. Show them with `Collate::say` or return them.
+- Delete what you make unused; don't add `#[allow(dead_code)]`.
+- App text separates with ` - `, never `·`.
+- UI: use the shared constants (`EDGE`, `PANEL_INSET`, `COLUMN_TOP`, `GHOST_PAD`) and the
+  kit's tokens (`k.ty.*`, `k.c.*`, `k.radius.*`) before a new number. See
+  `.claude/skills/ui-change`.
+- Performance: measure first, on a release build. See `.claude/skills/perf-check`.
+- Rows of the diff are virtual and memoised. A row's key must stay stable for the same
+  line, and whatever changes a row's look must be in its `memo` version.
+- Tests that touch a repository make a throwaway one in the temp folder. Only
+  `the_review_loop_stages_discards_and_commits` may set the shared `REPO`.
+
+## This repository is public
+
+Before committing, check the staged diff for home-folder paths, tokens, machine names
+and private links: `git diff --cached | grep -nE '/Users/|/private/var/|token|secret'`.
+Write repo-relative paths. Don't commit logs, profiles or benchmark dumps.
