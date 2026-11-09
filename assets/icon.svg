@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2d34"/>
+      <stop offset="1" stop-color="#16181c"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS icon grid: an 824 pt squircle-ish tile inside the 1024 canvas -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1"/>
+  <!-- a diff: context, a removed line, two added, context -->
+  <rect x="236" y="272" width="430" height="56" rx="14" fill="#8b93a1" fill-opacity="0.55"/>
+  <rect x="216" y="372" width="592" height="72" rx="16" fill="#e5534b" fill-opacity="0.22"/>
+  <rect x="216" y="372" width="12" height="72" rx="6" fill="#e5534b"/>
+  <rect x="260" y="390" width="380" height="36" rx="10" fill="#f47067"/>
+  <rect x="216" y="468" width="592" height="72" rx="16" fill="#46954a" fill-opacity="0.24"/>
+  <rect x="216" y="468" width="12" height="72" rx="6" fill="#57ab5a"/>
+  <rect x="260" y="486" width="470" height="36" rx="10" fill="#6bc46d"/>
+  <rect x="216" y="564" width="592" height="72" rx="16" fill="#46954a" fill-opacity="0.24"/>
+  <rect x="216" y="564" width="12" height="72" rx="6" fill="#57ab5a"/>
+  <rect x="260" y="582" width="300" height="36" rx="10" fill="#6bc46d"/>
+  <rect x="236" y="688" width="520" height="56" rx="14" fill="#8b93a1" fill-opacity="0.55"/>
+</svg>
