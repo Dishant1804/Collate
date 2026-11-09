@@ -571,3 +571,306 @@ impl Repo {
         }
     }
 
+    /// Undoes `path`'s change in the working tree: back to HEAD (and out of the index) for
+    /// `Scope::Uncommitted`, back to the index for `Scope::Unstaged`. A file git doesn't
+    /// have there is removed. The working copy is backed up first; returns where.
+    pub fn discard(&self, path: &str, scope: Scope, in_base: bool) -> Result<PathBuf, String> {
+        let backup = self.backup(path)?;
+        match (scope, in_base) {
+            (Scope::Uncommitted, true) => self.run(&["restore", "--source=HEAD", "--staged", "--worktree", "--", path], None).map(drop)?,
+            (Scope::Unstaged, true) => self.run(&["restore", "--worktree", "--", path], None).map(drop)?,
+            (Scope::Uncommitted | Scope::Unstaged, false) => {
+                if scope == Scope::Uncommitted {
+                    self.run(&["rm", "-q", "--cached", "--ignore-unmatch", "--", path], None)?;
+                }
+                let p = self.root.join(path);
+                if p.exists() {
+                    std::fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+                }
+            }
+            _ => return Err("Only uncommitted changes can be discarded.".into()),
+        }
+        Ok(backup)
+    }
+
+    /// Refreshes the index's cached file stats so later `status` calls are cheap again. It
+    /// takes the index lock for a moment; if another git holds it, nothing happens.
+    pub fn refresh_index(&self) {
+        let _ = self.run(&["update-index", "-q", "--refresh"], None);
+    }
+
+    /// The paths among `paths` that `.gitattributes` marks `linguist-generated`.
+    pub fn generated<'a>(&self, paths: impl Iterator<Item = &'a str>) -> std::collections::HashSet<String> {
+        let input: String = paths.map(|p| format!("{p}\0")).collect();
+        if input.is_empty() {
+            return Default::default();
+        }
+        let out = self.run(&["check-attr", "-z", "--stdin", "linguist-generated"], Some(&input)).unwrap_or_default();
+        let fields: Vec<&str> = out.split('\0').collect();
+        fields.chunks(3).filter(|c| c.len() == 3 && matches!(c[2], "set" | "true")).map(|c| c[0].to_owned()).collect()
+    }
+
+    /// Puts the files in a backup made by [`Repo::backup`] back in the working tree; returns
+    /// how many it restored.
+    pub fn restore(&self, backup: &Path) -> Result<usize, String> {
+        let mut n = 0;
+        let mut stack = vec![backup.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+                let p = entry.map_err(|e| e.to_string())?.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p.strip_prefix(backup).map_err(|e| e.to_string())?;
+                    let dst = self.root.join(rel);
+                    std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| e.to_string())?;
+                    std::fs::copy(&p, &dst).map_err(|e| format!("restoring {}: {e}", rel.display()))?;
+                    n += 1;
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    /// Copies `path`'s working copy into `.git/collate-backup/<time>/` before it's changed, so a
+    /// discard can be undone.
+    pub fn backup(&self, path: &str) -> Result<PathBuf, String> {
+        let git_dir = PathBuf::from(self.run(&["rev-parse", "--absolute-git-dir"], None)?);
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let dir = git_dir.join("collate-backup").join(stamp.to_string());
+        let src = self.root.join(path);
+        if src.is_file() {
+            let dst = dir.join(path);
+            std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| e.to_string())?;
+            std::fs::copy(&src, &dst).map_err(|e| format!("backing up {path}: {e}"))?;
+        }
+        Ok(dir)
+    }
+
+    /// Commits what's staged; returns git's one-line summary.
+    pub fn commit(&self, message: &str) -> Result<String, String> {
+        self.run(&["commit", "-q", "-F", "-"], Some(message))?;
+        self.run(&["log", "-1", "--format=%h %s"], None)
+    }
+
+    pub fn merge_base(&self, base: &str) -> Result<String, String> {
+        self.run(&["merge-base", base, "HEAD"], None).map_err(|e| format!("No common history with {base}: {e}"))
+    }
+
+    /// Local and remote branches, local first, without `origin/HEAD`.
+    pub fn branches(&self) -> Vec<String> {
+        let out = self.run(&["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"], None).unwrap_or_default();
+        // A remote's HEAD shows as `origin/HEAD`, or as the bare remote name in newer gits.
+        let remotes = self.run(&["remote"], None).unwrap_or_default();
+        out.lines().filter(|r| !r.is_empty() && !r.ends_with("/HEAD") && !remotes.lines().any(|m| m == *r)).map(str::to_owned).collect()
+    }
+
+    /// The latest `n` commits of every branch, remote branch and tag (or of `branch` alone),
+    /// newest first and each after its children, with HEAD's id.
+    pub fn graph(&self, n: usize, branch: Option<&str>) -> (Vec<crate::graph::Commit>, Option<String>) {
+        let limit = format!("-{n}");
+        let format = format!("--format={}", crate::graph::FORMAT);
+        let mut args = vec!["log", &limit, "--date-order", "--decorate=full", "--date=format-local:%d %b %Y %H:%M", &format];
+        match branch {
+            Some(b) => args.extend([b, "--"]),
+            // Not `--all`: that takes in stashes and notes.
+            None => args.extend(["--branches", "--remotes", "--tags", "HEAD", "--"]),
+        }
+        let out = self.run(&args, None).unwrap_or_default();
+        (crate::graph::parse(&out), self.run(&["rev-parse", "-q", "--verify", "HEAD"], None).ok())
+    }
+
+    /// The web page of `origin` (or the first remote), from its fetch URL: `git@host:o/r.git`,
+    /// `ssh://git@host/o/r` and `https://host/o/r.git` all give `https://host/o/r`.
+    pub fn web_url(&self) -> Option<String> {
+        let remotes = self.run(&["remote"], None).ok()?;
+        let name = remotes.lines().find(|r| *r == "origin").or_else(|| remotes.lines().next())?;
+        web_url(&self.run(&["remote", "get-url", name], None).ok()?)
+    }
+
+    /// A commit's whole message.
+    pub fn message(&self, id: &str) -> String {
+        self.run(&["show", "-s", "--format=%B", id], None).unwrap_or_default()
+    }
+
+    /// The branch a review most likely compares against.
+    pub fn default_base(&self) -> Option<String> {
+        let all = self.branches();
+        ["origin/main", "origin/master", "main", "master", "origin/develop", "develop"].iter().find(|b| all.iter().any(|r| r == *b)).map(|b| (*b).to_owned())
+    }
+}
+
+fn same(a: &Option<Blob>, b: &Option<Blob>) -> bool {
+    matches!((a, b), (Some(Blob::Text(x)), Some(Blob::Text(y))) if x == y)
+}
+
+fn classify(bytes: Vec<u8>) -> Blob {
+    if bytes[..bytes.len().min(8000)].contains(&0) {
+        return Blob::Binary;
+    }
+    match String::from_utf8(bytes) {
+        Ok(s) => Blob::Text(s),
+        Err(_) => Blob::Binary,
+    }
+}
+
+fn hash_blob(b: &Option<Blob>, h: &mut DefaultHasher) {
+    match b {
+        None => 0u8.hash(h),
+        Some(Blob::Text(t)) => (1u8, t).hash(h),
+        Some(Blob::Binary) => 2u8.hash(h),
+        Some(Blob::TooLarge(n)) => (3u8, n).hash(h),
+    }
+}
+
+/// Parses `git status --porcelain=v2 -z --branch` into the branch name and the changed entries.
+fn parse_status(raw: &[u8]) -> (String, Option<String>, Vec<Entry>) {
+    let text = String::from_utf8_lossy(raw);
+    let mut branch = String::from("HEAD");
+    let mut head = None;
+    let mut entries = Vec::new();
+    let mut records = text.split('\0').filter(|r| !r.is_empty());
+    while let Some(r) = records.next() {
+        let xy = |s: &str| {
+            let b = s.as_bytes();
+            (b[0], b[1])
+        };
+        match r.as_bytes()[0] {
+            b'#' => {
+                if let Some(name) = r.strip_prefix("# branch.head ") {
+                    branch = name.to_owned();
+                } else if let Some(oid) = r.strip_prefix("# branch.oid ") {
+                    head = (oid != "(initial)").then(|| oid.to_owned());
+                }
+            }
+            b'1' => {
+                let f: Vec<&str> = r.splitn(9, ' ').collect();
+                if f.len() == 9 {
+                    let (index, worktree) = xy(f[1]);
+                    entries.push(Entry { index, worktree, path: f[8].to_owned(), orig: None, untracked: false, head_oid: oid(f[6]), index_oid: oid(f[7]) });
+                }
+            }
+            b'2' => {
+                // Renames are off, but copies can still come through on some configs.
+                let f: Vec<&str> = r.splitn(10, ' ').collect();
+                let orig = records.next().map(str::to_owned);
+                if f.len() == 10 {
+                    let (index, worktree) = xy(f[1]);
+                    entries.push(Entry { index, worktree, path: f[9].to_owned(), orig, untracked: false, head_oid: oid(f[6]), index_oid: oid(f[7]) });
+                }
+            }
+            b'u' => {
+                let f: Vec<&str> = r.splitn(11, ' ').collect();
+                if f.len() == 11 {
+                    // A conflict: no single index blob, read by path.
+                    entries.push(Entry { index: b'M', worktree: b'M', path: f[10].to_owned(), orig: None, untracked: false, head_oid: None, index_oid: None });
+                }
+            }
+            b'?' => entries.push(Entry { index: b'.', worktree: b'?', path: r[2..].to_owned(), orig: None, untracked: true, head_oid: None, index_oid: None }),
+            _ => {}
+        }
+    }
+    entries.sort_by(|a, b| tree_order(&a.path, &b.path));
+    (branch, head, entries)
+}
+
+/// The file tree's order: at each level folders before files, then names in natural order
+/// (`file2` before `file10`), so the diff lists files in the order the sidebar shows them.
+fn tree_order(a: &str, b: &str) -> std::cmp::Ordering {
+    let (a, b): (Vec<&str>, Vec<&str>) = (a.split('/').collect(), b.split('/').collect());
+    for i in 0..a.len().min(b.len()) {
+        let (a_dir, b_dir) = (i + 1 < a.len(), i + 1 < b.len());
+        if a_dir != b_dir {
+            return b_dir.cmp(&a_dir);
+        }
+        let o = natural(a[i], b[i]).then(a[i].cmp(b[i]));
+        if o.is_ne() {
+            return o;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
+/// Compares names with digit runs as numbers and letters ignoring case.
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, _) => return std::cmp::Ordering::Less,
+            (_, None) => return std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let num = |it: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut s = String::new();
+                    while let Some(c) = it.peek().copied().filter(char::is_ascii_digit) {
+                        s.push(c);
+                        it.next();
+                    }
+                    s
+                };
+                let (x, y) = (num(&mut a), num(&mut b));
+                let (tx, ty) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                let o = tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty));
+                if o.is_ne() {
+                    return o;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let o = x.to_lowercase().cmp(y.to_lowercase());
+                if o.is_ne() {
+                    return o;
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
+/// See [`Repo::web_url`].
+pub fn web_url(remote: &str) -> Option<String> {
+    let r = remote.trim().trim_end_matches('/').trim_end_matches(".git");
+    let rest = if let Some(r) = r.strip_prefix("https://").or_else(|| r.strip_prefix("http://")) {
+        // Drop any `user:token@` in front of the host.
+        r.rsplit_once('@').map_or(r, |(_, h)| h).to_owned()
+    } else if let Some(r) = r.strip_prefix("ssh://") {
+        let r = r.split_once('@').map_or(r, |(_, h)| h);
+        // `host:port/o/r`: the port is the SSH one, not the web one.
+        match r.split_once('/') {
+            Some((host, path)) => format!("{}/{path}", host.split(':').next().unwrap_or(host)),
+            None => return None,
+        }
+    } else {
+        let (host, path) = r.split_once('@').map_or(r, |(_, h)| h).split_once(':')?;
+        format!("{host}/{path}")
+    };
+    rest.contains('/').then(|| format!("https://{rest}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_v2_status() {
+        let raw = b"# branch.oid abc\0# branch.head main\0\
+1 .M N... 100644 100644 100644 aaa aaa src/a b.rs\0\
+1 A. N... 000000 100644 100644 000 bbb new.rs\0\
+? notes.txt\0";
+        let (branch, head, e) = parse_status(raw);
+        assert_eq!(branch, "main");
+        assert_eq!(head.as_deref(), Some("abc"));
+        let paths: Vec<_> = e.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["src/a b.rs", "new.rs", "notes.txt"]);
+        assert_eq!((e[0].index, e[0].worktree), (b'.', b'M'));
+        assert_eq!((e[1].index, e[1].worktree), (b'A', b'.'));
+        assert!(e[2].untracked);
+    }
+
+    #[test]
+    fn sorts_like_the_file_tree() {
+        let mut paths = vec!["src/file10.rs", "README.md", "src/file2.rs", "src/a/z.rs", "src/File1.rs"];
+        paths.sort_by(|a, b| tree_order(a, b));
+        assert_eq!(paths, ["src/a/z.rs", "src/File1.rs", "src/file2.rs", "src/file10.rs", "README.md"]);
+    }
+}
