@@ -2491,3 +2491,451 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
     c
 }
 
+/// Feedback after an action, at the bottom of the diff: what happened, and Undo for a
+/// discard. It goes by itself after a few seconds.
+fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
+    let note = s.notice.as_ref()?;
+    let color = if note.error { k.c.danger.icon } else { k.c.text_muted };
+    let mut r = row()
+        .key("status-bar")
+        .w_full()
+        .h(34.0)
+        .px(16.0)
+        .gap(12.0)
+        .items_center()
+        .fill(k.c.layer_01)
+        .border(1.0, k.c.border_weak)
+        .role("status")
+        .label(note.text.clone())
+        .child(text(note.text.clone()).key("notice").font(k.ty.text_small).color(color).truncate().min_w(0.0).grow(1.0));
+    if note.undo.is_some() {
+        r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Put the discarded file back from its backup").on_press(|s: &mut Collate| s.undo_discard()).build(k).key("undo"));
+    }
+    Some(r)
+}
+
+/// A note in the summary row with the action that undoes it: the note as text, the action
+/// the same small button as Stage All.
+fn chip(k: &Kit, key: &str, note: &str, label: &str, help: &str, f: impl Fn(&mut Collate, &mut Tx) + 'static) -> El {
+    let button = Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help(help.to_owned()).on_press_tx(f).build(k).key("act");
+    let r = row().key(key.to_owned()).items_center();
+    if note.is_empty() {
+        // Alone, its label (not its padding) starts where a note would.
+        return r.child(button.ml(-GHOST_PAD));
+    }
+    r.child(text(note.to_owned()).font(k.ty.text_small).color(k.c.text_muted)).child(button)
+}
+
+fn stat_bar(k: &Kit, adds: usize, dels: usize, w: f32) -> El {
+    let bar = row().key("stat").w(w).h(4.0).radius(2.0).fill(k.c.border_weak).a11y_hidden();
+    let total = (adds + dels) as f32;
+    if total == 0.0 {
+        return bar;
+    }
+    let add_w = (w * adds as f32 / total).round();
+    bar.child(col().key("a").w(add_w).h_full().radius(2.0).fill(k.c.success.icon)).child(col().key("d").w(w - add_w).h_full().radius(2.0).fill(k.c.danger.icon))
+}
+
+/// The "viewed" check at the end of a file's header.
+fn viewed_toggle(k: &Kit, f: usize, viewed: bool) -> El {
+    let (fill, border, glyph) = if viewed {
+        (k.alpha(k.c.success.icon, 0.14), k.alpha(k.c.success.icon, 0.5), k.c.success.icon)
+    } else {
+        (k.c.bg_base, k.c.border_weak, k.c.text_faint)
+    };
+    row()
+        .key("viewed")
+        .size(24.0, 24.0)
+        .center()
+        .radius(6.0)
+        .fill(fill)
+        .border(1.0, border)
+        .hover(k.alpha(k.c.text_base, 0.06))
+        .cursor(Cursor::Pointer)
+        .role("checkbox")
+        .label("Viewed")
+        .checked(viewed)
+        .help(if viewed { "Mark as not viewed (v)" } else { "Mark as viewed (v)" })
+        .on_press_tx(move |s: &mut Collate, tx| s.toggle_viewed(f, tx))
+        .child(icon(k.glyph.check_small, 14.0).color(glyph))
+}
+
+fn message(k: &Kit, title: &str, detail: &str) -> El {
+    let mut c = col().key("message").grow(1.0).w_full().center().gap(6.0).fill(k.c.bg_base).child(text(title.to_owned()).font(k.ty.ui_medium).color(k.c.text_base));
+    if !detail.is_empty() {
+        c = c.child(text(detail.to_owned()).font(k.ty.ui).color(k.c.text_muted).wrap().max_w(520.0));
+    }
+    c
+}
+
+/// The width every settings control is right-aligned in, so each description wraps at the
+/// same measure and rows of the same kind come out the same height.
+const CONTROL_W: f32 = 272.0;
+
+/// One setting: what it is (with its shortcut as keycaps, if it has one) and why, then its
+/// control at the right edge.
+fn setting(k: &Kit, key: &str, title: &str, keys: &[&str], detail: &str, control: El) -> El {
+    let mut name = row().gap(8.0).items_center().child(text(title.to_owned()).font(k.ty.ui_medium).color(k.c.text_base));
+    if !keys.is_empty() {
+        name = name.child(rune_kit::Keybind::new(keys).build(k));
+    }
+    let mut words = col().grow(1.0).min_w(0.0).gap(4.0).child(name);
+    if !detail.is_empty() {
+        words = words.child(text(detail.to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap());
+    }
+    row().key(key.to_owned()).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().items_center().child(control))
+}
+
+fn pick<T: Copy + PartialEq + 'static>(k: &Kit, labels: &[&str], values: &'static [T], current: T, set: fn(&mut Settings, T)) -> El {
+    SegmentedControl::new(labels, values.iter().position(|v| *v == current))
+        .fit()
+        .on_pick(move |s: &mut Collate, i, _: &mut Tx| s.configure(|c| set(c, values[i])))
+        .build(k)
+}
+
+fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
+    // Off, the kit's standard switch is a dark knob on a surface-coloured track, which nearly
+    // vanishes on the panel's own surface in the dark theme: draw it as a hairline control
+    // with a muted knob, so off reads as clearly as on.
+    let mut kk = k.clone();
+    if !on {
+        kk.c.surface_base = k.alpha(k.c.text_base, 0.08);
+        kk.c.border_weak = k.alpha(k.c.text_base, 0.22);
+        kk.c.std_border = k.alpha(k.c.text_base, 0.28);
+        if k.dark {
+            kk.c.std_icon_invert = k.c.text_muted;
+        }
+    }
+    Switch::new(on).standard().label(title.to_owned()).hide_label().on_toggle(move |s: &mut Collate| s.configure(|c| set(c, !on))).build(&kk)
+}
+
+const SETTINGS_TABS: [&str; 5] = ["Appearance", "Diff", "Review", "Projects", "Refresh"];
+
+/// Settings as a floating panel over the review: sections down the left, the chosen one's
+/// settings on the right, on one surface. Esc, the close button or a click outside put it
+/// away; every change applies and saves at once, so there's nothing to confirm.
+fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let st = &s.settings;
+    static THEMES: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
+    static DENSITIES: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
+    static LAYOUTS: [DiffMode; 2] = [DiffMode::Unified, DiffMode::Split];
+    static NUMBERS: [bool; 2] = [true, false];
+    let tab = s.settings_tab.min(SETTINGS_TABS.len() - 1);
+    let rows: Vec<El> = match tab {
+        0 => vec![
+            setting(k, "theme", "Theme", &[], "", pick(k, &["System", "Light", "Dark"], &THEMES, st.theme, |c, v| c.theme = v)),
+            setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(k, &["11", "12", "13", "14", "16"], &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
+            setting(k, "density", "Line spacing", &[], "", pick(k, &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
+        ],
+        1 => vec![
+            setting(k, "layout", "Layout", &["S"], "Split shows old and new side by side", pick(k, &["Unified", "Split"], &LAYOUTS, st.layout, |c, v| c.layout = v)),
+            setting(k, "numbers", "Line numbers", &[], "Unified view: new numbers only, or both", pick(k, &["One column", "Old and new"], &NUMBERS, st.one_number, |c, v| c.one_number = v)),
+            setting(k, "context", "Context lines", &[], "Unchanged lines kept around each change", pick(k, &["3", "10", "25", "Full file"], &CONTEXT_LINES, st.context, |c, v| c.context = v)),
+            setting(k, "ws", "Ignore whitespace", &["⇧", "W"], "Hides indent-only changes; stage whole files while on", switch(k, "Ignore whitespace", st.ignore_whitespace, |c, v| c.ignore_whitespace = v)),
+            setting(k, "moved", "Highlight moved code", &["M"], "Moved blocks show in blue, M jumps between their ends", switch(k, "Highlight moved code", st.show_moved, |c, v| c.show_moved = v)),
+            setting(k, "wrap", "Wrap long lines", &["W"], "Off scrolls them sideways; split view always wraps", switch(k, "Wrap long lines", st.wrap, |c, v| c.wrap = v)),
+            setting(k, "markers", "+ and − markers", &[], "A sign beside each changed line", switch(k, "Markers", st.markers, |c, v| c.markers = v)),
+            setting(k, "words", "Word highlights", &[], "Tint the words that changed within a line", switch(k, "Word highlights", st.word_diff, |c, v| c.word_diff = v)),
+            setting(k, "syntax", "Syntax highlighting", &[], "", switch(k, "Syntax highlighting", st.syntax, |c, v| c.syntax = v)),
+        ],
+        2 => vec![
+            setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "Pull Request Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
+            setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
+            setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
+            setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
+            setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
+        ],
+        3 => {
+            let labels = project_labels(&s.projects);
+            let mut rows: Vec<El> = s
+                .projects
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let open = current_repo().is_some_and(|r| r.root == *p);
+                    let mut name = row().gap(8.0).items_center().child(text(labels[i].clone()).font(k.ty.ui_medium).color(if p.exists() { k.c.text_base } else { k.c.text_faint }));
+                    if open {
+                        name = name.child(text("Open".to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint));
+                    }
+                    let words = col().grow(1.0).min_w(0.0).gap(4.0).child(name).child(text(tilde(p)).font(k.ty.text_small).color(k.c.text_muted).truncate());
+                    let remove = Button::new("Remove").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(open).help(if open { "The open project stays in the list" } else { "Remove from the list; the folder isn't touched" }).on_press(move |s: &mut Collate| s.forget_project(i)).build(k);
+                    row().key(format!("proj{i}")).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().child(remove))
+                })
+                .collect();
+            if rows.is_empty() {
+                rows.push(setting(k, "none", "No projects yet", &[], "Add a folder inside a git repository", row()));
+            }
+            rows
+        }
+        _ => vec![
+            setting(k, "auto", "Watch for changes", &[], "Reread when files change on disk", switch(k, "Watch for changes", st.auto_refresh, |c, v| c.auto_refresh = v)),
+            setting(k, "every", "Check every", &[], "Only when file events aren't available", pick(k, &["0.5 s", "1 s", "2 s", "5 s"], &REFRESH_MS, st.refresh_ms, |c, v| c.refresh_ms = v)),
+        ],
+    };
+    let hairline = |key: String| col().key(key).w_full().h(1.0).fill(k.c.border_weak).a11y_hidden();
+    // Left: the sections, on the panel's own surface, the chosen one a quiet step brighter.
+    let nav = col().key("settings-nav").w(176.0).h_full().px(12.0).py(12.0).gap(2.0).children(SETTINGS_TABS.iter().enumerate().map(|(i, name)| {
+        let on = i == tab;
+        row()
+            .key(format!("tab-{}", name.to_lowercase()))
+            .w_full()
+            .h(32.0)
+            .px(10.0)
+            .items_center()
+            .radius(6.0)
+            .fill(if on { k.alpha(k.c.text_base, 0.08) } else { k.alpha(k.c.text_base, 0.0) })
+            .hover(k.alpha(k.c.text_base, 0.05))
+            .cursor(Cursor::Pointer)
+            .role("tab")
+            .label(name.to_string())
+            .checked(on)
+            .on_press(move |s: &mut Collate| s.settings_tab = i)
+            .child(text(name.to_string()).font(if on { k.ty.ui_medium } else { k.ty.ui }).color(if on { k.c.text_base } else { k.c.text_muted }))
+    }));
+    // Right: the section's rows straight on the surface, divided by hairlines (no card in a
+    // panel), scrolling when long, with what applies to every section in a footer.
+    let n = rows.len();
+    let mut list = col().key("settings-rows").w_full();
+    for (i, r) in rows.into_iter().enumerate() {
+        list = list.child(r);
+        if i + 1 < n {
+            list = list.child(hairline(format!("rule{i}")));
+        }
+    }
+    let mut content = col().key("settings-content").w_full().px(24.0).pb(16.0);
+    if tab == 3 {
+        let add = Button::new(ADD_PROJECT).variant(ButtonVariant::Outline).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.add_project()).build(k).key("settings-add");
+        content = content.child(row().key("projects-head").w_full().pt(12.0).pb(4.0).justify_end().child(add));
+    }
+    let content = content.child(list);
+    let scroll = col().key("settings-scroll").w_full().grow(1.0).min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(content);
+    let mut foot = row()
+        .key("settings-foot")
+        .w_full()
+        .h(48.0)
+        .px(24.0)
+        .gap(12.0)
+        .items_center()
+        .child(text("Changes save as you make them".to_owned()).font(k.ty.text_small).color(k.c.text_faint).grow(1.0).min_w(0.0));
+    if let Some(e) = &s.save_error {
+        foot = foot.child(text(format!("Couldn't save: {e}")).font(k.ty.text_small).color(k.c.danger.icon));
+    }
+    foot = foot.child(Button::new("Reset to Defaults").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.configure(|c| *c = Settings::default())).build(k).key("settings-reset"));
+    let right = col().key("settings-right").grow(1.0).min_w(0.0).h_full().child(scroll).child(hairline("foot-rule".into())).child(foot);
+    let body = col()
+        .key("settings-frame")
+        .w_full()
+        .child(hairline("head-rule".into()))
+        .child(row().key("settings-body").w_full().h(560.0).child(nav).child(col().key("settings-split").w(1.0).h_full().fill(k.c.border_weak)).child(right));
+    Dialog::new("settings", "Settings").open(true).fit().width(880.0).on_close(|s: &mut Collate| s.screen = Screen::Review).child(body).build(k, layer);
+}
+
+fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if ev.is_command(',') {
+        s.screen = if s.screen == Screen::Settings { Screen::Review } else { Screen::Settings };
+        return true;
+    }
+    // The settings panel is modal: it takes its own keys (Escape closes it).
+    if s.screen == Screen::Settings {
+        return false;
+    }
+    // A dialog takes its own keys (Escape closes it); nothing else acts behind it.
+    if s.confirm.is_some() || s.words.is_some() {
+        return false;
+    }
+    if s.show_help {
+        if matches!(ev.key, Key::Escape) || matches!(&ev.key, Key::Text(t) if t == "?") {
+            s.show_help = false;
+            return true;
+        }
+        return false;
+    }
+    if shell::is_sidebar_toggle(ev) {
+        s.sidebar.toggle();
+        return true;
+    }
+    if ev.mods.alt && ev.is_command('0') {
+        s.inspector.toggle();
+        return true;
+    }
+    // Back and forward, as in a browser.
+    if ev.is_command('[') || ev.is_command(']') {
+        s.go(ev.is_command('['));
+        return true;
+    }
+    if ev.is_command('r') {
+        return refresh();
+    }
+    if ev.key == Key::Enter && ev.mods.cmd {
+        s.commit();
+        return true;
+    }
+    if ev.is_command('o') {
+        s.add_project();
+        return true;
+    }
+    if ev.is_command('f') {
+        s.searching = true;
+        return true;
+    }
+    // Typing into the search after ⌘F, unless a field has the keyboard (it types there).
+    if s.searching && tx.focused().is_none_or(|f| !(f.contains("filter") || f.contains("message"))) && !ev.mods.cmd && !ev.mods.ctrl {
+        let mut q = s.search.text.clone();
+        match &ev.key {
+            Key::Text(t) => q.push_str(t),
+            Key::Backspace => {
+                q.pop();
+            }
+            Key::Enter => {
+                s.next_hit(!ev.mods.shift, tx);
+                return true;
+            }
+            Key::Escape => {
+                s.searching = false;
+                return true;
+            }
+            _ => return false,
+        }
+        s.search = TextEdit::new(q);
+        s.hit = None;
+        s.find();
+        // Land on the first match as you type, as a browser's find does.
+        s.next_hit(true, tx);
+        return true;
+    }
+    if s.map.open && ev.key == Key::Escape && tx.focused().is_none_or(|f| !f.contains("filter")) && s.map_up() {
+        return true;
+    }
+    if s.scope == Scope::History && !ev.mods.cmd && tx.focused().is_none_or(|f| !f.contains("filter")) {
+        match ev.key {
+            Key::Enter if !s.history_diff && s.commit.is_some() => {
+                s.history_diff = true;
+                return true;
+            }
+            Key::Escape if s.history_diff => {
+                s.close_commit_diff(tx);
+                return true;
+            }
+            _ => {}
+        }
+    }
+    if ev.is_command('g') {
+        s.next_hit(!ev.mods.shift, tx);
+        return true;
+    }
+    // Typing in a field isn't a shortcut.
+    if tx.focused().is_some_and(|f| f.contains("filter") || f.contains("message") || f.contains("search")) {
+        return false;
+    }
+    let Key::Text(t) = &ev.key else { return s.diff.key(ev, tx) };
+    if ev.mods.cmd || ev.mods.ctrl || ev.mods.alt {
+        return s.diff.key(ev, tx);
+    }
+    let hunk = s.diff.current_hunk();
+    let file = s.diff.visible_file();
+    // The diff's own key handler steps aside while the tree has focus; these work from either.
+    match t.as_str() {
+        "j" => s.diff.next_hunk(true, tx),
+        "k" => s.diff.next_hunk(false, tx),
+        "]" => s.diff.next_file(true, tx),
+        "[" => s.diff.next_file(false, tx),
+        "a" | "u" | "x" => {
+            // Selected lines first, else the hunk at the top.
+            let (f, h, picked) = match s.diff.selected_changes() {
+                Some((f, h, p)) => (f, h, Some(p)),
+                None => match hunk {
+                    Some((f, h)) => (f, h, None),
+                    None => return false,
+                },
+            };
+            if s.settings.ignore_whitespace && t != "x" {
+                s.say("Whitespace is hidden, so hunks don't match the file; stage whole files (A) or show whitespace (W).", true);
+                return true;
+            }
+            match (t.as_str(), s.scope) {
+                ("a", Scope::Uncommitted | Scope::Unstaged) => s.stage_hunk(f, h, picked),
+                ("u", Scope::Staged) => s.unstage_hunk(f, h, picked),
+                ("u", Scope::Uncommitted) if s.info.get(f).is_some_and(|i| i.staged == Staged::Fully) => s.unstage_hunk(f, h, picked),
+                ("x", _) => s.ask_discard(f, Some(h)),
+                _ => return false,
+            }
+            true
+        }
+        "n" | "N" => {
+            s.next_hit(t == "n", tx);
+            true
+        }
+        "p" => {
+            s.pick_words();
+            true
+        }
+        "m" => {
+            if !s.diff.jump_to_twin(tx) {
+                s.say("No moved lines here", false);
+            }
+            true
+        }
+        "z" => {
+            s.fold_all(true, tx);
+            true
+        }
+        "Z" => {
+            s.fold_all(false, tx);
+            true
+        }
+        "W" => {
+            s.configure(|c| c.ignore_whitespace = !c.ignore_whitespace);
+            s.say(if s.settings.ignore_whitespace { "Hiding whitespace changes" } else { "Showing whitespace changes" }, false);
+            true
+        }
+        "?" => {
+            s.show_help = true;
+            true
+        }
+        "A" if !s.scope.read_only() && s.scope != Scope::Staged => {
+            s.stage_file(file);
+            true
+        }
+        "U" if !s.scope.read_only() => {
+            s.unstage_file(file);
+            true
+        }
+        "X" => {
+            s.ask_discard(file, None);
+            true
+        }
+        "o" => {
+            s.open_file(file);
+            true
+        }
+        "v" => {
+            s.toggle_viewed(file, tx);
+            true
+        }
+        "s" => {
+            tx.motion(rune::tok::motion::SNAPPY);
+            s.configure(|c| c.layout = if c.layout == DiffMode::Split { DiffMode::Unified } else { DiffMode::Split });
+            true
+        }
+        "w" => {
+            s.configure(|c| c.wrap = !c.wrap);
+            true
+        }
+        "<" if s.scope == Scope::History => {
+            s.step_commit(1, tx);
+            true
+        }
+        ">" if s.scope == Scope::History => {
+            s.step_commit(-1, tx);
+            true
+        }
+        "1" | "2" | "3" | "4" | "5" => {
+            s.map.open = false;
+            s.set_scope(Scope::ALL[t.parse::<usize>().unwrap() - 1]);
+            true
+        }
+        "r" => refresh(),
+        _ => false,
+    }
+}
+
