@@ -821,3 +821,419 @@ impl DiffState {
         (self.visible_rows.start > header).then_some(f)
     }
 
+    /// Scroll so row `r` is at the top: to the end first, so the reveal comes from below.
+    fn reveal_at_top(&self, r: u32, tx: &mut Tx) {
+        // Jump to the very end (the view's scroll-past-end spacer), so revealing the row then
+        // scrolls up until it sits at the top rather than stopping when it first shows.
+        if !self.rows.is_empty() {
+            tx.scroll_into_view(TAIL_KEY.to_owned());
+        }
+        tx.scroll_into_view(self.row_key(r as usize));
+    }
+
+    /// Scroll so row `r` sits just below the sticky header: the row a header's height above
+    /// it goes to the top.
+    fn reveal_below_header(&self, r: u32, tx: &mut Tx) {
+        let mut top = r as usize;
+        let mut room = 0.0;
+        while top > 0 && room < HEADER_H {
+            if matches!(self.rows[top], Row::File(_)) {
+                break;
+            }
+            top -= 1;
+            room += self.estimate(top);
+        }
+        self.reveal_at_top(top as u32, tx);
+    }
+
+    fn estimate(&self, r: usize) -> f32 {
+        match self.rows[r] {
+            Row::File(_) => HEADER_H,
+            Row::Note(_) => NOTE_H,
+            Row::Gap { .. } => GAP_H,
+            _ => self.style.line_h,
+        }
+    }
+
+    /// Line `n` of `side` of file `f`, from its whole text, its hunks or an unchanged range.
+    pub(crate) fn side_line(&self, f: usize, side: Side, n: u32) -> Option<&str> {
+        let file = &self.files[f];
+        let hunks = &file.hunks;
+        let h = hunks.partition_point(|h| h.end(side) <= n);
+        if let Some(hunk) = hunks.get(h).filter(|h| h.first(side) <= n) {
+            let i = self.side_lines[f][h][side as usize].get((n - hunk.first(side)) as usize)?;
+            return Some(&hunk.lines[*i as usize].text);
+        }
+        let g = self.gaps[f][h];
+        let off = n.checked_sub(if side == Side::Old { g.old } else { g.new })?;
+        file.context_line(g.old.saturating_add(off), g.new.saturating_add(off))
+    }
+
+    /// Colour-only highlights of line `n` of `side` of file `f`, relative to the line.
+    pub(crate) fn highlights(&self, f: usize, side: Side, n: u32) -> Vec<(std::ops::Range<usize>, rune_kit::syntax::Paint)> {
+        let lang = self.files[f].language();
+        if self.highlighter.is_builtin() && !lang.is_some_and(rune_kit::syntax::known) {
+            return Vec::new();
+        }
+        let c = n.saturating_sub(1) / CHUNK;
+        let key = (f as u32, side, c);
+        let chunk = self.chunks.borrow().get(&key).cloned();
+        let chunk = chunk.unwrap_or_else(|| {
+            let mut text = String::new();
+            let mut starts = Vec::with_capacity(CHUNK as usize + 1);
+            for m in c * CHUNK + 1..=(c + 1) * CHUNK {
+                starts.push(text.len() as u32);
+                text.push_str(self.side_line(f, side, m).unwrap_or(""));
+                text.push('\n');
+            }
+            starts.push(text.len() as u32);
+            // The built-in scanners skip the highlighter's own cache: this one already keeps
+            // the blocks, and that one holds a copy of each block's text besides.
+            let hl = if self.highlighter.is_builtin() { rune_kit::syntax::builtin(lang, &text).into() } else { self.highlighter.highlight(lang, &text) };
+            let chunk = Rc::new(Chunk { starts, hl });
+            let mut cache = self.chunks.borrow_mut();
+            if cache.len() > CHUNKS_KEPT {
+                cache.clear();
+            }
+            cache.insert(key, chunk.clone());
+            chunk
+        });
+        let k = (n.saturating_sub(1) % CHUNK) as usize;
+        let (a, b) = (chunk.starts[k] as usize, chunk.starts[k + 1] as usize - 1);
+        let first = chunk.hl.partition_point(|(r, _)| r.end <= a);
+        chunk.hl[first..]
+            .iter()
+            .take_while(|(r, _)| r.start < b)
+            .map(|(r, p)| (r.start.max(a) - a..r.end.min(b) - a, *p))
+            .filter(|(r, _)| !r.is_empty())
+            .collect()
+    }
+
+    /// Row `r`'s line number on `side`.
+    pub(crate) fn row_line(&self, r: Row, side: Side) -> Option<u32> {
+        match r {
+            Row::Ctx { old, new, .. } => Some(if side == Side::Old { old } else { new }),
+            Row::Line { f, h, i } => self.files[f as usize].hunks[h as usize].lines[i as usize].number(side),
+            Row::Pair { f, h, del, add } => {
+                let i = if side == Side::Old { del } else { add };
+                self.files[f as usize].hunks[h as usize].lines[i as usize].number(side)
+            }
+            _ => None,
+        }
+    }
+
+    /// Lay the rows out again from the files, modes and expanded ranges.
+    fn rebuild(&mut self) {
+        self.rev += 1;
+        self.nav = None;
+        let mut rows = Vec::new();
+        self.file_rows.clear();
+        self.hunk_rows.clear();
+        for (f, file) in self.files.iter().enumerate() {
+            let fu = f as u32;
+            self.file_rows.push(rows.len() as u32);
+            rows.push(Row::File(fu));
+            if self.ui[f].collapsed {
+                continue;
+            }
+            if file.hunks.is_empty() {
+                rows.push(Row::Note(fu));
+                continue;
+            }
+            for gap in 0..=file.hunks.len() {
+                let g = self.gaps[f][gap];
+                let (top, bottom) = self.ui[f].revealed[gap];
+                let ctx = |k: u32| Row::Ctx { f: fu, old: g.old + k, new: g.new + k };
+                rows.extend((0..top).map(ctx));
+                let hidden = g.len.map(|n| n.saturating_sub(top + bottom));
+                let first_row = rows.len() as u32;
+                // A hunk's header row stands before every hunk, as a review list shows it, so
+                // the hunk's actions have a place; after the last hunk only when lines fold.
+                if hidden.is_some_and(|n| n > 0) || gap < file.hunks.len() {
+                    rows.push(Row::Gap { f: fu, gap: gap as u32 });
+                }
+                if let Some(n) = g.len {
+                    rows.extend((n - bottom.min(n)..n).map(ctx));
+                }
+                let Some(h) = file.hunks.get(gap) else { break };
+                self.hunk_rows.push(first_row);
+                let hu = gap as u32;
+                let lines = &h.lines;
+                let mut i = 0;
+                while i < lines.len() {
+                    if self.mode == DiffMode::Split && lines[i].kind == LineKind::Removed {
+                        let del = i;
+                        while i < lines.len() && lines[i].kind == LineKind::Removed {
+                            i += 1;
+                        }
+                        let add = i;
+                        while i < lines.len() && lines[i].kind == LineKind::Added {
+                            i += 1;
+                        }
+                        let (nd, na) = (add - del, i - add);
+                        for k in 0..nd.max(na) {
+                            rows.push(match (k < nd, k < na) {
+                                (true, true) => Row::Pair { f: fu, h: hu, del: (del + k) as u32, add: (add + k) as u32 },
+                                (true, false) => Row::Line { f: fu, h: hu, i: (del + k) as u32 },
+                                _ => Row::Line { f: fu, h: hu, i: (add + k) as u32 },
+                            });
+                        }
+                        continue;
+                    }
+                    rows.push(Row::Line { f: fu, h: hu, i: i as u32 });
+                    i += 1;
+                }
+            }
+        }
+        // Rows make their keys on demand (a few dozen are on screen) rather than keeping one
+        // string per row; only the top row's is needed here, to keep the view's place.
+        let top = self.top_key.take().or_else(|| (!self.visible_rows.is_empty()).then(|| self.rows.get(self.visible_rows.start).map(|&r| self.key_of(r))).flatten());
+        if !self.visible_rows.is_empty() {
+            let len = self.visible_rows.len();
+            self.visible_rows = match top.and_then(|top| rows.iter().position(|&r| self.key_of(r) == top)) {
+                Some(start) => start..(start + len).min(rows.len()),
+                None => 0..0,
+            };
+        }
+        static KEYS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.keys_rev = KEYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.rows = rows;
+    }
+
+    /// A row's key: the same for an unchanged or removed line in both modes, so switching
+    /// moves it rather than replacing it.
+    /// Row `i`'s key: stable for the same line across rebuilds and layouts.
+    pub(crate) fn row_key(&self, i: usize) -> String {
+        self.key_of(self.rows[i])
+    }
+
+    fn key_of(&self, r: Row) -> String {
+        // Put together by hand: the list asks for every row's key when the rows change, and
+        // `format!` took most of that.
+        let key = |f: u32, tag: &str, n: Option<u32>| {
+            let mut k = String::with_capacity(2 + 10 + tag.len() + 10);
+            k.push_str("df");
+            push_number(&mut k, f);
+            k.push_str(tag);
+            if let Some(n) = n {
+                push_number(&mut k, n);
+            }
+            k
+        };
+        match r {
+            Row::File(f) => key(f, "", None),
+            Row::Note(f) => key(f, ".note", None),
+            Row::Gap { f, gap } => key(f, ".g", Some(gap)),
+            Row::Ctx { f, old, .. } => key(f, ".c", Some(old)),
+            Row::Line { f, h, i } => {
+                let l = &self.files[f as usize].hunks[h as usize].lines[i as usize];
+                match l.kind {
+                    LineKind::Context => key(f, ".c", Some(l.old.unwrap_or(0))),
+                    LineKind::Removed => key(f, ".o", Some(l.old.unwrap_or(0))),
+                    LineKind::Added => key(f, ".n", Some(l.new.unwrap_or(0))),
+                }
+            }
+            Row::Pair { f, h, del, .. } => key(f, ".o", Some(self.files[f as usize].hunks[h as usize].lines[del as usize].old.unwrap_or(0))),
+        }
+    }
+
+    /// The digits `file`'s line numbers take.
+    pub(crate) fn digits(&self, file: usize) -> u32 {
+        self.digits.get(file).copied().unwrap_or(3)
+    }
+
+    /// The widest line of any file, in columns.
+    pub(crate) fn columns(&self) -> u32 {
+        self.columns
+    }
+}
+
+/// `n` in decimal, onto `s`.
+fn push_number(s: &mut String, mut n: u32) {
+    let mut digits = [0u8; 10];
+    let mut i = digits.len();
+    loop {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    s.extend(digits[i..].iter().map(|&d| d as char));
+}
+
+/// The unchanged ranges before each hunk of `f` and after its last.
+fn gaps(f: &FileDiff) -> Vec<Gap> {
+    let mut out = Vec::with_capacity(f.hunks.len() + 1);
+    let (mut old, mut new) = (1, 1);
+    for h in f.hunks.iter() {
+        let first = h.first(Side::Old);
+        out.push(Gap { old, new, len: Some(first.saturating_sub(old)) });
+        old = h.end(Side::Old);
+        new = h.end(Side::New);
+    }
+    let len = f.old_len().map(|n| (n + 1).saturating_sub(old));
+    out.push(Gap { old, new, len: if f.hunks.is_empty() { Some(0) } else { len } });
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn numbered(n: u32) -> String {
+        (1..=n).map(|i| format!("line {i}\n")).collect()
+    }
+
+    fn sample() -> DiffState {
+        let old = numbered(100);
+        let new = old.replace("line 50\n", "line fifty\n");
+        DiffState::new(vec![FileDiff::from_texts("a.txt", &old, &new)])
+    }
+
+    fn shown(s: &DiffState) -> Vec<String> {
+        s.rows
+            .iter()
+            .map(|&r| match r {
+                Row::File(_) => "file".into(),
+                Row::Note(_) => "note".into(),
+                Row::Gap { gap, .. } => format!("gap{gap}:{}", s.hidden(0, gap as usize).unwrap()),
+                Row::Ctx { old, new, .. } => format!("{old}={new}"),
+                Row::Line { .. } | Row::Pair { .. } => {
+                    let (o, n) = (s.row_line(r, Side::Old), s.row_line(r, Side::New));
+                    format!("{}|{}", o.map_or("-".into(), |v| v.to_string()), n.map_or("-".into(), |v| v.to_string()))
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn collapsed_ranges_expand_by_twenty_and_all() {
+        let mut s = sample();
+        assert_eq!(shown(&s)[..3], ["file", "gap0:46", "47|47"]);
+        assert_eq!(s.hidden(0, 1), Some(47));
+        s.expand(0, 0, Expand::Up);
+        assert_eq!(s.hidden(0, 0), Some(26));
+        let rows = shown(&s);
+        assert_eq!(rows[1..4], ["gap0:26", "27=27", "28=28"]);
+        s.expand(0, 1, Expand::Down);
+        let rows = shown(&s);
+        let after = rows.iter().position(|r| r == "53|53").unwrap();
+        assert_eq!(rows[after + 1..after + 3], ["54=54", "55=55"]);
+        assert_eq!(rows.last().unwrap(), "gap1:27");
+        s.expand(0, 1, Expand::All);
+        assert_eq!(s.hidden(0, 1), Some(0));
+        assert_eq!(shown(&s).last().unwrap(), "100=100");
+        s.expand(0, 0, Expand::All);
+        // The file's header, the hunk's header (nothing folds above it now) and every line.
+        assert_eq!(shown(&s).len(), 2 + 101);
+        assert_eq!(s.side_line(0, Side::Old, 10), Some("line 10"));
+        assert_eq!(s.side_line(0, Side::New, 50), Some("line fifty"));
+    }
+
+    #[test]
+    fn split_pairs_changes_and_keeps_keys() {
+        let old = "a\nb\nc\nd\n";
+        let new = "a\nB\nC\nX\nd\n";
+        let mut s = DiffState::new(vec![FileDiff::from_texts("x", old, new)]);
+        let unified = shown(&s);
+        assert_eq!(unified, ["file", "gap0:0", "1|1", "2|-", "3|-", "-|2", "-|3", "-|4", "4|5"]);
+        let key_b = s.row_key(3);
+        s.set_mode(DiffMode::Split);
+        assert_eq!(shown(&s), ["file", "gap0:0", "1|1", "2|2", "3|3", "-|4", "4|5"]);
+        assert_eq!(s.row_key(3), key_b);
+    }
+
+    #[test]
+    fn row_keys_spell_the_file_and_line() {
+        let mut s = DiffState::new(vec![FileDiff::from_texts("x", "a\nb\nc\nd\n", "a\nB\nC\nX\nd\n"), FileDiff::from_texts("y", "", "")]);
+        let keys = |s: &DiffState| (0..s.rows.len()).map(|i| s.row_key(i)).collect::<Vec<_>>();
+        assert_eq!(keys(&s), ["df0", "df0.g0", "df0.c1", "df0.o2", "df0.o3", "df0.n2", "df0.n3", "df0.n4", "df0.c4", "df1", "df1.note"]);
+        s.set_mode(DiffMode::Split);
+        assert_eq!(keys(&s), ["df0", "df0.g0", "df0.c1", "df0.o2", "df0.o3", "df0.n4", "df0.c4", "df1", "df1.note"]);
+        for n in [0, 9, 10, 12345, u32::MAX] {
+            let mut k = String::new();
+            push_number(&mut k, n);
+            assert_eq!(k, n.to_string());
+        }
+        assert_eq!(s.key_of(Row::Ctx { f: 7, old: 120, new: 121 }), "df7.c120");
+    }
+
+    #[test]
+    fn line_selection_copies_one_side() {
+        let old = "keep\nold one\nold two\nend\n";
+        let new = "keep\nnew one\nnew two\nend\n";
+        let mut s = DiffState::new(vec![FileDiff::from_texts("x", old, new)]);
+        s.press_line(0, LineRef::new(Side::New, 1));
+        s.release_line();
+        s.shift = true;
+        s.press_line(0, LineRef::new(Side::New, 4));
+        s.release_line();
+        assert_eq!(s.selected_text().as_deref(), Some("keep\nnew one\nnew two\nend"));
+        s.set_selection(Some(LineRange { file: 0, start: LineRef::new(Side::Old, 3), end: LineRef::new(Side::Old, 2) }));
+        assert_eq!(s.selected_text().as_deref(), Some("old one\nold two"));
+        // Pressing the one selected line clears it, unless the press drags.
+        s.shift = false;
+        let one = LineRange::line(0, LineRef::new(Side::New, 1));
+        s.press_line(0, one.start);
+        s.release_line();
+        s.press_line(0, one.start);
+        assert_eq!(s.release_line(), None);
+        s.press_line(0, one.start);
+        s.release_line();
+        s.press_line(0, one.start);
+        s.drag_to(0, LineRef::new(Side::New, 2));
+        assert_eq!(s.release_line(), Some(LineRange { end: LineRef::new(Side::New, 2), ..one }));
+    }
+
+    #[test]
+    fn cancelling_a_gutter_drag_restores_the_selection_before_the_press() {
+        let mut s = sample();
+        for original in [None, Some(LineRange::line(0, LineRef::new(Side::Old, 2)))] {
+            s.set_selection(original);
+            s.press_line(0, LineRef::new(Side::New, 1));
+            s.drag_to(0, LineRef::new(Side::New, 3));
+            s.cancel_line();
+            assert_eq!(s.selection(), original);
+            assert!(!s.selecting && !s.unselect);
+        }
+    }
+
+    #[test]
+    fn copy_follows_the_hovered_side_unless_a_press_holds_the_other() {
+        let mut s = sample();
+        s.hover_text(Side::Old, "a", true);
+        assert_eq!(s.copy_side(), Side::Old);
+        // A drag that started on the old side enters a new-side cell: the old one stays held.
+        s.hover_text(Side::New, "b", true);
+        assert_eq!(s.copy_side(), Side::Old);
+        s.hover_text(Side::Old, "a", false);
+        s.hover_text(Side::New, "b", false);
+        s.hover_text(Side::New, "c", true);
+        assert_eq!(s.copy_side(), Side::New);
+    }
+
+    #[test]
+    fn the_visible_file_follows_rows_at_the_top() {
+        // Rows: f0 header 0, hunk header 1, lines 2-3; f1 at 4-7; f2 at 8-11.
+        let files = (0..3).map(|i| FileDiff::from_texts(format!("f{i}"), "a\n", "b\n")).collect();
+        let mut s = DiffState::new(files);
+        assert_eq!(s.rows.len(), 12);
+        assert_eq!(s.set_visible_rows(0..8), (Some(0), false));
+        assert_eq!(s.sticky(), None);
+        // Scrolled past file 0's header: file 0 sticks at the top.
+        assert_eq!(s.set_visible_rows(1..9), (None, true));
+        assert_eq!((s.visible_file(), s.sticky()), (0, Some(0)));
+        // At file 1's header: file 1 is visible, its own header row is at the top.
+        assert_eq!(s.set_visible_rows(4..12), (Some(1), true));
+        assert_eq!((s.visible_file(), s.sticky()), (1, None));
+        // Past file 1's header: file 1 sticks.
+        assert_eq!(s.set_visible_rows(5..12), (None, true));
+        assert_eq!((s.visible_file(), s.sticky()), (1, Some(1)));
+        // A jump into file 2's lines.
+        assert_eq!(s.set_visible_rows(10..12), (Some(2), true));
+        assert_eq!((s.visible_file(), s.sticky()), (2, Some(2)));
+        assert_eq!(s.row_from(10, 25.0), Some(11));
+    }
+}
