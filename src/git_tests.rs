@@ -234,3 +234,239 @@ fn a_base_that_moved_on_is_measured_from_where_the_branch_left_it() {
     assert_eq!(r.default_base().as_deref(), Some("main"));
 }
 
+/// A hunk replacing three lines with three others, and which lines of it are which.
+fn three_for_three(name: &str) -> (PathBuf, Repo, FileDiff) {
+    let (dir, r) = repo(name, &[("c.txt", "keep\nold a\nold b\nold c\nend\n")]);
+    write(&dir, "c.txt", "keep\nnew a\nnew b\nnew c\nend\n");
+    let f = file(&r, Scope::Unstaged, "c.txt");
+    (dir, r, f)
+}
+
+/// Picks the lines of hunk 0 whose text is in `texts`.
+fn pick(f: &FileDiff, texts: &[&str]) -> Vec<bool> {
+    f.hunks[0].lines.iter().map(|l| l.kind != crate::diff::LineKind::Context && texts.contains(&l.text.as_str())).collect()
+}
+
+#[test]
+fn staging_chosen_lines_stages_only_them() {
+    let (dir, r, f) = three_for_three("lines-stage");
+    // Replace "old b" with "new b" and nothing else.
+    let p = patch::lines(&f, 0, Some(&pick(&f, &["old b", "new b"])), false).unwrap();
+    r.apply(&p, true, false).unwrap();
+    let index = sh(&dir, &["show", ":c.txt"]);
+    assert_eq!(index, "keep\nold a\nnew b\nold c\nend\n");
+    // An addition alone, then a removal alone.
+    let (dir, r, f) = three_for_three("lines-add-only");
+    r.apply(&patch::lines(&f, 0, Some(&pick(&f, &["new c"])), false).unwrap(), true, false).unwrap();
+    assert_eq!(sh(&dir, &["show", ":c.txt"]), "keep\nold a\nold b\nold c\nnew c\nend\n");
+    let (dir, r, f) = three_for_three("lines-del-only");
+    r.apply(&patch::lines(&f, 0, Some(&pick(&f, &["old a"])), false).unwrap(), true, false).unwrap();
+    assert_eq!(sh(&dir, &["show", ":c.txt"]), "keep\nold b\nold c\nend\n");
+    // Nothing picked, no patch.
+    assert!(patch::lines(&f, 0, Some(&pick(&f, &[])), false).is_none());
+}
+
+#[test]
+fn unstaging_and_discarding_chosen_lines() {
+    let (dir, r, _) = three_for_three("lines-unstage");
+    r.stage("c.txt").unwrap();
+    let f = file(&r, Scope::Staged, "c.txt");
+    r.apply(&patch::lines(&f, 0, Some(&pick(&f, &["old a", "new a"])), true).unwrap(), true, true).unwrap();
+    assert_eq!(sh(&dir, &["show", ":c.txt"]), "keep\nold a\nnew b\nnew c\nend\n");
+
+    let (dir, r, f) = three_for_three("lines-discard");
+    r.apply(&patch::lines(&f, 0, Some(&pick(&f, &["old c", "new c"])), true).unwrap(), false, true).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("c.txt")).unwrap(), "keep\nnew a\nnew b\nold c\nend\n");
+}
+
+#[test]
+fn hunks_of_a_crlf_file_stage() {
+    let (dir, r) = repo("crlf", &[("w.txt", "one\r\ntwo\r\nthree\r\n")]);
+    sh(&dir, &["config", "core.autocrlf", "false"]);
+    write(&dir, "w.txt", "one\r\nTWO\r\nthree\r\n");
+    let f = file(&r, Scope::Unstaged, "w.txt");
+    r.apply(&patch::hunk(&f, 0).unwrap(), true, false).unwrap();
+    assert_eq!(sh(&dir, &["show", ":w.txt"]), "one\r\nTWO\r\nthree\r\n");
+}
+
+#[test]
+fn ignoring_whitespace_hides_reindented_lines() {
+    let old = "fn a() {\n    one();\n    two();\n}\n";
+    let new = "fn a() {\n        one();\n        two();\n    three();\n}\n";
+    let plain = FileDiff::between_opts(Some("a.rs".into()), Some("a.rs".into()), old, new, 3, false);
+    assert_eq!((plain.additions(), plain.deletions()), (3, 2));
+    let quiet = FileDiff::between_opts(Some("a.rs".into()), Some("a.rs".into()), old, new, 3, true);
+    assert_eq!((quiet.additions(), quiet.deletions()), (1, 0), "only the new call is a change");
+}
+
+#[test]
+fn moved_blocks_are_told_apart_from_new_code() {
+    let block = "fn helper() {\n    let total = compute_total();\n    record_metric(total);\n}\n";
+    let old_a = format!("start\n{block}end\n");
+    let new_a = "start\nend\n";
+    let old_b = "top\nbottom\n";
+    let new_b = format!("top\n{block}fn brand_new_function() {{}}\nbottom\n");
+    let mut files = vec![
+        FileDiff::between_with_context(Some("a.rs".into()), Some("a.rs".into()), &old_a, new_a, 3),
+        FileDiff::between_with_context(Some("b.rs".into()), Some("b.rs".into()), old_b, &new_b, 3),
+    ];
+    crate::diff::mark_moved(&mut files);
+    let moved = |f: &FileDiff| f.hunks.iter().enumerate().flat_map(|(h, hk)| hk.lines.iter().enumerate().filter(move |(i, _)| f.twin(h, *i).is_some()).map(|(_, l)| l.text.trim().to_owned())).collect::<Vec<_>>();
+    assert!(moved(&files[0]).contains(&"record_metric(total);".to_owned()), "the removed block moved");
+    let landed = moved(&files[1]);
+    assert!(landed.contains(&"let total = compute_total();".to_owned()));
+    assert!(!landed.iter().any(|l| l.contains("brand_new")), "new code isn't a move");
+    assert!(landed.contains(&"}".to_owned()), "a closing brace inside a moved block moves with it");
+}
+
+#[test]
+fn history_shows_each_commit_against_its_parent() {
+    let (dir, r) = repo("history", &[("a.txt", "one\n"), ("b.txt", "keep\n")]);
+    write(&dir, "a.txt", "two\n");
+    write(&dir, "c.txt", "new\n");
+    sh(&dir, &["add", "-A"]);
+    sh(&dir, &["commit", "-qm", "second"]);
+    // Uncommitted work doesn't leak into a past commit.
+    write(&dir, "b.txt", "edited later\n");
+    let (commits, _) = r.graph(10, None);
+    let log: Vec<(String, String)> = commits.into_iter().map(|c| (c.id, c.subject)).collect();
+    assert_eq!(log.len(), 2);
+    assert!(log[0].1.contains("second") && log[1].1.contains("init"), "{log:?}");
+    let raw = r.status_raw().unwrap();
+    let snap = r.snapshot(Scope::History, &raw, Some((&log[0].0, &log[0].0))).unwrap();
+    let paths: Vec<&str> = snap.changes.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(paths, ["a.txt", "c.txt"]);
+    assert_eq!((text(&snap.changes[0].old), text(&snap.changes[0].new)), ("one\n".into(), "two\n".into()));
+    assert!(snap.changes[1].old.is_none(), "c.txt was added by the commit");
+    // The first commit has no parent: everything in it is added.
+    let root = r.snapshot(Scope::History, &raw, Some((&log[1].0, &log[1].0))).unwrap();
+    assert_eq!(root.changes.len(), 2);
+    assert!(root.changes.iter().all(|c| c.old.is_none()));
+}
+
+#[test]
+fn moves_are_whole_blocks_in_order_and_know_their_other_end() {
+    // Three common lines removed here and added there, but not as one block: not a move.
+    let old_a = "fn a() {\n    return Ok(());\n}\nfn b() {\n    log_value(x);\n}\nfn c() {\n    return Ok(());\n}\n";
+    let new_a = "fn a() {\n}\nfn b() {\n}\nfn c() {\n}\n";
+    let old_b = "top\n";
+    let new_b = "top\nfn d() {\n    return Ok(());\n    other_thing();\n    log_value(x);\n}\n";
+    // And a real block move, from c.rs line 2 to d.rs line 2.
+    let block = "let total = compute_total();\nrecord_metric(total);\nflush_metrics_now();\n";
+    let old_c = format!("head\n{block}tail\n");
+    let new_d = format!("start\n{block}end\n");
+    let mut files = vec![
+        FileDiff::between_with_context(Some("a.rs".into()), Some("a.rs".into()), old_a, new_a, 3),
+        FileDiff::between_with_context(Some("b.rs".into()), Some("b.rs".into()), old_b, new_b, 3),
+        FileDiff::between_with_context(Some("c.rs".into()), Some("c.rs".into()), &old_c, "head\ntail\n", 3),
+        FileDiff::between_with_context(Some("d.rs".into()), Some("d.rs".into()), "start\nend\n", &new_d, 3),
+    ];
+    crate::diff::mark_moved(&mut files);
+    let moved = |f: &FileDiff| f.moves.len();
+    assert_eq!((moved(&files[0]), moved(&files[1])), (0, 0), "scattered common lines aren't a move");
+    type End = (Option<u32>, Option<u32>, Option<(u32, u32)>);
+    let ends = |f: &FileDiff| -> Vec<End> {
+        f.hunks.iter().enumerate().flat_map(|(h, hk)| hk.lines.iter().enumerate().filter_map(move |(i, l)| f.twin(h, i).map(|t| (l.old, l.new, Some(t))))).collect()
+    };
+    let gone: Vec<_> = ends(&files[2]).into_iter().map(|(old, _, t)| (old, t)).collect();
+    assert_eq!(gone, [(Some(2), Some((3, 2))), (Some(3), Some((3, 3))), (Some(4), Some((3, 4)))], "each removed line points at its new home");
+    let came: Vec<_> = ends(&files[3]).into_iter().map(|(_, _, t)| t).collect();
+    assert_eq!(came, [Some((2, 2)), Some((2, 3)), Some((2, 4))], "and back");
+}
+
+#[test]
+fn word_edits_line_up_and_apply_in_any_subset() {
+    use crate::diff::{apply_edits, word_edits};
+    let (old, new) = ("let total = price * qty;", "let sum = price * quantity + tax;");
+    let e = word_edits(old, new);
+    let shown: Vec<(&str, &str)> = e.iter().map(|e| (&old[e.old.clone()], &new[e.new.clone()])).collect();
+    assert_eq!(shown, [("total", "sum"), ("qty", "quantity + tax")]);
+    assert_eq!(apply_edits(old, new, &e, &[true, true]), new);
+    assert_eq!(apply_edits(old, new, &e, &[false, false]), old);
+    assert_eq!(apply_edits(old, new, &e, &[true, false]), "let sum = price * qty;");
+    assert_eq!(apply_edits(old, new, &e, &[false, true]), "let total = price * quantity + tax;");
+}
+
+#[test]
+fn staging_unstaging_and_discarding_some_words_of_a_line() {
+    use crate::diff::{apply_edits, word_edits};
+    let (dir, r) = repo("words", &[("w.rs", "fn a() {\n    let total = price * qty;\n}\n")]);
+    write(&dir, "w.rs", "fn a() {\n    let sum = price * quantity;\n}\n");
+    let f = file(&r, Scope::Unstaged, "w.rs");
+    let lines = &f.hunks[0].lines;
+    let ri = lines.iter().position(|l| l.kind == crate::diff::LineKind::Removed).unwrap();
+    let ai = lines.iter().position(|l| l.kind == crate::diff::LineKind::Added).unwrap();
+    let (old, new) = (lines[ri].text.clone(), lines[ai].text.clone());
+    let e = word_edits(&old, &new);
+    assert_eq!(e.len(), 2);
+    // Stage only the rename of `qty`.
+    let target = apply_edits(&old, &new, &e, &[false, true]);
+    r.apply(&patch::line_to(&f, 0, ri, ai, &target, false).unwrap(), true, false).unwrap();
+    assert_eq!(sh(&dir, &["show", ":w.rs"]), "fn a() {\n    let total = price * quantity;\n}\n");
+    // Unstage it again from the staged view.
+    let staged = file(&r, Scope::Staged, "w.rs");
+    let (sr, sa) = (staged.hunks[0].lines.iter().position(|l| l.kind == crate::diff::LineKind::Removed).unwrap(), staged.hunks[0].lines.iter().position(|l| l.kind == crate::diff::LineKind::Added).unwrap());
+    let (so, sn) = (staged.hunks[0].lines[sr].text.clone(), staged.hunks[0].lines[sa].text.clone());
+    let se = word_edits(&so, &sn);
+    let keep = apply_edits(&so, &sn, &se, &vec![false; se.len()]);
+    r.apply(&patch::line_to(&staged, 0, sr, sa, &keep, true).unwrap(), true, true).unwrap();
+    assert_eq!(sh(&dir, &["show", ":w.rs"]), "fn a() {\n    let total = price * qty;\n}\n");
+    // Discard the `total` → `sum` rename in the working tree, keeping the other.
+    let keep = apply_edits(&old, &new, &e, &[false, true]);
+    r.apply(&patch::line_to(&f, 0, ri, ai, &keep, true).unwrap(), false, true).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("w.rs")).unwrap(), "fn a() {\n    let total = price * quantity;\n}\n");
+}
+
+#[test]
+fn stage_all_and_unstage_all() {
+    let (dir, r) = repo("all", &[("a.txt", "a\n")]);
+    write(&dir, "a.txt", "a2\n");
+    write(&dir, "b.txt", "new\n");
+    r.stage_all().unwrap();
+    assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]), "a.txt\nb.txt\n");
+    r.unstage_all().unwrap();
+    assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]), "");
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "a2\n", "the working tree is untouched");
+}
+
+#[test]
+fn the_graph_reads_every_branch_with_its_labels_and_lanes() {
+    let (dir, r) = repo("graph", &[("a.txt", "one\n")]);
+    let main = "main";
+    sh(&dir, &["checkout", "-qb", "feature"]);
+    write(&dir, "f.txt", "feature\n");
+    sh(&dir, &["add", "-A"]);
+    sh(&dir, &["commit", "-qm", "feature work"]);
+    sh(&dir, &["checkout", "-q", main]);
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "main work"]);
+    sh(&dir, &["tag", "v1"]);
+    sh(&dir, &["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"]);
+    let (commits, head) = r.graph(50, None);
+    let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects.len(), 4, "{subjects:?}");
+    assert_eq!(subjects[0], "Merge feature");
+    assert_eq!(head.as_deref(), Some(commits[0].id.as_str()));
+    assert_eq!(commits[0].parents.len(), 2);
+    let top = &commits[0].refs[0];
+    assert!(top.head && top.name == main && top.kind == crate::graph::RefKind::Branch, "{:?}", commits[0].refs);
+    assert!(commits.iter().any(|c| c.refs.iter().any(|x| x.name == "v1" && x.kind == crate::graph::RefKind::Tag)));
+    assert!(commits.iter().any(|c| c.refs.iter().any(|x| x.name == "feature")));
+    let (rows, lanes) = crate::graph::layout(&commits);
+    assert_eq!(lanes, 2);
+    assert_eq!(rows[0].col, 0);
+    assert_eq!(rows[0].down.len(), 2, "the merge opens a lane for feature");
+    // One branch alone: the merge and what's under it, not other tips.
+    let (only, _) = r.graph(50, Some("feature"));
+    assert_eq!(only.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["feature work", "init"]);
+}
+
+#[test]
+fn remotes_give_their_web_pages() {
+    use crate::git::web_url;
+    assert_eq!(web_url("git@github.com:ada/repo.git").as_deref(), Some("https://github.com/ada/repo"));
+    assert_eq!(web_url("https://github.com/ada/repo.git\n").as_deref(), Some("https://github.com/ada/repo"));
+    assert_eq!(web_url("https://ada:token@gitlab.com/g/sub/repo").as_deref(), Some("https://gitlab.com/g/sub/repo"));
+    assert_eq!(web_url("ssh://git@example.com:2222/ada/repo.git").as_deref(), Some("https://example.com/ada/repo"));
+    assert_eq!(web_url("/local/path/repo"), None);
+}
