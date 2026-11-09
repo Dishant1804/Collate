@@ -613,3 +613,345 @@ impl<S: 'static> View<S> {
         self.look.gutter_w(st.digits(f), st.mode() == DiffMode::Unified)
     }
 
+    /// The unchanged lines between two hunks, folded: buttons to show more, and the next
+    /// hunk's header.
+    fn gap(&self, s: &S, st: &DiffState, f: usize, gap: usize) -> El {
+        let l = &self.look;
+        let file = &st.files()[f];
+        let hidden = st.hidden(f, gap).unwrap_or(0);
+        let last = gap == file.hunks.len();
+        let expandable = file.expandable();
+        let mut buttons = Vec::new();
+        // Nothing folded (a hunk's own header row): nothing to show more of.
+        if expandable && hidden > 0 {
+            let mut add = |how: Expand, glyph: &'static Icon, label: String| {
+                let get = self.d.get_mut.clone();
+                buttons.push(
+                    row()
+                        .key(format!("{how:?}"))
+                        .size(24.0, 24.0)
+                        .center()
+                        .radius(6.0)
+                        .hover(l.hover)
+                        .cursor(Cursor::Pointer)
+                        .role("button")
+                        .label(label)
+                        .child(icon(glyph, 16.0).color(l.muted))
+                        .on_press_tx(move |s: &mut S, _| get(s).expand(f, gap, how)),
+                );
+            };
+            let step = hidden.min(EXPAND_STEP);
+            if hidden <= EXPAND_STEP {
+                add(Expand::All, &EXPAND_ALL, format!("Show {hidden} hidden lines"));
+            } else {
+                if gap > 0 {
+                    add(Expand::Down, &EXPAND_DOWN, format!("Show {step} more lines below"));
+                }
+                if !last {
+                    add(Expand::Up, &EXPAND_UP, format!("Show {step} more lines above"));
+                }
+            }
+        }
+        let buttons = row().key("expand").w(self.gutter_w(st, f)).h(GAP_H).center().gap(2.0).children(buttons);
+        let mut inner = row().key("inner").h(GAP_H).items_center().gap(12.0).child(buttons);
+        inner = match self.view_w(st, false) {
+            Some(w) => inner.w(w).sticky_left(0.0),
+            None => inner.w_full(),
+        };
+        if hidden > 0 {
+            let count = text(if hidden == 1 { "1 unchanged line".to_owned() } else { format!("{hidden} unchanged lines") }).font(l.small).color(l.muted).key("count");
+            let count = if expandable && hidden > EXPAND_STEP {
+                let get = self.d.get_mut.clone();
+                row().key("all").px(6.0).h(24.0).items_center().radius(6.0).hover(l.hover).cursor(Cursor::Pointer).role("button").label(format!("Show all {hidden} lines")).on_press_tx(move |s: &mut S, _| get(s).expand(f, gap, Expand::All)).child(count)
+            } else {
+                row().key("all").px(6.0).child(count)
+            };
+            inner = inner.child(count);
+        }
+        if let Some(h) = file.hunks.get(gap) {
+            inner = inner.child(text(h.header()).font(l.small).color(l.faint).single_line().min_w(0.0).shrink().key("header"));
+            if let Some(actions) = &self.d.hunk {
+                inner = inner.child(row().key("space").grow(1.0)).child(actions(s, f, gap).key("actions").pr(EDGE - GHOST_PAD));
+            }
+        }
+        let label = match file.hunks.get(gap) {
+            Some(h) => format!("{hidden} unchanged lines, then {}", h.header()),
+            None => format!("{hidden} unchanged lines"),
+        };
+        row().w_full().h(GAP_H).items_center().fill(l.gap_bg).role("group").label(label).child(inner)
+    }
+
+    /// A file with no lines to show.
+    fn note(&self, st: &DiffState, f: usize) -> El {
+        let l = &self.look;
+        let file = &st.files()[f];
+        let msg = if file.binary {
+            "Binary file not shown"
+        } else if file.status == FileStatus::Renamed || file.status == FileStatus::Copied {
+            "File moved without changes"
+        } else if file.old_mode != file.new_mode {
+            "File mode changed"
+        } else if file.status == FileStatus::Added || file.status == FileStatus::Deleted {
+            "Empty file"
+        } else {
+            "No changes"
+        };
+        let mut inner = row().key("inner").h(NOTE_H).items_center().pl(self.gutter_w(st, f) + CODE_PAD.0).child(text(msg).font(l.small).color(l.muted));
+        if let Some(w) = self.view_w(st, false) {
+            inner = inner.max_w(w).sticky_left(0.0);
+        }
+        row().w_full().h(NOTE_H).fill(l.bg).role("note").label(msg).child(inner)
+    }
+
+    fn file_header(&self, s: &S, st: &DiffState, f: usize, sticky: bool) -> El {
+        let l = &self.look;
+        let file = &st.files()[f];
+        let collapsed = st.collapsed(f);
+        let get = self.d.get_mut.clone();
+        let toggle = row()
+            .key("toggle")
+            .size(24.0, 24.0)
+            .center()
+            .radius(6.0)
+            .hover(l.hover)
+            .cursor(Cursor::Pointer)
+            .role("button")
+            .label(if collapsed { "Expand file" } else { "Collapse file" }).expanded(!collapsed)
+            .child(icon(if collapsed { l.triangle_right } else { l.triangle_down }, 16.0).color(l.muted))
+            .on_press_tx(move |s: &mut S, tx| {
+                let st = get(s);
+                st.set_collapsed(f, !st.collapsed(f));
+                if sticky {
+                    st.scroll_to_file(f, tx);
+                }
+            });
+        let dim = self.d.dim.as_ref().is_some_and(|d| d(s, f));
+        let faded = if dim { 0.55 } else { 1.0 };
+        // The folder reads muted and the file name bright, so a column of paths scans by name.
+        let (old, new) = (file.old_path.as_deref(), file.new_path.as_deref());
+        let split_path = |p: &str| -> El {
+            let cut = p.rfind('/').map_or(0, |i| i + 1);
+            let mut r = row().items_center().min_w(0.0).shrink();
+            if cut > 0 {
+                r = r.child(text(p[..cut].to_owned()).font(l.label).color(l.muted).truncate_head().min_w(0.0).shrink().key("dir"));
+            }
+            r.child(text(p[cut..].to_owned()).font(l.label).color(l.text).key("base"))
+        };
+        let mut name = row().key("path").items_center().gap(6.0).min_w(0.0).shrink().opacity(faded);
+        name = match (file.status, old, new) {
+            (FileStatus::Renamed | FileStatus::Copied, Some(a), Some(b)) => name
+                .child(text(a.to_owned()).font(l.label).color(l.muted).truncate_head().min_w(0.0).shrink().key("old"))
+                .child(text("→").font(l.label).color(l.faint).key("arrow"))
+                .child(split_path(b).key("new")),
+            _ => name.child(split_path(file.path()).key("new")),
+        };
+        let status = match file.status {
+            FileStatus::Added => Some(("added", l.add.count)),
+            FileStatus::Deleted => Some(("deleted", l.del.count)),
+            FileStatus::Renamed => Some(("renamed", l.muted)),
+            FileStatus::Copied => Some(("copied", l.muted)),
+            FileStatus::Modified => None,
+        };
+        // The chevron's glyph, not its box, starts on the edge; the viewed box (bordered, so
+        // its edge shows) ends on it.
+        let mut inner = row().key("inner").w_full().grow(1.0).pl(EDGE - GLYPH_INSET).pr(EDGE).gap(8.0).items_center().child(toggle).child(name);
+        if let Some((word, color)) = status {
+            let badge = row().key("status").h(18.0).px(6.0).items_center().radius(4.0).border(1.0, l.border).child(text(word).font(l.small).color(color));
+            inner = inner.child(badge.opacity(faded));
+        }
+        if let (Some(a), Some(b)) = (&file.old_mode, &file.new_mode)
+            && a != b
+        {
+            inner = inner.child(text(format!("{a} → {b}")).font(l.small).color(l.faint).key("mode"));
+        }
+        inner = inner.child(row().key("space").grow(1.0).a11y_hidden());
+        let (adds, dels) = st.stat(f);
+        let mut counts = row().key("counts").gap(6.0).items_center().opacity(faded);
+        if adds > 0 {
+            counts = counts.child(text(format!("+{adds}")).font(l.small).color(l.add.count).key("adds"));
+        }
+        if dels > 0 {
+            counts = counts.child(text(format!("−{dels}")).font(l.small).color(l.del.count).key("dels"));
+        }
+        inner = inner.child(counts.child(stat_bar(adds, dels, 40.0, l)));
+        if let Some(h) = &self.d.header {
+            inner = inner.child(h(s, f).key("actions"));
+        }
+        let mut label = file.path().to_owned();
+        if let (FileStatus::Renamed, Some(a)) = (file.status, old) {
+            label.push_str(&format!(", renamed from {a}"));
+        }
+        label.push_str(&format!(", {adds} added, {dels} removed"));
+        let line = |key: &'static str, c: Color| col().key(key).w_full().h(1.0).fill(c).a11y_hidden();
+        let mut h = col().w_full().h(HEADER_H).fill(l.header_bg).role("heading").label(label);
+        // In the list, as wide as the view and held to its left edge while the code scrolls
+        // sideways, so the counts and actions stay in sight.
+        if let (false, Some(w)) = (sticky, self.view_w(st, false)) {
+            h = h.w(w).sticky_left(0.0);
+        }
+        h = h.child(line("top", if sticky { l.header_bg } else { l.border }));
+        h.child(inner).child(line("bottom", l.border))
+    }
+}
+
+/// A proportional added/removed bar, as a review list shows beside each file; empty when
+/// nothing changed line by line.
+fn stat_bar(adds: usize, dels: usize, w: f32, l: &Look) -> El {
+    let bar = row().key("stat").w(w).h(4.0).radius(2.0).fill(l.border).a11y_hidden();
+    let total = (adds + dels) as f32;
+    if total == 0.0 {
+        return bar.opacity(0.0);
+    }
+    let add_w = (w * adds as f32 / total).round();
+    bar.child(col().key("a").w(add_w).h_full().radius(2.0).fill(l.add.bar)).child(col().key("d").w(w - add_w).h_full().radius(2.0).fill(l.del.bar))
+}
+
+/// Spans for a line from its syntax colours and the byte ranges given `bg` (word changes):
+/// cut where either starts or ends, so each piece has one colour and one background.
+fn layer(len: usize, syntax: &[(Range<usize>, Color)], words: &[Range<usize>], bg: Option<Color>) -> Vec<Span> {
+    let mut cuts: Vec<usize> = syntax.iter().flat_map(|(r, _)| [r.start, r.end]).chain(words.iter().flat_map(|r| [r.start, r.end])).collect();
+    cuts.retain(|&c| c <= len);
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out: Vec<Span> = Vec::new();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let color = syntax.get(syntax.partition_point(|(r, _)| r.end <= a)).filter(|(r, _)| r.start <= a).map(|(_, c)| *c);
+        let on = words.get(words.partition_point(|r| r.end <= a)).is_some_and(|r| r.start <= a);
+        let bg = bg.filter(|_| on);
+        if color.is_none() && bg.is_none() {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if last.end as usize == a && last.color == color && last.bg == bg => last.end = b as u32,
+            _ => {
+                let mut sp = Span::new(a, b);
+                sp.color = color;
+                sp.bg = bg;
+                out.push(sp);
+            }
+        }
+    }
+    out
+}
+
+/// `spans` with every case-insensitive occurrence of `q` in `text` given background `bg`, over
+/// whatever colours and word changes are there.
+fn mark(text: &str, spans: Vec<Span>, q: &str, bg: Color) -> Vec<Span> {
+    let hits = find_all(text, q);
+    if hits.is_empty() {
+        return spans;
+    }
+    let mut cuts: Vec<usize> = spans.iter().flat_map(|s| [s.start as usize, s.end as usize]).chain(hits.iter().flat_map(|r| [r.start, r.end])).collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out: Vec<Span> = Vec::new();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let base = spans.iter().find(|s| (s.start as usize) <= a && a < s.end as usize);
+        let hit = hits.iter().any(|r| r.start <= a && a < r.end);
+        if base.is_none() && !hit {
+            continue;
+        }
+        let mut sp = Span::new(a, b);
+        sp.color = base.and_then(|s| s.color);
+        sp.bg = if hit { Some(bg) } else { base.and_then(|s| s.bg) };
+        out.push(sp);
+    }
+    out
+}
+
+/// Byte ranges of `q` in `text`, ignoring ASCII case.
+pub(crate) fn find_all(text: &str, q: &str) -> Vec<Range<usize>> {
+    if q.is_empty() || q.len() > text.len() {
+        return Vec::new();
+    }
+    let (t, q) = (text.to_ascii_lowercase(), q.to_ascii_lowercase());
+    t.match_indices(&q).map(|(i, m)| i..i + m.len()).collect()
+}
+
+/// `code` as drawn: text layout draws a tab as one space, so each tab is followed by spaces up
+/// to the next four-column stop; and when `wrap`, a zero-width space after `.`, `(`, `[` and
+/// `/` lets a long call chain or path break there. Returns the text, `spans` moved to match,
+/// and the inserted ranges (drawn, never copied).
+fn tabbed(code: &str, mut spans: Vec<Span>, wrap: bool) -> (String, Vec<Span>, Vec<Range<usize>>) {
+    if !code.contains('\t') && !(wrap && code.contains(['.', '(', '[', '/'])) {
+        return (code.to_owned(), spans, Vec::new());
+    }
+    let mut shown = String::with_capacity(code.len() + 8);
+    // (byte in `code` after the insertion, bytes added up to and including it)
+    let mut shifts: Vec<(usize, usize)> = Vec::new();
+    let mut pads = Vec::new();
+    let mut col = 0;
+    let mut chars = code.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        shown.push(ch);
+        col += 1;
+        let start = shown.len();
+        if ch == '\t' {
+            let pad = 3 - (col - 1) % 4;
+            shown.extend(std::iter::repeat_n(' ', pad));
+            col += pad;
+        } else if wrap && matches!(ch, '.' | '(' | '[' | '/') && chars.peek().is_some_and(|(_, c)| !c.is_whitespace()) {
+            shown.push('\u{200B}');
+        }
+        if shown.len() > start {
+            pads.push(start..shown.len());
+            shifts.push((i + ch.len_utf8(), shifts.last().map_or(0, |s| s.1) + shown.len() - start));
+        }
+    }
+    let shift = |b: u32| match shifts.partition_point(|s| s.0 <= b as usize) {
+        0 => b,
+        n => b + shifts[n - 1].1 as u32,
+    };
+    for sp in &mut spans {
+        (sp.start, sp.end) = (shift(sp.start), shift(sp.end));
+    }
+    (shown, spans, pads)
+}
+
+/// `t` of the way from `base` toward `hue` in OKLab, at `base`'s alpha: a quiet wash that keeps
+/// `base`'s lightness close in both themes.
+fn tint(base: Color, hue: Color, t: f32) -> Color {
+    let [a, b] = [base.to_oklab(), hue.to_oklab()];
+    Color::from_oklab([0, 1, 2, 3].map(|i| if i == 3 { a[3] } else { a[i] + (b[i] - a[i]) * t }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn word_backgrounds_cut_syntax_colours() {
+        let red = Color::WHITE;
+        let green = Color::BLACK;
+        // "let total = 1;" with `let` and `1` coloured, `total` changed.
+        let spans = layer(14, &[(0..3, red), (12..13, red)], &[4..9], Some(green));
+        let got: Vec<(u32, u32, Option<Color>, Option<Color>)> = spans.iter().map(|s| (s.start, s.end, s.color, s.bg)).collect();
+        assert_eq!(got, vec![(0, 3, Some(red), None), (4, 9, None, Some(green)), (12, 13, Some(red), None)]);
+        // A change across a coloured token splits it.
+        let spans = layer(10, &[(0..6, red)], &[3..8], Some(green));
+        let got: Vec<(u32, u32, Option<Color>, Option<Color>)> = spans.iter().map(|s| (s.start, s.end, s.color, s.bg)).collect();
+        assert_eq!(got, vec![(0, 3, Some(red), None), (3, 6, Some(red), Some(green)), (6, 8, None, Some(green))]);
+    }
+
+    #[test]
+    fn tabs_pad_to_four_columns_without_copying_the_padding() {
+        let (shown, spans, pads) = tabbed("a\tb\t\tc", vec![Span::new(2, 3)], false);
+        assert_eq!(shown, "a\t  b\t  \t   c");
+        assert_eq!(pads, vec![2..4, 6..8, 9..12]);
+        assert_eq!(&shown[spans[0].start as usize..spans[0].end as usize], "b");
+        let copied: String = shown.char_indices().filter(|(i, _)| !pads.iter().any(|r| r.contains(i))).map(|(_, c)| c).collect();
+        assert_eq!(copied, "a\tb\t\tc");
+    }
+
+    #[test]
+    fn wrapped_lines_can_break_inside_call_chains() {
+        let (shown, spans, pads) = tabbed("a.b(c) x/ y", vec![Span::new(2, 3)], true);
+        assert_eq!(shown, "a.\u{200B}b(\u{200B}c) x/ y");
+        assert_eq!(&shown[spans[0].start as usize..spans[0].end as usize], "b");
+        let copied: String = shown.char_indices().filter(|(i, _)| !pads.iter().any(|r| r.contains(i))).map(|(_, c)| c).collect();
+        assert_eq!(copied, "a.b(c) x/ y");
+    }
+}
