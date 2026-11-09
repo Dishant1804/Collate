@@ -405,3 +405,419 @@ impl DiffState {
         out
     }
 
+    /// For the hunk holding the line selection: which of its lines are selected (only added
+    /// and removed lines count), as (file, hunk, per line). `None` without a selection on a
+    /// change.
+    pub fn selected_changes(&self) -> Option<(usize, usize, Vec<bool>)> {
+        let sel = self.selection?;
+        let f = sel.file;
+        for (h, hunk) in self.files.get(f)?.hunks.iter().enumerate() {
+            let picked: Vec<bool> = hunk
+                .lines
+                .iter()
+                .map(|l| match (l.kind, l.old, l.new) {
+                    (LineKind::Removed, Some(n), _) => self.contains(&sel, LineRef::new(Side::Old, n)),
+                    (LineKind::Added, _, Some(n)) => self.contains(&sel, LineRef::new(Side::New, n)),
+                    _ => false,
+                })
+                .collect();
+            if picked.iter().any(|&p| p) {
+                return Some((f, h, picked));
+            }
+        }
+        None
+    }
+
+    pub fn set_highlighter(&mut self, h: Highlighter) {
+        self.highlighter = h;
+        self.chunks.borrow_mut().clear();
+        self.rev += 1;
+    }
+
+    pub fn collapsed(&self, file: usize) -> bool {
+        self.ui.get(file).is_some_and(|u| u.collapsed)
+    }
+
+    /// Show only `file`'s header, or its lines again.
+    pub fn set_collapsed(&mut self, file: usize, collapsed: bool) {
+        if let Some(u) = self.ui.get_mut(file).filter(|u| u.collapsed != collapsed) {
+            u.collapsed = collapsed;
+            self.rebuild();
+        }
+    }
+
+    /// Lines of `file`'s unchanged range before hunk `gap` still hidden, when known.
+    pub fn hidden(&self, file: usize, gap: usize) -> Option<u32> {
+        let g = self.gaps.get(file)?.get(gap)?;
+        let (top, bottom) = self.ui[file].revealed[gap];
+        g.len.map(|n| n.saturating_sub(top + bottom))
+    }
+
+    /// Reveal more of `file`'s unchanged range before hunk `gap` (`hunks.len()`: after the
+    /// last). Does nothing without the file's whole text.
+    pub fn expand(&mut self, file: usize, gap: usize, how: Expand) {
+        let Some(hidden) = self.hidden(file, gap) else { return };
+        if hidden == 0 || !self.files[file].expandable() {
+            return;
+        }
+        let last = gap == self.files[file].hunks.len();
+        let r = &mut self.ui[file].revealed[gap];
+        match how {
+            // Nothing below the first range and nothing above the last to grow from.
+            Expand::All => r.0 += hidden,
+            Expand::Up if gap > 0 || last => {
+                if last { r.0 += hidden.min(EXPAND_STEP) } else { r.1 += hidden.min(EXPAND_STEP) }
+            }
+            Expand::Up => r.1 += hidden.min(EXPAND_STEP),
+            Expand::Down if last => r.0 += hidden.min(EXPAND_STEP),
+            Expand::Down => r.0 += hidden.min(EXPAND_STEP),
+        }
+        self.rebuild();
+    }
+
+    pub fn selection(&self) -> Option<LineRange> {
+        self.selection
+    }
+
+    pub fn set_selection(&mut self, sel: Option<LineRange>) {
+        self.selection = sel;
+    }
+
+    /// The selected lines' text on the side the selection started on, one per line, without
+    /// numbers or markers: what copying the selection gives.
+    pub fn selected_text(&self) -> Option<String> {
+        let sel = self.selection?;
+        let side = sel.start.side;
+        let (a, b) = self.selected_rows(&sel)?;
+        let mut out = Vec::new();
+        for r in a..=b {
+            if let Some(n) = self.row_line(self.rows[r as usize], side) {
+                out.push(self.side_line(sel.file, side, n).unwrap_or_default().to_owned());
+            }
+        }
+        Some(out.join("\n"))
+    }
+
+    /// The selection's first and last rows.
+    fn selected_rows(&self, sel: &LineRange) -> Option<(u32, u32)> {
+        if let Some((s, rev, rows)) = self.sel_rows.get()
+            && s == *sel
+            && rev == self.rev
+        {
+            return rows;
+        }
+        let rows = (|| {
+            let a = self.row_at(sel.file, sel.start)?;
+            let b = self.row_at(sel.file, sel.end)?;
+            Some((a.min(b), a.max(b)))
+        })();
+        self.sel_rows.set(Some((*sel, self.rev, rows)));
+        rows
+    }
+
+    /// The row showing line `at` of file `file`, if it's shown. A file's rows are contiguous,
+    /// so this looks only through that file's, instead of keeping a map of every row.
+    fn row_at(&self, file: usize, at: LineRef) -> Option<u32> {
+        let start = *self.file_rows.get(file)? as usize;
+        let end = self.file_rows.get(file + 1).map_or(self.rows.len(), |&r| r as usize);
+        (start..end).find(|&i| self.row_line(self.rows[i], at.side) == Some(at.line)).map(|i| i as u32)
+    }
+
+    /// Whether line `at` is in `sel`.
+    pub(crate) fn contains(&self, sel: &LineRange, at: LineRef) -> bool {
+        let Some((a, b)) = self.selected_rows(sel) else { return false };
+        self.row_at(sel.file, at).is_some_and(|r| (a..=b).contains(&r))
+    }
+
+    /// Whether row `r`'s line on `side` is selected.
+    pub(crate) fn row_selected(&self, r: usize, side: Option<Side>) -> bool {
+        let Some(sel) = self.selection else { return false };
+        let Some((a, b)) = self.selected_rows(&sel) else { return false };
+        if self.rows[r].file() != sel.file || !(a as usize..=b as usize).contains(&r) {
+            return false;
+        }
+        side.is_none_or(|s| s == sel.start.side || s == sel.end.side)
+    }
+
+    /// A press on line `at`'s number: a new selection, or with Shift held one extended to it.
+    /// Pressing the one selected line clears it on release, unless the press drags.
+    pub(crate) fn press_line(&mut self, file: usize, at: LineRef) {
+        self.selection_at_press = self.selection;
+        let sel = match self.selection {
+            Some(s) if self.shift && s.file == file => LineRange { end: at, ..s },
+            _ => LineRange::line(file, at),
+        };
+        self.unselect = !self.shift && self.selection == Some(sel);
+        self.selecting = true;
+        self.set_selection(Some(sel));
+    }
+
+    /// The pointer, dragging from a line number, reached line `at`.
+    pub(crate) fn drag_to(&mut self, file: usize, at: LineRef) {
+        if let Some(s) = self.selection.filter(|s| self.selecting && s.file == file && s.end != at) {
+            self.unselect = false;
+            self.set_selection(Some(LineRange { end: at, ..s }));
+        }
+    }
+
+    /// The press on the line numbers ended: the selection it leaves.
+    pub(crate) fn release_line(&mut self) -> Option<LineRange> {
+        self.selection_at_press = None;
+        if std::mem::take(&mut self.unselect) {
+            self.selection = None;
+        }
+        self.selecting = false;
+        self.selection
+    }
+
+    pub(crate) fn cancel_line(&mut self) {
+        if self.selecting {
+            self.selection = self.selection_at_press.take();
+        }
+        self.selecting = false;
+        self.unselect = false;
+    }
+
+    pub(crate) fn copy_side(&self) -> Side {
+        self.copy_side
+    }
+
+    /// The pointer entered or left a line's text on `side`: text selection then copies that
+    /// side. A held press keeps the cell it started in entered, so dragging across to the
+    /// other side doesn't switch.
+    /// Notes the pointer entering or leaving a line's code; returns whether that changed the
+    /// side a selection copies, the only part the view reads.
+    pub(crate) fn hover_text(&mut self, side: Side, cell: &str, inside: bool) -> bool {
+        let was = self.copy_side;
+        if inside {
+            if !self.hovered.iter().any(|(_, c)| c == cell) {
+                self.hovered.push((side, cell.to_owned()));
+            }
+            if self.hovered.iter().all(|(s, _)| *s == side) {
+                self.copy_side = side;
+            }
+        } else {
+            self.hovered.retain(|(_, c)| c != cell);
+        }
+        self.copy_side != was
+    }
+
+    pub fn visible_file(&self) -> usize {
+        self.visible
+    }
+
+    /// Scroll `file`'s header to the top.
+    pub fn scroll_to_file(&mut self, file: usize, tx: &mut Tx) {
+        let Some(&r) = self.file_rows.get(file) else { return };
+        self.reveal_at_top(r, tx);
+        self.visible = file;
+        self.nav = Some(r);
+    }
+
+    /// Scroll to `file`'s line `at`, opening the range it's in if it's hidden, and put it
+    /// below the header.
+    pub fn scroll_to_line(&mut self, file: usize, at: LineRef, tx: &mut Tx) {
+        if self.collapsed(file) {
+            self.set_collapsed(file, false);
+        }
+        if self.row_at(file, at).is_none() {
+            let gap = self.gaps.get(file).and_then(|g| {
+                g.iter().position(|g| {
+                    let first = if at.side == Side::Old { g.old } else { g.new };
+                    at.line >= first && g.len.is_none_or(|n| at.line < first + n)
+                })
+            });
+            if let Some(gap) = gap {
+                self.expand(file, gap, Expand::All);
+            }
+        }
+        let Some(r) = self.row_at(file, at) else { return };
+        self.reveal_below_header(r, tx);
+        self.visible = file;
+        self.nav = Some(r);
+    }
+
+    /// Bring the next (or previous) hunk to just below the sticky header.
+    pub fn next_hunk(&mut self, forward: bool, tx: &mut Tx) -> bool {
+        let from = self.position();
+        let target = if forward {
+            self.hunk_rows.iter().copied().find(|&r| r > from)
+        } else {
+            self.hunk_rows.iter().rev().copied().find(|&r| r < from)
+        };
+        let Some(r) = target else { return false };
+        self.reveal_below_header(r, tx);
+        self.visible = self.rows[r as usize].file();
+        self.nav = Some(r);
+        true
+    }
+
+    /// Scroll to the next (or previous) file's header.
+    pub fn next_file(&mut self, forward: bool, tx: &mut Tx) -> bool {
+        let Some(&row) = self.rows.get(self.position() as usize) else { return false };
+        let at = row.file();
+        let target = if forward { at + 1 } else { at.wrapping_sub(1) };
+        let Some(f) = (target < self.files.len()).then_some(target) else { return false };
+        self.scroll_to_file(f, tx);
+        true
+    }
+
+    /// The hunk the reader is at (the one `j`/`k` last reached, else the first at or below the
+    /// top of the view), as (file, hunk).
+    pub fn current_hunk(&self) -> Option<(usize, usize)> {
+        let from = self.position() as usize;
+        self.rows.get(from..)?.iter().find_map(|r| match *r {
+            Row::Line { f, h, .. } | Row::Pair { f, h, .. } => Some((f as usize, h as usize)),
+            Row::Gap { f, gap } if (gap as usize) < self.files[f as usize].hunks.len() => Some((f as usize, gap as usize)),
+            _ => None,
+        })
+    }
+
+    /// Jump to the other end of the move at or below the top of the view (or the selection):
+    /// where a moved block came from, or went. False when there's no moved line in reach.
+    pub fn jump_to_twin(&mut self, tx: &mut Tx) -> bool {
+        // From the selection, else where the last jump landed while it's on screen (so a
+        // second m goes back even when both ends fit in view), else the top of the view.
+        let landed = self.nav.filter(|&n| self.visible_rows.contains(&(n as usize)));
+        let from = match self.selection {
+            Some(sel) => self.row_at(sel.file, sel.start).unwrap_or(self.position()),
+            None => landed.unwrap_or_else(|| self.position()),
+        } as usize;
+        let found = self.rows.get(from..).unwrap_or(&[]).iter().take(400).find_map(|r| {
+            let (f, h, i) = match *r {
+                Row::Line { f, h, i } | Row::Pair { f, h, del: i, .. } => (f, h, i),
+                _ => return None,
+            };
+            let file = &self.files[f as usize];
+            let l = &file.hunks[h as usize].lines[i as usize];
+            file.twin(h as usize, i as usize).map(|t| (t, l.kind))
+        });
+        let Some(((f, n), kind)) = found else { return false };
+        let side = if kind == LineKind::Removed { Side::New } else { Side::Old };
+        self.scroll_to_line(f as usize, LineRef::new(side, n), tx);
+        true
+    }
+
+    /// The row under the sticky header: where navigation last put it, unless the list has
+    /// scrolled away since.
+    fn position(&self) -> u32 {
+        let top = self.row_below_header();
+        match (self.nav, top) {
+            (Some(n), Some(t)) if t.abs_diff(n) <= 3 => n,
+            (_, Some(t)) => t,
+            (Some(n), None) => n,
+            (None, None) => 0,
+        }
+    }
+
+    fn row_below_header(&self) -> Option<u32> {
+        if self.visible_rows.is_empty() {
+            return None;
+        }
+        let mut r = self.visible_rows.start;
+        if self.sticky().is_some() {
+            let mut room = 0.0;
+            while r + 1 < self.rows.len() && room < HEADER_H {
+                room += self.estimate(r);
+                r += 1;
+            }
+        }
+        Some(r as u32)
+    }
+
+    /// Handle a key for the diff: `j`/`k` next and previous hunk, `]`/`[` next and previous
+    /// file, Escape clears the line selection, Cmd-C copies it, and Shift (with
+    /// `App::modifier_keys`) makes a click on a line number extend the selection. Call it
+    /// from the app's `on_key`; it returns whether it took the key.
+    pub fn key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        match &ev.key {
+            Key::Modifier { modifier: Modifier::ShiftLeft | Modifier::ShiftRight, .. } => {
+                self.shift = ev.mods.shift;
+                false
+            }
+            _ if tx.focused().is_some() && !ev.is_command('c') => false,
+            Key::Text(t) if !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt => match t.as_str() {
+                "j" => self.next_hunk(true, tx),
+                "k" => self.next_hunk(false, tx),
+                "]" => self.next_file(true, tx),
+                "[" => self.next_file(false, tx),
+                _ => false,
+            },
+            Key::Escape if self.selection.is_some() => {
+                self.set_selection(None);
+                true
+            }
+            _ if ev.is_command('c') => match self.selected_text() {
+                Some(text) => {
+                    tx.copy(text);
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The scroll viewport's rect.
+    pub(crate) fn set_viewport(&self, r: [f32; 4]) {
+        self.view_w.set(r[2]);
+    }
+
+    pub(crate) fn view_width(&self) -> f32 {
+        self.view_w.get()
+    }
+
+    /// The virtual list's visible row range changed to `rows`: returns `(reported_file, sticky_changed)`.
+    pub(crate) fn set_visible_rows(&mut self, rows: std::ops::Range<usize>) -> (Option<usize>, bool) {
+        let before_sticky = self.sticky();
+        self.visible_rows = rows;
+        // Navigation puts its row at the top, but near the end the list reports a full screen
+        // of rows ending at the last one, starting above it. While the range stays where
+        // navigation left it, the row navigated to is the one in view; a scroll ends that.
+        let range = self.visible_rows.clone();
+        let landed = match (self.nav, &self.nav_range) {
+            (Some(n), Some((m, r))) if *m == n => (*r == range).then_some(n),
+            (Some(n), _) => range.contains(&(n as usize)).then_some(n),
+            _ => None,
+        };
+        // Once a scroll ends it, it stays ended (an empty range never matches) until the next jump.
+        self.nav_range = self.nav.map(|n| (n, if landed.is_some() { range.clone() } else { 0..0 }));
+        if let Some(&r) = self.rows.get(landed.map_or(range.start, |n| n as usize)) {
+            self.visible = r.file();
+        }
+        let reported = (!self.files.is_empty() && self.reported != Some(self.visible)).then(|| {
+            self.reported = Some(self.visible);
+            self.visible
+        });
+        (reported, self.sticky() != before_sticky)
+    }
+
+    /// The row reached by moving `y` points vertically from the top of row `from`.
+    pub(crate) fn row_from(&self, from: u32, mut y: f32) -> Option<u32> {
+        let mut r = usize::try_from(from).ok()?.min(self.rows.len().checked_sub(1)?);
+        while y < 0.0 && r > 0 {
+            r -= 1;
+            y += self.estimate(r);
+        }
+        while r + 1 < self.rows.len() {
+            let h = self.estimate(r);
+            if y < h {
+                break;
+            }
+            y -= h;
+            r += 1;
+        }
+        Some(r as u32)
+    }
+
+    /// The visible file's header has scrolled above the viewport's top, so a copy of it sticks
+    /// there.
+    pub(crate) fn sticky(&self) -> Option<usize> {
+        if self.files.is_empty() || self.visible_rows.is_empty() {
+            return None;
+        }
+        let f = self.visible;
+        let header = *self.file_rows.get(f)? as usize;
+        (self.visible_rows.start > header).then_some(f)
+    }
+
