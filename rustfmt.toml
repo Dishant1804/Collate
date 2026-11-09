@@ -1,0 +1,3 @@
+# The code is laid out by hand (long lines, one builder chain a line). Don't reflow it:
+# a formatted file is a diff nobody can review.
+disable_all_formatting = true
