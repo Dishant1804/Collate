@@ -3189,3 +3189,379 @@ fn main() {
     app.run();
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rune::{Env, Runtime};
+
+    #[test]
+    fn history_graph_renders_and_selects_commits() {
+        for width in [760.0, 1280.0] {
+            let mut s = init();
+            s.has_project = true;
+            s.scope = Scope::History;
+            s.loaded = true;
+            s.graph_commits = (0..600).map(|i| graph::Commit {
+                id: format!("{i:040x}"), parents: if i < 599 { vec![format!("{:040x}", i + 1)] } else { vec![] },
+                author: "Ada".into(), email: "ada@example.com".into(), date: "09 Nov 2026 10:00".into(),
+                refs: vec![], subject: format!("Commit {i}"),
+            }).collect();
+            (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
+            s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
+            s.commit = Some(s.commit_ids[0].clone());
+            let second = s.commit_ids[1].clone();
+            let mut rt = Runtime::new(s, view, (width, 840.0), Env { system_dark: true, scale: 2.0 });
+            rt.frame(0.0);
+            assert!(rt.presented("history-graph").is_some());
+            assert!(rt.presented(&format!("graph-{}", rt.state.commit_ids[599])).is_none(), "far rows are virtualized");
+            let (rect, _) = rt.presented(&format!("graph-{second}")).unwrap();
+            rt.pointer_down(rect[0] + 40.0, rect[1] + 15.0);
+            rt.pointer_up(rect[0] + 40.0, rect[1] + 15.0);
+            rt.frame(1.0 / 60.0);
+            assert_eq!(rt.state.commit.as_deref(), Some(second.as_str()));
+            assert!(!rt.state.loaded, "selection requests a new diff");
+            assert!(rt.presented("history-graph").is_some(), "graph stays visible while diff loads");
+        }
+    }
+
+    /// Counts heap bytes in use and their peak, for the colouring A/B.
+    struct Counting;
+    static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    unsafe impl std::alloc::GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+            let p = unsafe { std::alloc::System.alloc(l) };
+            if !p.is_null() {
+                let now = LIVE.fetch_add(l.size(), std::sync::atomic::Ordering::Relaxed) + l.size();
+                PEAK.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
+            }
+            p
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+            unsafe { std::alloc::System.dealloc(p, l) };
+            LIVE.fetch_sub(l.size(), std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    #[global_allocator]
+    static ALLOC: Counting = Counting;
+
+    /// A long TypeScript file of varied code, `n` lines; `edit` changes every 40th line.
+    fn typescript(n: usize, edit: bool) -> String {
+        let shapes = [
+            "export async function load{i}(id: string, opts?: Options): Promise<Result<User, Error>> {",
+            "  const url = `${BASE}/users/${id}?include=${opts?.include ?? \"profile\"}&v={i}`;",
+            "  // Fetch with a timeout so a stuck request never holds the queue ({i}).",
+            "  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal });",
+            "  if (!res.ok) return { ok: false, error: new HttpError(res.status, \"load {i} failed\") };",
+            "  const body = (await res.json()) as { items: Array<{ id: number; name: string }> };",
+            "  for (const [k, v] of Object.entries(body.items)) { cache.set(`${k}:{i}`, v ?? null); }",
+            "  return { ok: true, value: body.items.map((x) => ({ ...x, seen: Date.now() + {i} })) };",
+            "}",
+            "/* {i}: block comment that the scanner has to track across */ let flag{i} = 0x{i}f && /re{i}+/g.test(s);",
+        ];
+        (0..n).map(|i| {
+            let line = shapes[i % shapes.len()].replace("{i}", &i.to_string());
+            if edit && i % 40 == 7 { format!("{line} // changed\n") } else { format!("{line}\n") }
+        }).collect()
+    }
+
+    /// Scrolling a 60,000-line TypeScript diff, reading pace then flicking, at 60 Hz: frame
+    /// times and heap, with code coloured (`on`) or plain (`off`). Run each arm alone:
+    /// `COLLATE_COLOUR=on|off cargo test --release colour_ab -- --ignored --nocapture`.
+    /// Colouring off a background thread measured no faster (and drew rows twice), so it's
+    /// done inline as rows first draw.
+    #[test]
+    #[ignore]
+    fn colour_ab() {
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+        let arm = std::env::var("COLLATE_COLOUR").unwrap_or_else(|_| "on".into());
+        let split = std::env::var("COLLATE_AB_LAYOUT").is_ok_and(|v| v == "split");
+        let (old, new) = (typescript(60_000, false), typescript(60_000, true));
+        let base = LIVE.load(Ordering::Relaxed);
+        let mut state = init();
+        state.settings = Settings::default();
+        state.settings.layout = if split { DiffMode::Split } else { DiffMode::Unified };
+        state.apply_settings(None);
+        if arm == "off" {
+            state.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"));
+        }
+        state.diff.set_files(vec![FileDiff::between_with_context(Some("app.ts".into()), Some("app.ts".into()), &old, &new, 25)]);
+        drop((old, new));
+        state.has_project = true;
+        state.loaded = true;
+        PEAK.store(LIVE.load(Ordering::Relaxed), Ordering::Relaxed);
+        let start = Instant::now();
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
+        rt.frame(0.0);
+        let first = start.elapsed();
+        let (x, y) = (700.0, 500.0);
+        let mut times = Vec::new();
+        // Reading pace (150 pt a frame), then flicking (2,500 pt a frame). `COLLATE_AB_PROFILE=1`:
+        // flicking down and back up again without pausing, long enough to profile.
+        let profile = std::env::var_os("COLLATE_AB_PROFILE").is_some();
+        let phases: Vec<(usize, f32)> = if profile { (0..8).map(|n| (150, if n % 2 == 0 { -2500.0 } else { 2500.0 })).collect() } else { vec![(300, -150.0), (150, -2500.0)] };
+        for (frames, dy) in phases {
+            let mut phase = Vec::new();
+            for _ in 0..frames {
+                let t = Instant::now();
+                rt.wheel(x, y, dy);
+                rt.frame(1.0 / 60.0);
+                let spent = t.elapsed();
+                phase.push(spent.as_secs_f64() * 1000.0);
+                if !profile {
+                    std::thread::sleep(Duration::from_micros(16_667).saturating_sub(spent));
+                }
+            }
+            times.push(phase);
+        }
+        let stats = |v: &[f64]| {
+            let mut v = v.to_vec();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let q = |p: f64| v[((v.len() - 1) as f64 * p) as usize];
+            let over = v.iter().filter(|&&t| t > 16.7).count();
+            format!("p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} ms, {over} over 16.7", q(0.5), q(0.95), q(0.99), q(1.0))
+        };
+        let mb = |b: usize| b as f64 / 1048576.0;
+        // What colouring the whole file costs on one thread, for scale.
+        let t = Instant::now();
+        let text = typescript(60_000, true);
+        let blocks: usize = text.split_inclusive('\n').collect::<Vec<_>>().chunks(128).map(|c| rune_kit::syntax::builtin(Some("ts"), &c.concat()).len()).sum();
+        println!("scanner: all 60,000 lines in {:.1} ms ({blocks} tokens)", t.elapsed().as_secs_f64() * 1000.0);
+        println!("arm {arm} ({}): first frame {:.1} ms", if split { "split" } else { "unified" }, first.as_secs_f64() * 1000.0);
+        println!("  reading: {}", stats(&times[0]));
+        println!("  flicking: {}", stats(&times[1]));
+        println!("  heap: peak {:.1} MB, held at end {:.1} MB (above the {:.1} MB before the diff)", mb(PEAK.load(Ordering::Relaxed).saturating_sub(base)), mb(LIVE.load(Ordering::Relaxed).saturating_sub(base)), mb(base));
+    }
+
+    #[test]
+    fn scrolling_near_the_end_asks_for_more_history() {
+        let mut s = init();
+        s.has_project = true;
+        s.scope = Scope::History;
+        s.loaded = true;
+        s.graph_commits = (0..HISTORY_PAGE).map(|i| graph::Commit {
+            id: format!("{i:040x}"), parents: if i + 1 < HISTORY_PAGE { vec![format!("{:040x}", i + 1)] } else { vec![] },
+            author: "Ada".into(), email: "a@x".into(), date: String::new(), refs: vec![], subject: format!("Commit {i}"),
+        }).collect();
+        (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
+        s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
+        rt.frame(0.0);
+        assert!(rt.presented("graph-refresh").is_some(), "refresh is an icon button");
+        assert_eq!(rt.state.graph_limit, HISTORY_PAGE, "the top of the list asks for nothing");
+        let (r, _) = rt.presented("graph-scroll").unwrap();
+        for _ in 0..200 {
+            rt.wheel(r[0] + 200.0, r[1] + 200.0, -3000.0);
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.graph_limit, 2 * HISTORY_PAGE, "the end of the list asks for the next page, once");
+    }
+
+    #[test]
+    fn a_commit_opens_from_its_files_and_esc_goes_back() {
+        let mut s = init();
+        s.has_project = true;
+        s.scope = Scope::History;
+        s.loaded = true;
+        s.graph_commits = (0..3).map(|i| graph::Commit {
+            id: format!("{i:040x}"), parents: if i < 2 { vec![format!("{:040x}", i + 1)] } else { vec![] },
+            author: "Ada Lovelace".into(), email: "ada@example.com".into(), date: "09 Nov 2026 10:00".into(),
+            refs: vec![], subject: format!("Commit {i}"),
+        }).collect();
+        (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
+        s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
+        s.commit = Some(s.commit_ids[1].clone());
+        s.commit_body = "Why it changed.".into();
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
+        rt.on_key = Some(on_key);
+        rt.frame(0.0);
+        assert!(rt.presented("history-graph").is_some(), "the list fills the window first");
+        assert!(rt.presented("commit-card").is_some(), "the side panel shows the chosen commit");
+        assert!(rt.presented("commit-header").is_none());
+        // A file in the side panel's list opens the commit's diff.
+        rt.update(|s, tx| reveal(s, "src/a.rs", tx));
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        assert!(rt.state.history_diff);
+        assert!(rt.presented("commit-header").is_some(), "the commit heads its diff");
+        assert!(rt.presented("history-graph").is_none(), "the list makes way");
+        rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        assert!(!rt.state.history_diff, "Esc goes back to the list");
+        assert!(rt.presented("history-graph").is_some());
+        // Enter opens the chosen commit too.
+        rt.key(KeyEvent { key: Key::Enter, mods: Default::default() });
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        assert!(rt.state.history_diff);
+        let (x, y) = rt.find("history-back").expect("a way back");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        assert!(!rt.state.history_diff, "All Commits goes back");
+    }
+
+    #[test]
+    fn the_uncommitted_row_opens_all_changes() {
+        let mut s = init();
+        s.has_project = true;
+        s.scope = Scope::History;
+        s.loaded = true;
+        s.total = 2;
+        let head = format!("{:040x}", 1);
+        let commits = vec![graph::Commit { id: head.clone(), parents: vec![], author: "Ada".into(), email: "a@x".into(), date: String::new(), refs: vec![], subject: "Only".into() }];
+        s.commit_ids = vec![head.clone()];
+        s.graph_commits = graph::with_uncommitted(commits, Some(&head), true);
+        (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
+        let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
+        rt.frame(0.0);
+        let (rect, _) = rt.presented(&format!("graph-{}", graph::UNCOMMITTED)).expect("uncommitted row on top");
+        rt.pointer_down(rect[0] + 60.0, rect[1] + 14.0);
+        rt.pointer_up(rect[0] + 60.0, rect[1] + 14.0);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.scope, Scope::Uncommitted);
+    }
+
+    #[test]
+    fn a_branch_and_its_remote_share_a_label() {
+        let r = |name: &str, kind, head| graph::Ref { name: name.into(), kind, head };
+        let labels = ref_labels(&[
+            r("main", graph::RefKind::Branch, true),
+            r("origin/main", graph::RefKind::Remote, false),
+            r("upstream/main", graph::RefKind::Remote, false),
+            r("origin/dev", graph::RefKind::Remote, false),
+            r("v1", graph::RefKind::Tag, false),
+        ]);
+        let text: Vec<&str> = labels.iter().map(|l| l.0.as_str()).collect();
+        assert_eq!(text, ["main - origin - upstream", "origin/dev", "v1"]);
+        assert!(labels[0].2, "HEAD's branch is marked");
+    }
+
+    /// The repository the view tests read: `COLLATE_TEST_REPO` when set (any repository with many
+    /// changed files under `src/`), else one made here, once: four folders of twenty files on
+    /// `main`, each file changed in two places since its one commit, and a `develop` branch.
+    fn test_repo() -> &'static std::path::Path {
+        static DIR: OnceLock<PathBuf> = OnceLock::new();
+        DIR.get_or_init(|| {
+            if let Some(dir) = std::env::var_os("COLLATE_TEST_REPO") {
+                return PathBuf::from(dir);
+            }
+            let dir = std::env::temp_dir().join(format!("collate-fixture-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let folders = ["api", "core", "ui", "util"];
+            let write = |edited: bool| {
+                for (at, folder) in folders.iter().enumerate() {
+                    std::fs::create_dir_all(dir.join("src").join(folder)).unwrap();
+                    for i in 1..=20 {
+                        let mut text = format!("use crate::{}::file{i};\n\n", folders[(at + 1) % folders.len()]);
+                        for n in 0..60 {
+                            text += &match n {
+                                10 => format!("    let value_{n} = {}({n});\n", if edited { "changed" } else { "original" }),
+                                40 => format!("    let value_{n} = {}({n});\n", if edited { "also changed" } else { "untouched" }),
+                                n if n % 12 == 0 => format!("fn function_{folder}_{i}_{n}() {{\n"),
+                                n if n % 12 == 11 => "}\n".to_owned(),
+                                n => format!("    let value_{n} = compute({n}, {i});\n"),
+                            };
+                        }
+                        std::fs::write(dir.join(format!("src/{folder}/file{i}.rs")), text).unwrap();
+                    }
+                }
+            };
+            write(false);
+            for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["config", "commit.gpgsign", "false"], &["add", "-A"], &["commit", "-qm", "init"], &["branch", "develop"]] {
+                let out = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+                assert!(out.status.success(), "{args:?}");
+            }
+            write(true);
+            dir
+        })
+    }
+
+    fn snapshot() -> Snapshot {
+        let repo = Repo::open(test_repo()).unwrap();
+        let raw = repo.status_raw().unwrap();
+        repo.snapshot(Scope::Uncommitted, &raw, None).unwrap()
+    }
+
+    fn loaded() -> Runtime<Collate> {
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut state = init();
+        state.settings = Settings::default();
+        state.apply_settings(None);
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), env);
+        rt.frame(0.0);
+        let snap = snapshot();
+        rt.update(move |s, tx| s.apply_snapshot(snap, tx));
+        for _ in 0..10 {
+            rt.frame(1.0 / 60.0);
+        }
+        rt
+    }
+
+    /// Whether a row of the staging panel's Unstaged list is in its visible part, not just
+    /// mounted in the virtual list's overscan.
+    fn on_screen(rt: &Runtime<Collate>, key: &str) -> bool {
+        let Some((list, _)) = rt.presented("unstaged") else { return false };
+        rt.presented(key).is_some_and(|(r, _)| r[1] >= list[1] + 30.0 && r[1] + r[3] <= list[1] + list[3])
+    }
+
+    /// The middle of the Unstaged list, where a reader scrolls it.
+    fn list_point(rt: &Runtime<Collate>) -> (f32, f32) {
+        let (r, _) = rt.presented("unstaged").expect("the staging panel's list");
+        (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+    }
+
+    fn click(rt: &mut Runtime<Collate>, key: &str) {
+        let (x, y) = rt.find(key).unwrap_or_else(|| panic!("{key} is on screen"));
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+    }
+
+    /// The file's header sits right under the summary, at the top of the diff.
+    fn header_at_top(rt: &Runtime<Collate>, i: usize) {
+        let summary = rt.presented("summary").expect("summary").0;
+        let top = summary[1] + summary[3];
+        let y = rt.presented(&format!("df{i}")).map(|p| p.0[1]).unwrap_or_else(|| panic!("file {i}'s header is on screen"));
+        assert!((y - top).abs() < 2.0, "file {i}'s header is at y={y}, not at the diff's top {top}");
+    }
+
+    #[test]
+    fn clicking_files_in_the_sidebar_brings_each_to_the_top() {
+        let mut rt = loaded();
+        // Down the list, then back up past where we started.
+        for target in ["src/core/file5.rs", "src/ui/file2.rs", "src/api/file3.rs", "src/util/file15.rs"] {
+            // Scroll the sidebar to it, as a reader would: down for a row below, up for one above.
+            let down = rt.presented(target).is_none_or(|(r, _)| r[1] > 400.0);
+            for _ in 0..80 {
+                if on_screen(&rt, target) {
+                    break;
+                }
+                let (x, y) = list_point(&rt);
+                rt.wheel(x, y, if down { -60.0 } else { 60.0 });
+                rt.frame(1.0 / 60.0);
+            }
+            for _ in 0..30 {
+                rt.frame(1.0 / 60.0);
+            }
+            assert!(on_screen(&rt, target), "{target} scrolled into the sidebar");
+            click(&mut rt, target);
+            let i = rt.state.diff.file_index(target).unwrap();
+            assert_eq!(rt.state.tree.cursor(), Some(target));
+            header_at_top(&rt, i);
+        }
+        // Scrolling up from the last file hands the selection back to the file above.
+        let last = rt.state.diff.files().len() - 1;
+        for _ in 0..20 {
+            rt.wheel(700.0, 500.0, 120.0);
+            rt.frame(1.0 / 60.0);
+        }
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(rt.state.diff.visible_file() < last, "the selection follows the scroll again");
+        let above = rt.state.diff.files()[rt.state.diff.visible_file()].path().to_owned();
+        assert_eq!(rt.state.tree.cursor(), Some(above.as_str()));
+    }
+
