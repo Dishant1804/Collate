@@ -3899,3 +3899,362 @@ mod tests {
         assert!(rt.presented(&format!("df{last}")).is_some(), "the last file's header was reached");
     }
 
+    #[test]
+    fn marking_a_file_viewed_folds_it_and_counts_it() {
+        let mut rt = loaded();
+        click(&mut rt, "src/api/file1.rs");
+        let i = rt.state.diff.file_index("src/api/file1.rs").unwrap();
+        rt.update(move |s, tx| s.toggle_viewed(i, tx));
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(rt.state.is_viewed(i));
+        assert!(rt.state.diff.collapsed(i));
+        rt.update(move |s, tx| s.toggle_viewed(i, tx));
+        rt.frame(1.0 / 60.0);
+        assert!(!rt.state.is_viewed(i) && !rt.state.diff.collapsed(i));
+    }
+
+    #[test]
+    fn settings_restyle_the_diff() {
+        let mut rt = loaded();
+        rt.update(|s, _| s.settings.font_size = 16.0);
+        rt.update(|s, _| {
+            let was = Settings::default();
+            s.apply_settings(Some(&was));
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.diff.style().font_size, 16.0);
+        assert_eq!(rt.state.diff.style().line_h, (16.0f32 * 1.6).round());
+    }
+
+    /// Stage a hunk, discard another behind the dialog, commit: the review loop end to end,
+    /// through the app's own handlers, on a throwaway repository.
+    #[test]
+    fn the_review_loop_stages_discards_and_commits() {
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let dir = std::env::temp_dir().join(format!("collate-flow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let text: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("a.txt"), &text).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["config", "commit.gpgsign", "false"], &["add", "-A"], &["commit", "-qm", "init"]] {
+            git(&dir, args);
+        }
+        std::fs::write(dir.join("a.txt"), text.replace("line 5\n", "line five\n").replace("line 35\n", "line thirty-five\n")).unwrap();
+        // The one test that changes a repository owns REPO.
+        set_repo(Some(Repo::open(&dir).unwrap()));
+        let repo = current_repo().unwrap();
+        let reread = |rt: &mut Runtime<Collate>| {
+            let raw = repo.status_raw().unwrap();
+            let snap = repo.snapshot(Scope::Uncommitted, &raw, None).unwrap();
+            rt.update(move |s, tx| s.apply_snapshot(snap, tx));
+            for _ in 0..5 {
+                rt.frame(1.0 / 60.0);
+            }
+        };
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut state = init();
+        state.settings = Settings::default();
+        state.scope = Scope::Uncommitted;
+        state.apply_settings(None);
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), env);
+        rt.frame(0.0);
+        reread(&mut rt);
+        assert_eq!(rt.state.diff.files()[0].hunks.len(), 2);
+
+        // Stage the first hunk.
+        rt.update(|s, _| s.stage_hunk(0, 0, None));
+        reread(&mut rt);
+        assert!(git(&dir, &["diff", "--cached"]).contains("+line five"));
+        assert_eq!(rt.state.info[0].staged, Staged::Partly);
+        assert_eq!(rt.state.staged, 1);
+        assert!(rt.state.notice.as_ref().is_some_and(|n| !n.error), "a confirmation shows");
+
+        // Discard the second: nothing happens until the dialog is confirmed.
+        rt.update(|s, _| s.ask_discard(0, Some(1)));
+        // Let the dialog finish opening before reaching for its button.
+        for _ in 0..40 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(rt.find("confirm-discard").is_some(), "the dialog asks first");
+        assert!(std::fs::read_to_string(dir.join("a.txt")).unwrap().contains("thirty-five"));
+        click(&mut rt, "confirm-discard");
+        let on_disk = std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        assert!(!on_disk.contains("thirty-five") && on_disk.contains("line five"), "only the second hunk is undone");
+        assert!(rt.state.confirm.is_none());
+
+        // Commit what's staged.
+        reread(&mut rt);
+        rt.update(|s, _| s.message = TextEdit::new("Spell out five"));
+        let summary = repo.commit("Spell out five").unwrap();
+        assert!(summary.ends_with("Spell out five"));
+        reread(&mut rt);
+        assert_eq!(rt.state.diff.files().len(), 0, "nothing left to review");
+
+        // Pick one line of a three-line replacement and stage just it, from the keyboard.
+        let press = |rt: &mut Runtime<Collate>, t: &str| {
+            let ev = KeyEvent { key: Key::Text(t.into()), mods: Default::default() };
+            rt.update(move |s, tx| {
+                on_key(s, &ev, tx);
+            });
+            rt.frame(1.0 / 60.0);
+        };
+        let text: String = std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        std::fs::write(dir.join("a.txt"), text.replace("line 20\nline 21\nline 22\n", "line XX\nline XXI\nline XXII\n")).unwrap();
+        reread(&mut rt);
+        rt.update(|s, _| {
+            // Side by side, old line 21 and its replacement share a row: one click picks both.
+            s.diff.set_mode(DiffMode::Split);
+            s.diff.set_selection(Some(diff::LineRange { file: 0, start: LineRef::new(diff::Side::Old, 21), end: LineRef::new(diff::Side::Old, 21) }));
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(rt.state.diff.selected_changes().is_some(), "lines are picked");
+        press(&mut rt, "a");
+        let index = git(&dir, &["show", ":a.txt"]);
+        assert!(index.contains("line 20\nline XXI\nline 22\n"), "only line 21 is staged, in place: {}", &index[index.find("line 19").unwrap()..index.find("line 23").unwrap()]);
+        assert!(rt.state.diff.selection().is_none(), "the pick is spent");
+
+        // Discard a file, then take it back.
+        reread(&mut rt);
+        let before = std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        rt.update(|s, _| s.discard_file(0));
+        assert_ne!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), before);
+        assert!(rt.state.notice.as_ref().is_some_and(|n| n.undo.is_some()), "undo is offered");
+        rt.update(|s, _| s.undo_discard());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), before, "undo puts the file back");
+
+        // Viewed, then edited: flagged, not silently forgotten.
+        reread(&mut rt);
+        rt.update(|s, tx| s.toggle_viewed(0, tx));
+        assert!(rt.state.is_viewed(0));
+        std::fs::write(dir.join("a.txt"), before.replace("line 30\n", "line thirty\n")).unwrap();
+        reread(&mut rt);
+        assert!(!rt.state.is_viewed(0) && rt.state.stale.contains("a.txt"));
+
+        // Stage one of two word changes in a line: pick the row, p, untick one, Stage picked.
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "checkpoint"]);
+        std::fs::write(dir.join("w.rs"), "fn a() {\n    let total = price * qty;\n}\n").unwrap();
+        git(&dir, &["add", "w.rs"]);
+        git(&dir, &["commit", "-qm", "w"]);
+        std::fs::write(dir.join("w.rs"), "fn a() {\n    let sum = price * quantity;\n}\n").unwrap();
+        reread(&mut rt);
+        rt.on_key = Some(on_key);
+        let f = rt.state.diff.file_index("w.rs").unwrap();
+        rt.update(move |s, _| {
+            s.diff.set_mode(DiffMode::Split);
+            s.diff.set_selection(Some(diff::LineRange { file: f, start: LineRef::new(diff::Side::Old, 2), end: LineRef::new(diff::Side::Old, 2) }));
+        });
+        rt.key(KeyEvent { key: Key::Text("p".into()), mods: Default::default() });
+        for _ in 0..40 {
+            rt.frame(1.0 / 60.0);
+        }
+        let shown: Vec<String> = rt.state.words.as_ref().expect("the word picker opened").edits.iter().map(|e| format!("{:?}", e.old)).collect();
+        assert_eq!(shown.len(), 2);
+        rt.update(|s, _| s.words.as_mut().unwrap().picked[0] = false);
+        rt.frame(1.0 / 60.0);
+        click(&mut rt, "words-stage");
+        assert!(rt.state.words.is_none());
+        assert_eq!(git(&dir, &["show", ":w.rs"]), "fn a() {\n    let total = price * quantity;\n}\n", "only qty → quantity is staged");
+
+        // Switch to another project: the review starts over there, and the list remembers both.
+        let other = std::env::temp_dir().join(format!("collate-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(other.join("deep/folder")).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
+            git(&other, args);
+        }
+        rt.update(|s, _| s.viewed.insert("w.rs".into(), 1).map(drop).unwrap_or(()));
+        let deep = other.join("deep/folder");
+        rt.update(move |s, tx| s.open_project(&deep, tx));
+        let root = current_repo().unwrap().root.clone();
+        assert_eq!(root.canonicalize().unwrap(), other.canonicalize().unwrap(), "a folder inside a repository opens the repository");
+        assert_eq!(rt.state.name, format!("collate-other-{}", std::process::id()));
+        assert!(!rt.state.loaded && rt.state.diff.files().is_empty() && rt.state.viewed.is_empty(), "nothing carries over");
+        assert_eq!(rt.state.projects[0], root, "the opened project goes first");
+        let back = dir.clone();
+        rt.update(move |s, tx| s.open_project(&back, tx));
+        assert_eq!(rt.state.projects.len().min(2), 2);
+        assert_eq!(rt.state.projects[1], root, "and the other stays in the list");
+        rt.update(|s, tx| s.open_project(std::path::Path::new("/"), tx));
+        assert!(rt.state.notice.as_ref().is_some_and(|n| n.error), "a folder outside git says so and changes nothing");
+        assert_eq!(current_repo().unwrap().root.canonicalize().unwrap(), dir.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(&other);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_finds_lines_and_steps_through_them() {
+        let mut rt = loaded();
+        rt.update(|s, _| {
+            s.search = TextEdit::new("also changed");
+            s.find();
+        });
+        let n = rt.state.hits.len();
+        assert_eq!(n, rt.state.diff.files().len(), "one hit per file");
+        rt.update(|s, tx| s.next_hit(true, tx));
+        rt.update(|s, tx| s.next_hit(true, tx));
+        assert_eq!(rt.state.hit, Some(1));
+        rt.update(|s, tx| s.next_hit(false, tx));
+        rt.update(|s, tx| s.next_hit(false, tx));
+        assert_eq!(rt.state.hit, Some(n - 1), "stepping back from the first wraps to the last");
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let last = n - 1;
+        assert!(rt.presented(&format!("df{last}")).is_some() || rt.state.diff.visible_file() == last, "the last match's file is in view");
+    }
+
+    #[test]
+    fn large_files_start_folded_and_folds_survive_a_refresh() {
+        let mut rt = loaded();
+        // Every file in the fixture changes 4 lines; call that large.
+        rt.update(|s, tx| {
+            s.settings.fold_large = 3;
+            s.seen.clear();
+            s.hashes.clear();
+            let snap = snapshot();
+            s.apply_snapshot(snap, tx);
+        });
+        assert!((0..rt.state.diff.files().len()).all(|i| rt.state.diff.collapsed(i)), "large files start folded");
+        rt.update(|s, _| s.diff.set_collapsed(2, false));
+        rt.update(|s, tx| {
+            s.hashes.clear();
+            let snap = snapshot();
+            s.apply_snapshot(snap, tx);
+        });
+        assert!(!rt.state.diff.collapsed(2), "a file the reader opened stays open");
+        assert!(rt.state.diff.collapsed(3), "and one left folded stays folded");
+    }
+
+
+    /// Refresh cost on a heavy review, by phase. `COLLATE_BENCH_REPO=<repo> cargo test --release
+    /// bench_refresh -- --ignored --nocapture`; medians of 7 runs, in milliseconds.
+    #[test]
+    #[ignore]
+    fn bench_refresh() {
+        use std::time::Instant;
+        let dir = std::env::var("COLLATE_BENCH_REPO").expect("COLLATE_BENCH_REPO");
+        let repo = Repo::open(std::path::Path::new(&dir)).unwrap();
+        let median = |mut v: Vec<f64>| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            (v[v.len() / 2], v[0], v[v.len() - 1])
+        };
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+        let runs = 7;
+        let (mut status, mut fp, mut snap_t, mut cold, mut warm, mut frame) = (vec![], vec![], vec![], vec![], vec![], vec![]);
+        let (mut prep_cold, mut prep_warm) = (vec![], vec![]);
+        let (mut memo_cold, mut memo_edit) = (vec![], vec![]);
+        for _ in 0..runs {
+            let t = Instant::now();
+            let raw = repo.status_raw().unwrap();
+            status.push(ms(t));
+            let t = Instant::now();
+            let _ = repo.fingerprint(&raw, "");
+            fp.push(ms(t));
+            let t = Instant::now();
+            let snap = repo.snapshot(Scope::Uncommitted, &raw, None).unwrap();
+            snap_t.push(ms(t));
+            let env = Env { system_dark: true, scale: 2.0 };
+            let mut state = init();
+            state.settings = Settings::default();
+            state.apply_settings(None);
+            let mut rt = Runtime::new(state, view, (1280.0, 840.0), env);
+            rt.frame(0.0);
+            // Cold: every file diffed, as on launch (watcher thread), then shown (UI thread).
+            let opts = rt.state.opts();
+            let mut cache = DiffCache::new();
+            let t = Instant::now();
+            let p = prepare(snap, opts, &mut cache).unwrap();
+            prep_cold.push(ms(t));
+            let t = Instant::now();
+            rt.update(move |s, tx| s.apply(p, tx));
+            cold.push(ms(t));
+            let t = Instant::now();
+            rt.frame(1.0 / 60.0);
+            frame.push(ms(t));
+            // Warm: a refresh where one file changed (the cache serves the rest).
+            let mut snap = repo.snapshot(Scope::Uncommitted, &raw, None).unwrap();
+            snap.changes[0].hash ^= 1;
+            let t = Instant::now();
+            let p = prepare(snap, opts, &mut cache).unwrap();
+            prep_warm.push(ms(t));
+            let t = Instant::now();
+            rt.update(move |s, tx| s.apply(p, tx));
+            warm.push(ms(t));
+        }
+        // A real refresh: the watcher's memory in place, one file edited on disk.
+        let readme = std::path::Path::new(&dir).join("README.md");
+        let original = std::fs::read(&readme).unwrap();
+        for i in 0..runs {
+            let mut memo = git::Memo::default();
+            let raw = repo.status_raw().unwrap();
+            let t = Instant::now();
+            let _ = repo.snapshot_with(Scope::Uncommitted, &raw, None, &mut memo).unwrap();
+            memo_cold.push(ms(t));
+            std::fs::write(&readme, [&original[..], format!("\nbench edit {i}\n").as_bytes()].concat()).unwrap();
+            let raw = repo.status_raw().unwrap();
+            let t = Instant::now();
+            let snap = repo.snapshot_with(Scope::Uncommitted, &raw, None, &mut memo).unwrap();
+            memo_edit.push(ms(t));
+            assert_eq!(snap.changes.iter().filter(|c| !c.reused).count(), 1, "only the edited file is read");
+        }
+        std::fs::write(&readme, &original).unwrap();
+        let files = repo.snapshot(Scope::Uncommitted, &repo.status_raw().unwrap(), None).unwrap().changes.len();
+        eprintln!("files {files}");
+        for (name, v) in [
+            ("git status", status),
+            ("fingerprint", fp),
+            ("snapshot, no memory (blobs)", snap_t),
+            ("snapshot, first (memo)", memo_cold),
+            ("snapshot, 1 file edited (memo)", memo_edit),
+            ("diff, cold (watcher thread)", prep_cold),
+            ("apply cold (UI thread)", cold),
+            ("first frame", frame),
+            ("diff, 1 file changed (watcher)", prep_warm),
+            ("apply, 1 file changed (UI thread)", warm),
+        ] {
+            let (m, lo, hi) = median(v);
+            eprintln!("{name:36} median {m:8.1} ms   min {lo:8.1}   max {hi:8.1}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod sizes {
+    use super::*;
+
+    /// Rough heap sizes of what a heavy review keeps, by part. `COLLATE_BENCH_REPO=<repo> cargo
+    /// test --release heap_sizes -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn heap_sizes() {
+        let dir = std::env::var("COLLATE_BENCH_REPO").expect("COLLATE_BENCH_REPO");
+        let repo = Repo::open(std::path::Path::new(&dir)).unwrap();
+        let raw = repo.status_raw().unwrap();
+        let snap = repo.snapshot(Scope::Uncommitted, &raw, None).unwrap();
+        let p = prepare(snap, DiffOpts { context: 3, ignore_whitespace: false, moved: true, hide_low_signal: true }, &mut DiffCache::new()).unwrap();
+        let mut texts = 0usize;
+        let (mut lines, mut line_text, mut changes) = (0usize, 0usize, 0usize);
+        for f in &p.files {
+            texts += [diff::Side::Old, diff::Side::New].iter().filter_map(|&s| f.text(s)).map(|t| t.len() + t.lines().count() * 8).sum::<usize>();
+            for l in f.hunks.iter().flat_map(|h| &h.lines) {
+                lines += 1;
+                line_text += l.text.capacity();
+                changes += l.changes.capacity() * 16;
+            }
+        }
+        let line_struct = std::mem::size_of::<diff::Line>();
+        let mut st = DiffState::new(Vec::new());
+        st.set_files(p.files.clone());
+        eprintln!("files {}", p.files.len());
+        eprintln!("whole texts (both sides, with line index)  {:6.1} MB", texts as f64 / 1e6);
+        eprintln!("hunk lines: {lines} × {line_struct} B + text {:.1} MB + word ranges {:.1} MB = {:6.1} MB per copy", line_text as f64 / 1e6, changes as f64 / 1e6, (lines * line_struct + line_text + changes) as f64 / 1e6);
+        eprintln!("rows {} (keys made on demand; no per-row index)", st.rows.len());
+    }
+}
