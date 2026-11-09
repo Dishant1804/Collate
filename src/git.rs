@@ -309,3 +309,265 @@ impl Repo {
         Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes })
     }
 
+    /// The files commit `sha` changed, each against its first parent (nothing, for a root
+    /// commit). Commits don't change, so every one of them can be remembered.
+    fn commit_plans(&self, sha: &str) -> Result<Vec<Plan>, String> {
+        let out = self
+            .git()
+            .args(["diff-tree", "--no-commit-id", "-r", "-z", "--name-only", "--no-renames", "--root", sha])
+            .output()
+            .map_err(|e| format!("git diff-tree: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
+        }
+        let mut paths: Vec<String> = String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect();
+        paths.sort_by(|a, b| tree_order(a, b));
+        Ok(paths
+            .into_iter()
+            .map(|p| Plan {
+                old: Source::Git(format!("{sha}^:{p}")),
+                new: Source::Git(format!("{sha}:{p}")),
+                path: p,
+                orig: None,
+                staged: Staged::No,
+                untracked: false,
+                stable: true,
+            })
+            .collect())
+    }
+
+    /// Reads the files `plans` name, skipping those `memo` saw unchanged: one `cat-file` pass
+    /// (split across processes when there are many) for the blobs, and the working files.
+    fn read_plans(&self, plans: Vec<Plan>, memo: &mut Memo) -> Result<Vec<Change>, String> {
+        let identity = |p: &Plan| -> Option<u64> {
+            let mut h = DefaultHasher::new();
+            for side in [&p.old, &p.new] {
+                match side {
+                    Source::Missing => 0u8.hash(&mut h),
+                    Source::Git(spec) => (1u8, spec).hash(&mut h),
+                    Source::Worktree => {
+                        let m = std::fs::symlink_metadata(self.root.join(&p.path)).ok();
+                        (2u8, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok())).hash(&mut h);
+                    }
+                }
+            }
+            p.stable.then(|| h.finish())
+        };
+        let ids: Vec<Option<u64>> = plans.iter().map(identity).collect();
+        let fresh: Vec<bool> = plans.iter().zip(&ids).map(|(p, id)| id.is_none() || memo.files.get(&p.path).is_none_or(|r| Some(r.identity) != *id)).collect();
+        // The blobs to read: (plan, is old side) for every git-backed side of a fresh plan.
+        let mut wanted: Vec<(usize, bool)> = Vec::new();
+        let mut specs: Vec<String> = Vec::new();
+        for (i, p) in plans.iter().enumerate().filter(|(i, _)| fresh[*i]) {
+            for (is_old, side) in [(true, &p.old), (false, &p.new)] {
+                if let Source::Git(spec) = side {
+                    wanted.push((i, is_old));
+                    specs.push(spec.clone());
+                }
+            }
+        }
+        let mut blobs = self.cat_files_parallel(&specs)?.into_iter();
+        let mut read: Vec<(Option<Blob>, Option<Blob>)> = (0..plans.len()).map(|_| (None, None)).collect();
+        for &(i, is_old) in &wanted {
+            let b = blobs.next().flatten();
+            if is_old { read[i].0 = b } else { read[i].1 = b }
+        }
+        // `linguist-generated`, asked of git only for paths not seen before (all of them again
+        // when a `.gitattributes` changed).
+        if plans.iter().zip(&fresh).any(|(p, &f)| f && p.path.rsplit('/').next() == Some(".gitattributes")) {
+            memo.generated.clear();
+        }
+        let unknown: Vec<&str> = plans.iter().map(|p| p.path.as_str()).filter(|p| !memo.generated.contains_key(*p)).collect();
+        if !unknown.is_empty() {
+            let marked = self.generated(unknown.iter().copied());
+            for p in unknown {
+                memo.generated.insert(p.to_owned(), marked.contains(p));
+            }
+        }
+        let mut out = Vec::with_capacity(plans.len());
+        for (i, p) in plans.into_iter().enumerate() {
+            let generated = memo.generated.get(&p.path).copied().unwrap_or(false);
+            if !fresh[i] {
+                let r = memo.files[&p.path];
+                // Known: which sides exist and the hashes; no text (the diff is cached).
+                let blank = |has: bool| has.then(|| Blob::Text(String::new()));
+                out.push(Change { path: p.path, old_path: p.orig, old: blank(r.has_old), new: blank(r.has_new), hash: r.hash, staged: p.staged, untracked: p.untracked, new_hash: r.new_hash, generated, reused: true });
+                continue;
+            }
+            let (old, git_new) = std::mem::take(&mut read[i]);
+            let new = match p.new {
+                Source::Worktree => self.read_worktree(&p.path),
+                _ => git_new,
+            };
+            if old.is_none() && new.is_none() {
+                memo.files.remove(&p.path);
+                continue;
+            }
+            let mut h = DefaultHasher::new();
+            p.path.hash(&mut h);
+            hash_blob(&new, &mut h);
+            let new_hash = h.finish();
+            hash_blob(&old, &mut h);
+            let hash = h.finish();
+            match ids[i] {
+                Some(identity) => {
+                    memo.files.insert(p.path.clone(), Remembered { identity, has_old: old.is_some(), has_new: new.is_some(), hash, new_hash });
+                }
+                None => {
+                    memo.files.remove(&p.path);
+                }
+            }
+            out.push(Change { path: p.path, old_path: p.orig, old, new, hash, staged: p.staged, untracked: p.untracked, new_hash, generated, reused: false });
+        }
+        Ok(out)
+    }
+
+    /// [`Repo::cat_files`] split across up to four `git cat-file` processes when there's a
+    /// lot to read: inflating blobs is git's work, and it's one core per process.
+    fn cat_files_parallel(&self, specs: &[String]) -> Result<Vec<Option<Blob>>, String> {
+        const PER_PROCESS: usize = 64;
+        let parts = specs.len().div_ceil(PER_PROCESS).clamp(1, 4);
+        if parts == 1 {
+            return self.cat_files(specs);
+        }
+        let size = specs.len().div_ceil(parts);
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = specs.chunks(size).map(|chunk| scope.spawn(move || self.cat_files(chunk))).collect();
+            let mut out = Vec::with_capacity(specs.len());
+            for j in jobs {
+                out.extend(j.join().map_err(|_| "git cat-file reader panicked".to_owned())??);
+            }
+            Ok(out)
+        })
+    }
+
+    fn read_worktree(&self, path: &str) -> Option<Blob> {
+        let p = self.root.join(path);
+        let meta = std::fs::symlink_metadata(&p).ok()?;
+        if meta.file_type().is_symlink() {
+            return std::fs::read_link(&p).ok().map(|t| Blob::Text(t.to_string_lossy().into_owned()));
+        }
+        if !meta.is_file() {
+            return None;
+        }
+        if meta.len() as usize > MAX_BYTES {
+            return Some(Blob::TooLarge(meta.len() as usize));
+        }
+        std::fs::read(&p).ok().map(classify)
+    }
+
+    /// Reads every spec (`HEAD:path`, `:path`) through one `git cat-file --batch`; `None` for a
+    /// spec git reports missing (an added file has no HEAD blob).
+    fn cat_files(&self, specs: &[String]) -> Result<Vec<Option<Blob>>, String> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut child = self
+            .git()
+            .args(["cat-file", "--batch", "--buffer"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("git cat-file: {e}"))?;
+        let mut stdin = child.stdin.take().unwrap();
+        let input: String = specs.iter().map(|s| format!("{s}\n")).collect();
+        // Write from another thread so a large output can't fill the pipe while we're still writing.
+        let writer = std::thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut blobs = Vec::with_capacity(specs.len());
+        let mut header = String::new();
+        for _ in specs {
+            header.clear();
+            if out.read_line(&mut header).map_err(|e| e.to_string())? == 0 {
+                return Err("git cat-file ended early".into());
+            }
+            let fields: Vec<&str> = header.trim_end().split(' ').collect();
+            match fields.as_slice() {
+                [_, kind, size] => {
+                    let size: usize = size.parse().map_err(|_| format!("bad cat-file header: {header}"))?;
+                    let mut buf = vec![0; size + 1];
+                    out.read_exact(&mut buf).map_err(|e| e.to_string())?;
+                    buf.pop();
+                    blobs.push(match *kind {
+                        "blob" if size > MAX_BYTES => Some(Blob::TooLarge(size)),
+                        "blob" => Some(classify(buf)),
+                        // A submodule shows as a commit; there's no text to diff.
+                        _ => None,
+                    });
+                }
+                _ => blobs.push(None),
+            }
+        }
+        let _ = writer.join();
+        let _ = child.wait();
+        Ok(blobs)
+    }
+}
+
+/// Changing the repository: staging, unstaging, discarding and committing. Each runs one git
+/// command and reports git's own message when it refuses.
+impl Repo {
+    fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+        let mut c = Command::new("git");
+        c.arg("-C").arg(&self.root).args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if stdin.is_some() {
+            c.stdin(Stdio::piped());
+        }
+        let mut child = c.spawn().map_err(|e| format!("can't run git: {e}"))?;
+        if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
+            pipe.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
+        }
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let err = err.trim();
+            Err(if err.is_empty() { format!("git {} failed", args[0]) } else { err.lines().take(3).collect::<Vec<_>>().join(" ") })
+        }
+    }
+
+    /// Applies `patch` to the index (`cached`) or the working tree, backwards when `reverse`.
+    pub fn apply(&self, patch: &str, cached: bool, reverse: bool) -> Result<(), String> {
+        let mut args = vec!["apply", "--whitespace=nowarn"];
+        if cached {
+            args.push("--cached");
+        }
+        if reverse {
+            args.push("--reverse");
+        }
+        args.push("-");
+        self.run(&args, Some(patch)).map(drop)
+    }
+
+    pub fn stage(&self, path: &str) -> Result<(), String> {
+        self.run(&["add", "-A", "--", path], None).map(drop)
+    }
+
+    /// Stages every change, untracked files included (GitKraken's Stage All).
+    pub fn stage_all(&self) -> Result<(), String> {
+        self.run(&["add", "-A"], None).map(drop)
+    }
+
+    /// Unstages everything, leaving the working tree as it is.
+    pub fn unstage_all(&self) -> Result<(), String> {
+        let has_head = self.run(&["rev-parse", "--verify", "-q", "HEAD"], None).is_ok();
+        if has_head {
+            self.run(&["reset", "-q"], None).map(drop)
+        } else {
+            self.run(&["rm", "-r", "-q", "--cached", "."], None).map(drop)
+        }
+    }
+
+    pub fn unstage(&self, path: &str) -> Result<(), String> {
+        let has_head = self.run(&["rev-parse", "--verify", "-q", "HEAD"], None).is_ok();
+        if has_head {
+            self.run(&["restore", "--staged", "--", path], None).map(drop)
+        } else {
+            self.run(&["rm", "-q", "--cached", "--", path], None).map(drop)
+        }
+    }
+
