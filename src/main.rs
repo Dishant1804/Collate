@@ -1066,3 +1066,356 @@ impl Collate {
         self.save_error = self.settings.save().err();
     }
 
+    fn is_viewed(&self, i: usize) -> bool {
+        let (Some(f), Some(info)) = (self.diff.files().get(i), self.info.get(i)) else { return false };
+        self.viewed.get(f.path()) == Some(&info.new_hash)
+    }
+
+    fn toggle_viewed(&mut self, i: usize, tx: &mut Tx) {
+        let (Some(path), Some(hash)) = (self.diff.files().get(i).map(|f| f.path().to_owned()), self.info.get(i).map(|i| i.new_hash)) else { return };
+        let now = !self.is_viewed(i);
+        if now {
+            self.viewed.insert(path.clone(), hash);
+        } else {
+            self.viewed.remove(&path);
+        }
+        self.stale.remove(&path);
+        save_viewed(&self.viewed);
+        for t in [&mut self.tree, &mut self.staged_tree] {
+            if let Some(Some(st)) = t.get_mut(&path).map(|n| n.data.as_mut()) {
+                st.viewed = now;
+            }
+        }
+        if self.settings.collapse_viewed {
+            self.diff.set_collapsed(i, now);
+            // Keep the header where the reader is looking rather than letting the fold pull
+            // the next file under the pointer.
+            self.diff.scroll_to_file(i, tx);
+        }
+    }
+
+    /// The settings that shape the diffs the watcher builds.
+    fn opts(&self) -> DiffOpts {
+        let s = &self.settings;
+        DiffOpts { context: s.context, ignore_whitespace: s.ignore_whitespace, moved: s.show_moved, hide_low_signal: s.hide_low_signal && !self.show_low_signal }
+    }
+
+    #[cfg(test)]
+    fn apply_snapshot(&mut self, snap: Snapshot, tx: &mut Tx) {
+        let p = prepare(snap, self.opts(), &mut DiffCache::new()).expect("a full snapshot");
+        self.apply(p, tx);
+    }
+
+    /// Show diffs the watcher prepared. Only the cheap part runs here, on the UI thread: the
+    /// file tree, the rows and the folds.
+    fn apply(&mut self, p: Prepared, tx: &mut Tx) {
+        let Prepared { snap, files, hidden, opts } = p;
+        // Made for a scope, base or setting the reader has since left: a newer one is coming.
+        let wanted = match snap.scope {
+            Scope::Branch => self.base.as_ref(),
+            Scope::History => self.commit.as_ref(),
+            _ => None,
+        };
+        let stale = snap.scope.read_only() && snap.base.as_ref().map(|b| &b.0) != wanted;
+        if snap.scope != self.scope || stale || opts != self.opts() {
+            return;
+        }
+        self.has_project = true;
+        self.branch = snap.branch;
+        self.head = snap.head;
+        self.base_commit = snap.base.map(|b| b.1);
+        self.staged = snap.staged;
+        self.staged_shown = if opts.hide_low_signal { snap.working.iter().filter(|(p, s, _)| *s && !settings::low_signal(p)).count() } else { snap.staged };
+        self.unstaged = snap.unstaged;
+        self.total = snap.total;
+        let shows_uncommitted = self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED);
+        if self.scope == Scope::History && (self.total > 0) != shows_uncommitted {
+            self.load_history();
+            // Rows went in above the list's anchor: a reader at the newest commit sees them.
+            if !shows_uncommitted && self.commit.is_some() && self.commit == self.head {
+                tx.scroll_into_view(format!("graph-{}", graph::UNCOMMITTED));
+            }
+        }
+        self.error = None;
+        self.hidden = hidden;
+        let changes = snap.changes;
+        let hashes: Vec<u64> = changes.iter().map(|c| c.hash).collect();
+        let info: Vec<FileInfo> = changes.iter().map(|c| FileInfo { staged: c.staged, in_base: c.old.is_some(), new_hash: c.new_hash }).collect();
+        // Staging can change what a file's actions offer without changing its two sides.
+        let staging_moved = info.iter().map(|i| i.staged).ne(self.info.iter().map(|i| i.staged));
+        self.info = info;
+        if self.loaded && hashes == self.hashes {
+            if staging_moved {
+                // A file moves between Unstaged and Staged without its diff changing.
+                self.build_lists(&changes);
+            }
+            return;
+        }
+        if !self.loaded {
+            // The first diff lands as it is; nothing should fade or slide in under the reader.
+            tx.instant();
+        }
+        let was = self.diff.files().get(self.diff.visible_file()).map(|f| f.path().to_owned());
+        // Folds the reader set survive a refresh.
+        let folded: HashSet<String> = (0..self.diff.files().len()).filter(|&i| self.diff.collapsed(i)).map(|i| self.diff.files()[i].path().to_owned()).collect();
+        // A viewed file that changed since stays listed as such rather than silently unmarked.
+        for c in &changes {
+            if self.viewed.get(&c.path).is_some_and(|h| *h != c.new_hash) {
+                self.viewed.remove(&c.path);
+                self.stale.insert(c.path.clone());
+            }
+        }
+        self.hashes = hashes;
+        let fold_large = self.settings.fold_large;
+        let folded: Vec<bool> = files
+            .iter()
+            .zip(&changes)
+            .map(|(f, c)| {
+                let first_sight = self.seen.insert(c.path.clone());
+                let large = fold_large > 0 && (f.additions() + f.deletions()) as u32 > fold_large;
+                let viewed = self.viewed.get(&c.path) == Some(&c.new_hash);
+                folded.contains(&c.path) || (self.settings.collapse_viewed && viewed) || (first_sight && large)
+            })
+            .collect();
+        self.diff.set_files_folded(files, &folded);
+        self.build_lists(&changes);
+        // The map's sizes and imports follow the working tree.
+        if self.map.open {
+            self.build_map();
+        }
+        self.find();
+        self.loaded = true;
+        // Keep the reader's place across a refresh.
+        if let Some(i) = was.and_then(|p| self.diff.file_index(&p)) {
+            self.diff.scroll_to_file(i, tx);
+            let path = self.diff.files()[i].path().to_owned();
+            self.select_in_lists(&path);
+        }
+    }
+
+    /// The staging panel's lists for this view, from the shown files: Unstaged and Staged for
+    /// All Changes (a partly staged file is in both, as in GitKraken), one list otherwise.
+    fn build_lists(&mut self, changes: &[Change]) {
+        type Pick = fn(&Change) -> bool;
+        let files = self.diff.files();
+        let (main, staged): (Pick, Pick) = match self.scope {
+            Scope::Uncommitted => (|c| c.staged != Staged::Fully, |c| c.staged != Staged::No),
+            Scope::Staged => (|_| false, |_| true),
+            Scope::Unstaged | Scope::Branch | Scope::History => (|_| true, |_| false),
+        };
+        self.tree = tree(changes, files, &self.viewed, main);
+        self.staged_tree = tree(changes, files, &self.viewed, staged);
+        self.apply_filter();
+    }
+
+    /// Highlights `path` in whichever list holds it, following the diff as it scrolls.
+    fn select_in_lists(&mut self, path: &str) {
+        for t in [&mut self.tree, &mut self.staged_tree] {
+            if t.contains(path) {
+                t.select(path);
+            }
+        }
+    }
+
+    /// Rerun the search over the shown lines, keeping the current hit when it still holds.
+    fn find(&mut self) {
+        let q = self.search.text.trim().to_owned();
+        self.diff.set_search((!q.is_empty()).then_some(q));
+        self.hits = self.diff.search_hits();
+        self.hit = self.hit.filter(|&h| h < self.hits.len());
+    }
+
+    /// Jump to the next (or previous) line holding the search text, opening its file.
+    fn next_hit(&mut self, forward: bool, tx: &mut Tx) {
+        if self.hits.is_empty() {
+            return;
+        }
+        let n = self.hits.len();
+        let i = match self.hit {
+            None => if forward { 0 } else { n - 1 },
+            Some(h) if forward => (h + 1) % n,
+            Some(h) => (h + n - 1) % n,
+        };
+        self.hit = Some(i);
+        let (f, at) = self.hits[i];
+        self.diff.scroll_to_line(f, at, tx);
+    }
+
+    fn fold_all(&mut self, fold: bool, tx: &mut Tx) {
+        let at = self.diff.visible_file();
+        for i in 0..self.diff.files().len() {
+            self.diff.set_collapsed(i, fold);
+        }
+        self.diff.scroll_to_file(at, tx);
+    }
+
+    fn apply_filter(&mut self) {
+        let q = self.filter.text.trim().to_lowercase();
+        for t in [&mut self.tree, &mut self.staged_tree] {
+            if q.is_empty() {
+                t.clear_filter();
+            } else {
+                t.filter(|n| !n.dir && n.path.to_lowercase().contains(&q));
+            }
+        }
+    }
+}
+
+/// Where this repository's viewed marks are kept, so they survive a restart:
+/// `~/Library/Application Support/Collate/viewed/<hash of the repository's path>`.
+fn viewed_file() -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let repo = current_repo()?;
+    let root = &repo.root;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    root.hash(&mut h);
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(format!("Library/Application Support/Collate/viewed/{:016x}", h.finish())))
+}
+
+/// `~/Library/Application Support/Collate/projects`: one repository path per line, most
+/// recently opened first.
+fn projects_file() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Collate/projects"))
+}
+
+fn load_projects() -> Vec<PathBuf> {
+    let text = projects_file().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    text.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).collect()
+}
+
+fn save_projects(projects: &[PathBuf]) {
+    // Tests open throwaway repositories; they leave the reader's list alone.
+    if cfg!(test) {
+        return;
+    }
+    let Some(path) = projects_file() else { return };
+    let text: String = projects.iter().map(|p| format!("{}\n", p.display())).collect();
+    // Losing the list isn't worth interrupting a review over; the next open tries again.
+    let _ = path.parent().map(std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text).ok());
+}
+
+/// Puts `root` first in the list (once), keeping it to the 30 most recent.
+fn remember_project(projects: &mut Vec<PathBuf>, root: PathBuf) {
+    projects.retain(|p| *p != root);
+    projects.insert(0, root);
+    projects.truncate(30);
+    save_projects(projects);
+}
+
+/// Menu labels for `projects`: each folder's name, with its parent folder's when two share a
+/// name (`api - work`, `api - personal`), so the menu stays short and every entry is distinct.
+fn project_labels(projects: &[PathBuf]) -> Vec<String> {
+    let name = |p: &std::path::Path| p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+    projects
+        .iter()
+        .map(|p| {
+            let n = name(p);
+            let twins = projects.iter().filter(|q| name(q) == n).count();
+            match (twins, p.parent().and_then(|d| d.file_name())) {
+                (2.., Some(parent)) => format!("{n} - {}", parent.to_string_lossy()),
+                _ => n,
+            }
+        })
+        .collect()
+}
+
+/// `p` as a reader would write it, home shortened to `~`.
+fn tilde(p: &std::path::Path) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let full = p.display().to_string();
+    match full.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => full,
+    }
+}
+
+const ADD_PROJECT: &str = "Add local project…";
+
+/// Lines of `<hash> <path>`.
+fn load_viewed() -> HashMap<String, u64> {
+    let text = viewed_file().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    text.lines().filter_map(|l| l.split_once(' ')).filter_map(|(h, p)| Some((p.to_owned(), u64::from_str_radix(h, 16).ok()?))).collect()
+}
+
+fn save_viewed(viewed: &HashMap<String, u64>) {
+    // Tests run against throwaway repositories; they leave the reader's marks alone.
+    if cfg!(test) {
+        return;
+    }
+    let Some(path) = viewed_file() else { return };
+    let text: String = viewed.iter().map(|(p, h)| format!("{h:016x} {p}\n")).collect();
+    // Losing marks isn't worth interrupting a review over; the next toggle tries again.
+    let _ = path.parent().map(std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text).ok());
+}
+
+fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
+    let old_path = c.old.as_ref().map(|_| c.old_path.clone().unwrap_or_else(|| c.path.clone()));
+    let new_path = c.new.as_ref().map(|_| c.path.clone());
+    match (&c.old, &c.new) {
+        (None | Some(Blob::Text(_)), None | Some(Blob::Text(_))) => {
+            fn t(b: &Option<Blob>) -> &str {
+                match b {
+                    Some(Blob::Text(t)) => t,
+                    _ => "",
+                }
+            }
+            FileDiff::between_opts(old_path, new_path, t(&c.old), t(&c.new), context, ignore_whitespace)
+        }
+        _ => {
+            // Binary or too large on either side: let the patch parser make a binary entry.
+            let a = old_path.as_ref().map_or("/dev/null".to_owned(), |p| format!("a/{p}"));
+            let b = new_path.as_ref().map_or("/dev/null".to_owned(), |p| format!("b/{p}"));
+            let mut patch = format!("diff --git a/{} b/{}\n", old_path.as_ref().unwrap_or(&c.path), c.path);
+            if old_path.is_none() {
+                patch.push_str("new file mode 100644\n");
+            }
+            if new_path.is_none() {
+                patch.push_str("deleted file mode 100644\n");
+            }
+            patch.push_str(&format!("Binary files {a} and {b} differ\n"));
+            parse(&patch).into_iter().next().unwrap_or_else(|| FileDiff::between(old_path, new_path, "", ""))
+        }
+    }
+}
+
+fn tree(changes: &[Change], files: &[FileDiff], viewed: &HashMap<String, u64>, keep: fn(&Change) -> bool) -> TreeModel<FileNode<Stat>> {
+    let rows = changes.iter().zip(files).filter(|(c, _)| keep(c)).map(|(c, f)| {
+        let letter = match (&c.old, &c.new) {
+            _ if c.untracked => 'U',
+            (None, _) => 'A',
+            (_, None) => 'D',
+            _ if c.old_path.is_some() => 'R',
+            _ => 'M',
+        };
+        let viewed = viewed.get(&c.path) == Some(&c.new_hash);
+        (c.path.clone(), Stat { added: f.additions() as u32, removed: f.deletions() as u32, letter, viewed })
+    });
+    let mut t = FileTree::new().build(rows);
+    t.expand_all();
+    t
+}
+
+fn label(n: &FileNode<Stat>) -> &str {
+    &n.name
+}
+
+fn reveal(s: &mut Collate, id: &str, tx: &mut Tx) {
+    // A file picked from the lists shows its diff, not the map.
+    s.map.open = false;
+    // History's file list is the way into a commit's diff.
+    if s.scope == Scope::History {
+        s.history_diff = true;
+    }
+    if let Some(i) = s.diff.file_index(id) {
+        if s.diff.collapsed(i) {
+            s.diff.set_collapsed(i, false);
+        }
+        s.diff.scroll_to_file(i, tx);
+    }
+}
+
+fn kit(s: &Collate, cx: &Cx<Collate>) -> Kit {
+    Kit::neutral(s.settings.dark(cx.system_dark()))
+}
+
