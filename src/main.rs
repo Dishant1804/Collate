@@ -392,3 +392,326 @@ struct Collate {
     searching: bool,
 }
 
+fn init() -> Collate {
+    let settings = Settings::load();
+    let repo = current_repo();
+    let branches = repo.as_deref().map(Repo::branches).unwrap_or_default();
+    let base = repo.as_deref().and_then(Repo::default_base);
+    let mut s = Collate {
+        name: repo.as_deref().map(Repo::name).unwrap_or_default(),
+        branch: String::new(),
+        head: None,
+        scope: settings.default_scope,
+        base,
+        base_commit: None,
+        branches,
+        base_open: false,
+        loaded: false,
+        error: None,
+        settings,
+        save_error: None,
+        screen: Screen::Review,
+        diff: DiffState::new(Vec::new()),
+        tree: TreeModel::new(),
+        filter: TextEdit::new(""),
+        hashes: Vec::new(),
+        info: Vec::new(),
+        viewed: HashMap::new(),
+        hidden: 0,
+        show_low_signal: false,
+        staged: 0,
+        staged_shown: 0,
+        unstaged: 0,
+        total: 0,
+        staged_tree: TreeModel::new(),
+        inspector: PaneState::new(300.0).range(220.0, 520.0),
+        message: TextEdit::new(""),
+        committing: false,
+        confirm: None,
+        notice: None,
+        sidebar: PaneState::new(290.0).range(180.0, 560.0),
+        search: TextEdit::new(""),
+        hits: Vec::new(),
+        hit: None,
+        stale: HashSet::new(),
+        seen: HashSet::new(),
+        show_help: false,
+        searching: false,
+        words: None,
+        projects: load_projects(),
+        project_open: false,
+        picking: false,
+        has_project: current_repo().is_some(),
+        settings_tab: 0,
+        commit_ids: Vec::new(),
+        graph_commits: Vec::new(),
+        graph_rows: Vec::new(),
+        graph_lanes: 1,
+        graph_limit: HISTORY_PAGE,
+        graph_loading: false,
+        graph_version: 0,
+        commit: None,
+        history_diff: false,
+        web: None,
+        avatars: avatars::Avatars::default(),
+        map: map_view::MapState::default(),
+        nav: nav::Nav::default(),
+        commit_body: String::new(),
+    };
+    s.viewed = load_viewed();
+    if s.scope == Scope::History {
+        s.load_history();
+    }
+    s.apply_settings(None);
+    s
+}
+
+impl Collate {
+    fn set_scope(&mut self, scope: Scope) {
+        if self.scope != scope {
+            self.scope = scope;
+            self.loaded = false;
+            self.error = None;
+            if scope == Scope::Branch
+                && let Some(r) = current_repo()
+            {
+                self.branches = r.branches();
+            }
+            if scope == Scope::History {
+                self.load_history();
+            }
+            if let Some(w) = WATCHER.get() {
+                let _ = w.send(Cmd::Scope(scope));
+            }
+        }
+    }
+
+    /// Opens the git repository containing `dir` in this window: the review starts over on
+    /// it, and it goes to the top of the project list.
+    fn open_project(&mut self, dir: &std::path::Path, tx: &mut Tx) {
+        self.project_open = false;
+        let repo = match Repo::open(dir) {
+            Ok(r) => r,
+            Err(e) => {
+                self.say(e, true);
+                return;
+            }
+        };
+        if current_repo().is_some_and(|r| r.root == repo.root) {
+            return;
+        }
+        let root = repo.root.clone();
+        self.has_project = true;
+        self.name = repo.name();
+        self.branches = repo.branches();
+        self.base = repo.default_base();
+        tx.set_title(format!("{} — Collate", self.name));
+        set_repo(Some(repo));
+        watch_project_files(Some(root.clone()));
+        remember_project(&mut self.projects, root);
+        // Everything read from the last project goes.
+        self.branch.clear();
+        self.head = None;
+        self.base_commit = None;
+        self.loaded = false;
+        self.error = None;
+        self.diff.set_files(Vec::new());
+        self.tree = TreeModel::new();
+        self.staged_tree = TreeModel::new();
+        self.hashes.clear();
+        self.info.clear();
+        self.viewed = load_viewed();
+        self.stale.clear();
+        self.seen.clear();
+        self.hidden = 0;
+        self.show_low_signal = false;
+        self.staged = 0;
+        self.message = TextEdit::new("");
+        self.confirm = None;
+        self.words = None;
+        self.search = TextEdit::new("");
+        self.hits.clear();
+        self.hit = None;
+        self.commit = None;
+        self.history_diff = false;
+        self.commit_ids.clear();
+        self.graph_commits.clear();
+        self.reset_map();
+        self.forget_places();
+        self.graph_rows.clear();
+        self.graph_limit = HISTORY_PAGE;
+        self.graph_loading = false;
+        if self.scope == Scope::History {
+            self.load_history();
+        }
+        if let Some(w) = WATCHER.get() {
+            let _ = w.send(Cmd::Switch { base: self.base.clone(), commit: self.commit.clone() });
+        }
+    }
+
+    /// Ask macOS for a folder (the standard Open dialog, off the UI thread) and open it.
+    fn add_project(&mut self) {
+        self.project_open = false;
+        let Some(app) = HANDLE.get().cloned() else { return };
+        if std::mem::replace(&mut self.picking, true) {
+            return;
+        }
+        std::thread::spawn(move || {
+            let out = std::process::Command::new("osascript")
+                .args(["-e", "POSIX path of (choose folder with prompt \"Choose a project (a folder in a git repository)\")"])
+                .output();
+            app.update(move |s, tx| {
+                s.picking = false;
+                match out {
+                    Ok(o) if o.status.success() => {
+                        let path = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                        s.open_project(std::path::Path::new(&path), tx);
+                    }
+                    // Cancelled (error -128): nothing to say.
+                    Ok(o) if String::from_utf8_lossy(&o.stderr).contains("-128") => {}
+                    Ok(o) => s.say(format!("Couldn't open the folder picker: {}", String::from_utf8_lossy(&o.stderr).trim()), true),
+                    Err(e) => s.say(format!("Couldn't open the folder picker: {e}"), true),
+                }
+            });
+        });
+    }
+
+    fn forget_project(&mut self, i: usize) {
+        if i < self.projects.len() {
+            self.projects.remove(i);
+            save_projects(&self.projects);
+        }
+    }
+
+    /// Reads the recent commits, keeping the one shown if it's still there, else HEAD's.
+    fn load_history(&mut self) {
+        let Some(r) = current_repo() else { return };
+        let (commits, head) = r.graph(self.graph_limit, None);
+        self.web = r.web_url();
+        self.show_history(commits, head);
+    }
+
+    /// Near the end of the list: reads the next page off the main thread, so the list keeps
+    /// scrolling, and shows it when it's in. Without a window (tests) it reads it right away.
+    fn load_more_history(&mut self) {
+        if self.graph_loading || self.commit_ids.len() < self.graph_limit {
+            return;
+        }
+        self.graph_limit += HISTORY_PAGE;
+        let (Some(r), Some(app)) = (current_repo(), HANDLE.get().cloned()) else {
+            self.load_history();
+            return;
+        };
+        self.graph_loading = true;
+        let limit = self.graph_limit;
+        std::thread::spawn(move || {
+            let (commits, head) = r.graph(limit, None);
+            app.update(move |s, _| {
+                // A project switch or refresh since started over: this page is stale.
+                if s.graph_loading && s.graph_limit == limit {
+                    s.graph_loading = false;
+                    s.show_history(commits, head);
+                }
+            });
+        });
+    }
+
+    fn show_history(&mut self, commits: Vec<graph::Commit>, head: Option<String>) {
+        // Only real commits can be stepped through and diffed against their parent.
+        self.commit_ids = commits.iter().map(|c| c.id.clone()).collect();
+        let commits = graph::with_uncommitted(commits, head.as_deref(), self.total > 0);
+        (self.graph_rows, self.graph_lanes) = graph::layout(&commits);
+        self.avatars.request(self.web.as_deref(), &commits);
+        self.graph_commits = commits;
+        self.graph_version = self.graph_version.wrapping_add(1);
+        let keep = self.commit.clone().filter(|c| self.commit_ids.contains(c));
+        if let Some(c) = keep.or_else(|| head.filter(|h| self.commit_ids.contains(h))).or_else(|| self.commit_ids.first().cloned()) {
+            self.set_commit(&c);
+        }
+    }
+
+    fn set_commit(&mut self, id: &str) {
+        if self.commit.as_deref() == Some(id) {
+            return;
+        }
+        self.commit = Some(id.to_owned());
+        self.commit_body = current_repo().map(|r| r.message(id)).unwrap_or_default()
+            .split_once('\n').map(|(_, rest)| rest.trim().to_owned()).unwrap_or_default();
+        if self.scope == Scope::History {
+            self.loaded = false;
+        }
+        if let Some(w) = WATCHER.get() {
+            let _ = w.send(Cmd::Commit(id.to_owned()));
+        }
+    }
+
+    /// Step to an older (`by` > 0) or newer commit in the History view.
+    /// Back from a commit's diff to the commit list, showing the commit it was on.
+    fn close_commit_diff(&mut self, tx: &mut Tx) {
+        self.history_diff = false;
+        if let Some(c) = &self.commit {
+            tx.scroll_into_view(format!("graph-{c}"));
+        }
+    }
+
+    fn step_commit(&mut self, by: isize, tx: &mut Tx) {
+        let Some(at) = self.commit.as_ref().and_then(|c| self.commit_ids.iter().position(|x| x == c)) else { return };
+        let to = at as isize + by;
+        if to >= 0 && (to as usize) < self.commit_ids.len() {
+            let id = self.commit_ids[to as usize].clone();
+            tx.scroll_into_view(format!("graph-{id}"));
+            self.set_commit(&id);
+        }
+    }
+
+    fn set_base(&mut self, base: &str) {
+        self.base = Some(base.to_owned());
+        self.base_open = false;
+        if self.scope == Scope::Branch {
+            self.loaded = false;
+        }
+        if let Some(w) = WATCHER.get() {
+            let _ = w.send(Cmd::Base(base.to_owned()));
+        }
+    }
+
+    /// Reread now, rebuilding every file even if nothing changed on disk.
+    fn reload(&mut self) {
+        *OPTS.lock().unwrap() = self.opts();
+        self.hashes.clear();
+        refresh();
+    }
+
+    fn say(&mut self, text: impl Into<String>, error: bool) {
+        self.notice = Some(Notice { text: text.into(), error, until: None, undo: None });
+    }
+
+    /// Run a change to the repository, report how it went and reread.
+    fn act(&mut self, f: impl FnOnce(&Repo) -> Result<String, String>) {
+        let Some(repo) = current_repo() else { return };
+        match f(&repo) {
+            Ok(done) => self.say(done, false),
+            Err(e) => self.say(e, true),
+        }
+        refresh();
+    }
+
+    fn file(&self, i: usize) -> Option<(&FileDiff, FileInfo)> {
+        Some((self.diff.files().get(i)?, *self.info.get(i)?))
+    }
+
+    fn stage_hunk(&mut self, f: usize, h: usize, picked: Option<Vec<bool>>) {
+        let Some((file, _)) = self.file(f) else { return };
+        let Some(p) = patch::lines(file, h, picked.as_deref(), false) else { return };
+        let scope = self.scope;
+        let what = if picked.is_some() { "the selected lines" } else { "the hunk" };
+        self.selection_clear();
+        self.act(|r| {
+            r.apply(&p, true, false).map(|_| format!("Staged {what}")).map_err(|e| match scope {
+                // HEAD → working tree hunks apply to the index only where it still matches HEAD.
+                Scope::Uncommitted => format!("Couldn't stage this hunk here; part of the file is already staged. Stage it from Unstaged. ({e})"),
+                _ => e,
+            })
+        });
+    }
+
