@@ -715,3 +715,354 @@ impl Collate {
         });
     }
 
+    fn unstage_hunk(&mut self, f: usize, h: usize, picked: Option<Vec<bool>>) {
+        let Some((file, _)) = self.file(f) else { return };
+        let Some(p) = patch::lines(file, h, picked.as_deref(), true) else { return };
+        let what = if picked.is_some() { "the selected lines" } else { "the hunk" };
+        self.selection_clear();
+        self.act(|r| r.apply(&p, true, true).map(|_| format!("Unstaged {what}")));
+    }
+
+    /// When the selection is one removed line and one added line of a hunk (a row of the
+    /// split view), the word changes between them, for picking.
+    fn word_candidate(&self) -> Option<WordPick> {
+        let (file, hunk, picked) = self.diff.selected_changes()?;
+        let f = self.diff.files().get(file)?;
+        let lines = &f.hunks.get(hunk)?.lines;
+        let chosen: Vec<usize> = (0..lines.len()).filter(|&i| picked[i]).collect();
+        let [a, b] = chosen[..] else { return None };
+        let (removed, added) = match (lines[a].kind, lines[b].kind) {
+            (LineKind::Removed, LineKind::Added) => (a, b),
+            (LineKind::Added, LineKind::Removed) => (b, a),
+            _ => return None,
+        };
+        let (old, new) = (lines[removed].text.clone(), lines[added].text.clone());
+        let edits = word_edits(&old, &new);
+        if edits.is_empty() {
+            return None;
+        }
+        let picked = vec![true; edits.len()];
+        Some(WordPick { file, hunk, removed, added, path: f.path().to_owned(), old, new, edits, picked })
+    }
+
+    fn pick_words(&mut self) {
+        if self.scope.read_only() || self.settings.ignore_whitespace {
+            return;
+        }
+        match self.word_candidate() {
+            Some(w) => self.words = Some(w),
+            None => self.say("Pick one changed line and its replacement first: click a row's line number in split view.", true),
+        }
+    }
+
+    /// Stage, unstage or discard the picked word changes of the line being picked.
+    fn act_on_words(&mut self, how: Scope) {
+        let Some(w) = self.words.take() else { return };
+        // The list may have refreshed while the dialog was up: act only on the same file.
+        let Some(file) = self.diff.files().get(w.file).filter(|f| f.path() == w.path).cloned() else {
+            self.say("The changes moved while the dialog was open; nothing was done.", true);
+            return;
+        };
+        let n = w.picked.iter().filter(|&&p| p).count();
+        let what = format!("{n} word change{} in {}", if n == 1 { "" } else { "s" }, w.path);
+        // Forwards (stage) the old line takes the picked edits; backwards (unstage, discard)
+        // the new line keeps only the others.
+        let staging = how == Scope::Unstaged;
+        let target = if staging { apply_edits(&w.old, &w.new, &w.edits, &w.picked) } else { apply_edits(&w.old, &w.new, &w.edits, &w.picked.iter().map(|p| !p).collect::<Vec<_>>()) };
+        let Some(p) = patch::line_to(&file, w.hunk, w.removed, w.added, &target, !staging) else { return };
+        self.selection_clear();
+        match how {
+            Scope::Unstaged => self.act(|r| r.apply(&p, true, false).map(|_| format!("Staged {what}"))),
+            Scope::Staged => self.act(|r| r.apply(&p, true, true).map(|_| format!("Unstaged {what}"))),
+            _ => {
+                let Some(repo) = current_repo() else { return };
+                let result = repo.backup(&w.path).and_then(|b| repo.apply(&p, false, true).map(|_| b));
+                self.after_discard(result, format!("Discarded {what}"));
+            }
+        }
+    }
+
+    /// The current view's name, for the window's title.
+    fn scope_title(&self) -> String {
+        match self.scope {
+            Scope::Uncommitted => "All Changes".into(),
+            Scope::Staged => "Staged Changes".into(),
+            Scope::Unstaged => "Unstaged Changes".into(),
+            // As GitHub Desktop names it: the branch's whole change against its base.
+            Scope::Branch => "Pull Request Preview".into(),
+            Scope::History => "Git Graph".into(),
+        }
+    }
+
+    fn stage_all(&mut self) {
+        self.act(|r| r.stage_all().map(|_| "Staged all changes".to_owned()));
+    }
+
+    fn unstage_all(&mut self) {
+        self.act(|r| r.unstage_all().map(|_| "Unstaged everything".to_owned()));
+    }
+
+    fn stage_path(&mut self, path: String) {
+        self.act(|r| r.stage(&path).map(|_| format!("Staged {path}")));
+    }
+
+    fn unstage_path(&mut self, path: String) {
+        self.act(|r| r.unstage(&path).map(|_| format!("Unstaged {path}")));
+    }
+
+    /// The file header's "⋯" menu: everything else you can do to the file, the likely action
+    /// first and Discard (which asks) last.
+    fn file_menu(&mut self, f: usize, anchor: &str, tx: &mut Tx) {
+        let Some((file, info)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        let editable = !self.scope.read_only();
+        let mut menu = PopupMenu::new();
+        if editable {
+            menu = match (self.scope, info.staged) {
+                (Scope::Staged, _) | (Scope::Uncommitted, Staged::Fully) => menu.item(PopupItem::new("unstage", "Unstage File")),
+                (Scope::Uncommitted, Staged::Partly) => menu.item(PopupItem::new("stage", "Stage File")).item(PopupItem::new("unstage", "Unstage File")),
+                _ => menu.item(PopupItem::new("stage", "Stage File")),
+            };
+            menu = menu.separator();
+        }
+        menu = menu
+            .item(PopupItem::new("open", "Open in Editor").enabled(file.new_path.is_some()))
+            .item(PopupItem::new("copy", "Copy Path"))
+            .item(PopupItem::new("viewed", "Viewed").checked(self.is_viewed(f)));
+        if matches!(self.scope, Scope::Uncommitted | Scope::Unstaged) {
+            menu = menu.separator().item(PopupItem::new("discard", "Discard Changes…"));
+        }
+        tx.popup_menu(menu, anchor.to_owned(), move |s: &mut Collate, picked, tx| match picked {
+            Some("stage") => s.stage_file(f),
+            Some("unstage") => s.unstage_file(f),
+            Some("open") => s.open_file(f),
+            Some("copy") => {
+                tx.copy(path.clone());
+                s.say(format!("Copied {path}"), false);
+            }
+            Some("viewed") => s.toggle_viewed(f, tx),
+            Some("discard") => s.ask_discard(f, None),
+            _ => {}
+        });
+    }
+
+    /// The toolbar's "⋯" menu: how the diff is drawn, and the app's less frequent commands.
+    /// The title bar's branch menu: the branch as a pull request against its base, and the
+    /// bases to choose from (local branches and `origin`'s).
+    fn branch_menu(&mut self, tx: &mut Tx) {
+        if let Some(r) = current_repo() {
+            self.branches = r.branches();
+        }
+        let base = self.base.clone().unwrap_or_default();
+        let mut menu = PopupMenu::new()
+            .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
+            .separator();
+        let candidates: Vec<&String> = self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(20).collect();
+        for b in candidates {
+            menu = menu.item(PopupItem::new(format!("base:{b}"), format!("Compare against {b}")).checked(*b == base));
+        }
+        tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| match picked {
+            Some("preview") => {
+                s.map.open = false;
+                s.set_scope(Scope::Branch);
+            }
+            Some(p) if p.starts_with("base:") => {
+                s.set_base(&p["base:".len()..]);
+                s.map.open = false;
+                s.set_scope(Scope::Branch);
+            }
+            _ => {}
+        });
+    }
+
+    fn more_menu(&mut self, tx: &mut Tx) {
+        let st = &self.settings;
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("ws", "Ignore Whitespace").checked(st.ignore_whitespace))
+            .item(PopupItem::new("moved", "Highlight Moved Code").checked(st.show_moved))
+            .item(PopupItem::new("wrap", "Wrap Long Lines").checked(st.wrap))
+            .separator()
+            .item(PopupItem::new("collapse", "Collapse All Files"))
+            .item(PopupItem::new("expand", "Expand All Files"))
+            .separator()
+            .item(PopupItem::new("reread", "Reread Repository"))
+            .item(PopupItem::new("add", "Add Local Project…"))
+            .separator()
+            .item(PopupItem::new("keys", "Keyboard Shortcuts"))
+            .item(PopupItem::new("settings", "Settings…"));
+        tx.popup_menu(menu, "more", |s: &mut Collate, picked, tx| match picked {
+            Some("ws") => s.configure(|c| c.ignore_whitespace = !c.ignore_whitespace),
+            Some("moved") => s.configure(|c| c.show_moved = !c.show_moved),
+            Some("wrap") => s.configure(|c| c.wrap = !c.wrap),
+            Some("collapse") => s.fold_all(true, tx),
+            Some("expand") => s.fold_all(false, tx),
+            Some("reread") => {
+                refresh();
+            }
+            Some("add") => s.add_project(),
+            Some("keys") => s.show_help = true,
+            Some("settings") => s.screen = Screen::Settings,
+            _ => {}
+        });
+    }
+
+    /// The selected lines when they're in hunk `h` of file `f`.
+    fn picked(&self, f: usize, h: usize) -> Option<Vec<bool>> {
+        self.diff.selected_changes().filter(|(sf, sh, _)| *sf == f && *sh == h).map(|(_, _, p)| p)
+    }
+
+    fn discard_hunk(&mut self, f: usize, h: usize, picked: Option<Vec<bool>>) {
+        let Some((file, _)) = self.file(f) else { return };
+        let Some(p) = patch::lines(file, h, picked.as_deref(), true) else { return };
+        let path = file.path().to_owned();
+        let what = if picked.is_some() { "the selected lines" } else { "the hunk" };
+        let Some(repo) = current_repo() else { return };
+        let result = repo.backup(&path).and_then(|b| repo.apply(&p, false, true).map(|_| b));
+        self.after_discard(result, format!("Discarded {what} in {path}"));
+    }
+
+    /// Report a discard, offering its backup back as Undo.
+    fn after_discard(&mut self, result: Result<PathBuf, String>, done: String) {
+        match result {
+            Ok(backup) => {
+                self.notice = Some(Notice { text: done, error: false, until: None, undo: Some(backup) });
+                self.selection_clear();
+            }
+            Err(e) => self.say(e, true),
+        }
+        refresh();
+    }
+
+    fn undo_discard(&mut self) {
+        let Some(backup) = self.notice.as_mut().and_then(|n| n.undo.take()) else { return };
+        self.act(|r| r.restore(&backup).map(|n| format!("Restored {n} file{} from the backup", if n == 1 { "" } else { "s" })));
+    }
+
+    fn selection_clear(&mut self) {
+        self.diff.set_selection(None);
+    }
+
+    fn stage_file(&mut self, f: usize) {
+        let Some((file, _)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        self.act(|r| r.stage(&path).map(|_| format!("Staged {path}")));
+    }
+
+    fn unstage_file(&mut self, f: usize) {
+        let Some((file, _)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        self.act(|r| r.unstage(&path).map(|_| format!("Unstaged {path}")));
+    }
+
+    fn discard_file(&mut self, f: usize) {
+        let Some((file, info)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        let scope = self.scope;
+        let Some(repo) = current_repo() else { return };
+        let result = repo.discard(&path, scope, info.in_base);
+        self.after_discard(result, format!("Discarded {path}"));
+    }
+
+    /// Ask before a discard: it changes the working tree.
+    fn ask_discard(&mut self, f: usize, hunk: Option<usize>) {
+        if hunk.is_some() && self.settings.ignore_whitespace {
+            self.say("Whitespace is hidden, so hunks don't match the file; discard the whole file or show whitespace.", true);
+            return;
+        }
+        if !matches!(self.scope, Scope::Uncommitted | Scope::Unstaged) {
+            return;
+        }
+        if let Some((file, _)) = self.file(f) {
+            self.confirm = Some(Discard { file: f, hunk, path: file.path().to_owned() });
+        }
+    }
+
+    fn confirm_discard(&mut self) {
+        let Some(d) = self.confirm.take() else { return };
+        // The list may have refreshed while the dialog was up: act only on the same file.
+        if self.diff.files().get(d.file).is_none_or(|f| f.path() != d.path) {
+            self.say("The changes moved while the dialog was open; nothing was discarded.", true);
+            return;
+        }
+        match d.hunk {
+            Some(h) => {
+                let picked = self.picked(d.file, h);
+                self.discard_hunk(d.file, h, picked)
+            }
+            None => self.discard_file(d.file),
+        }
+    }
+
+    fn open_file(&mut self, f: usize) {
+        let Some(repo) = current_repo() else { return };
+        let Some((file, _)) = self.file(f) else { return };
+        let Some(path) = file.new_path.clone() else {
+            self.say("The file was deleted; there's nothing to open.", true);
+            return;
+        };
+        let full = repo.root.join(&path);
+        let mut cmd = std::process::Command::new("open");
+        if let Some(app) = self.settings.editor.app() {
+            cmd.args(["-a", app]);
+        }
+        match cmd.arg(&full).status() {
+            Ok(st) if st.success() => {}
+            Ok(_) => self.say(format!("Couldn't open {path} in {}", self.settings.editor.app().unwrap_or("the default app")), true),
+            Err(e) => self.say(format!("Couldn't run open: {e}"), true),
+        }
+    }
+
+    fn commit(&mut self) {
+        let msg = self.message.text.trim().to_owned();
+        if msg.is_empty() || self.staged == 0 || self.committing {
+            return;
+        }
+        let (Some(repo_handle), Some(repo)) = (HANDLE.get().cloned(), current_repo()) else { return };
+        self.committing = true;
+        // Hooks can take a while; the window stays live.
+        std::thread::spawn(move || {
+            let result = repo.commit(&msg);
+            repo_handle.update(move |s, _| {
+                s.committing = false;
+                match result {
+                    Ok(summary) => {
+                        s.message = TextEdit::new("");
+                        s.say(format!("Committed {summary}"), false);
+                    }
+                    Err(e) => s.say(format!("Commit failed: {e}"), true),
+                }
+                refresh();
+            });
+        });
+    }
+
+    /// Push settings into the diff and the watcher; `was` is the previous settings, to skip
+    /// work that didn't change.
+    fn apply_settings(&mut self, was: Option<&Settings>) {
+        let s = &self.settings;
+        self.diff.set_style(s.style());
+        self.diff.set_mode(s.layout);
+        self.diff.set_wrap(s.wrap);
+        if was.is_none_or(|w| w.syntax != s.syntax) {
+            self.diff.set_highlighter(if s.syntax { Highlighter::builtin() } else { Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off") });
+        }
+        REFRESH_EVERY.store(if s.auto_refresh { s.refresh_ms } else { 0 }, Ordering::Relaxed);
+        *OPTS.lock().unwrap() = self.opts();
+        if let Some(w) = was
+            && (w.context != s.context || w.hide_low_signal != s.hide_low_signal || w.ignore_whitespace != s.ignore_whitespace || w.show_moved != s.show_moved)
+        {
+            self.reload();
+        }
+    }
+
+    /// Change a setting, apply it and save the file.
+    fn configure(&mut self, f: impl FnOnce(&mut Settings)) {
+        let was = self.settings.clone();
+        f(&mut self.settings);
+        if self.settings == was {
+            return;
+        }
+        self.apply_settings(Some(&was));
+        self.save_error = self.settings.save().err();
+    }
+
