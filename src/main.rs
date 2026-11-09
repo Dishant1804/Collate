@@ -2939,3 +2939,253 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
 }
 
+/// Before every frame: retire a status message once it's been up long enough.
+fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
+    // Whatever moved the reader since the last frame, back now returns there.
+    let moved = s.note_place();
+    let Some(n) = &mut s.notice else { return moved };
+    match n.until {
+        None => {
+            n.until = Some(now + NOTICE_FOR);
+            tx.wake_after(Duration::from_secs_f64(NOTICE_FOR));
+            moved
+        }
+        Some(t) if now >= t => {
+            s.notice = None;
+            true
+        }
+        Some(_) => moved,
+    }
+}
+
+fn refresh() -> bool {
+    let Some(w) = WATCHER.get() else { return false };
+    let _ = w.send(Cmd::Refresh);
+    true
+}
+
+/// Polls `git status`, and rereads and posts a snapshot when the fingerprint, scope or base
+/// changes.
+fn watch(app: rune::AppHandle<Collate>, rx: mpsc::Receiver<Cmd>, mut scope: Scope, mut base: Option<String>, mut commit: Option<String>) {
+    let mut last: Option<u64> = None;
+    let mut cache = DiffCache::new();
+    let mut memo = git::Memo::default();
+    let mut fixed_index: Option<std::time::Instant> = None;
+    loop {
+        let every = match REFRESH_EVERY.load(Ordering::Relaxed) {
+            0 => Duration::from_secs(3600),
+            // Events say when to look; this is only a safety net for anything they miss.
+            _ if EVENTS.load(Ordering::Relaxed) => Duration::from_secs(30),
+            ms => Duration::from_millis(ms),
+        };
+        match rx.recv_timeout(every) {
+            Ok(Cmd::Scope(s)) => {
+                scope = s;
+                last = None;
+            }
+            Ok(Cmd::Base(b)) => {
+                base = Some(b);
+                last = None;
+            }
+            Ok(Cmd::Commit(c)) => {
+                commit = Some(c);
+                last = None;
+            }
+            Ok(Cmd::Refresh) => {
+                // Asked for (a setting changed, or r): read every file again.
+                last = None;
+                memo.clear();
+            }
+            Ok(Cmd::Switch { base: b, commit: c }) => {
+                (base, commit) = (b, c);
+                last = None;
+                memo.clear();
+                cache.clear();
+            }
+            Ok(Cmd::Changed) => {
+                if REFRESH_EVERY.load(Ordering::Relaxed) == 0 {
+                    continue;
+                }
+                // An editor's save or a build is a burst of events: wait for a quiet 80 ms
+                // (at most half a second) and look once. Other commands still land.
+                let until = std::time::Instant::now() + Duration::from_millis(500);
+                loop {
+                    let now = std::time::Instant::now();
+                    if now >= until {
+                        break;
+                    }
+                    match rx.recv_timeout(Duration::from_millis(80).min(until - now)) {
+                        Ok(Cmd::Changed) => {}
+                        Ok(Cmd::Scope(s)) => {
+                            scope = s;
+                            last = None;
+                        }
+                        Ok(Cmd::Base(b)) => {
+                            base = Some(b);
+                            last = None;
+                        }
+                        Ok(Cmd::Commit(c)) => {
+                            commit = Some(c);
+                            last = None;
+                        }
+                        Ok(Cmd::Refresh) => {
+                            last = None;
+                            memo.clear();
+                        }
+                        Ok(Cmd::Switch { base: b, commit: c }) => {
+                            (base, commit) = (b, c);
+                            last = None;
+                            memo.clear();
+                            cache.clear();
+                        }
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            }
+            // Watching was switched off while we slept: wait for an explicit refresh.
+            Err(RecvTimeoutError::Timeout) if REFRESH_EVERY.load(Ordering::Relaxed) == 0 => continue,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        // No project open: nothing to read until one is.
+        let Some(repo) = current_repo() else { continue };
+        let started = std::time::Instant::now();
+        let result = repo.status_raw().and_then(|raw| {
+            // A slow status usually means a stale ("racy") index after a checkout or clone:
+            // git rehashes every file each time until something rewrites the index, and we
+            // never take its lock. Let git refresh it, at most once a minute.
+            if started.elapsed() > Duration::from_millis(60) && fixed_index.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+                fixed_index = Some(std::time::Instant::now());
+                repo.refresh_index();
+            }
+            let merge_base = match (scope, &base) {
+                (Scope::Branch, Some(b)) => Some(repo.merge_base(b)?),
+                _ => None,
+            };
+            let salt = match scope {
+                Scope::History => commit.as_deref().unwrap_or(""),
+                _ => merge_base.as_deref().unwrap_or(""),
+            };
+            let fp = repo.fingerprint(&raw, salt);
+            if last == Some(fp) {
+                return Ok(None);
+            }
+            last = Some(fp);
+            let pair = match scope {
+                Scope::History => commit.as_deref().map(|c| (c, c)),
+                _ => base.as_deref().zip(merge_base.as_deref()),
+            };
+            repo.snapshot_with(scope, &raw, pair, &mut memo).map(|snap| Some((snap, raw, pair.map(|(a, b)| (a.to_owned(), b.to_owned())))))
+        });
+        match result {
+            Ok(None) => {}
+            Ok(Some((snap, raw, pair))) => {
+                let opts = *OPTS.lock().unwrap();
+                let pair = pair.as_ref().map(|(a, b)| (a.as_str(), b.as_str()));
+                let prepared = match prepare(snap, opts, &mut cache) {
+                    Some(p) => p,
+                    // A skipped file's diff wasn't cached: read everything once more.
+                    None => {
+                        memo.clear();
+                        match repo.snapshot_with(scope, &raw, pair, &mut memo).ok().and_then(|snap| prepare(snap, opts, &mut cache)) {
+                            Some(p) => p,
+                            None => continue,
+                        }
+                    }
+                };
+                // `COLLATE_TRACE=1`: when each refresh is ready, for timing it from outside.
+                if std::env::var_os("COLLATE_TRACE").is_some() {
+                    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                    eprintln!("collate: refreshed {} files at {t}", prepared.files.len());
+                }
+                app.update(move |s, tx| s.apply(prepared, tx));
+            }
+            Err(e) => {
+                last = None;
+                let at = scope;
+                app.update(move |s, _| {
+                    if s.scope == at {
+                        s.error = Some(e);
+                    }
+                });
+            }
+        }
+    }
+}
+
+fn main() {
+    // A folder named on the command line, else the project opened last; none is fine (the
+    // window offers to add one, as it does when Collate is launched from the Dock).
+    // Only the first argument can be the folder: later ones are flags and their values
+    // (`--snap out.png`), and Finder may pass a `-psn_…` one.
+    let arg = std::env::args().nth(1).filter(|a| !a.starts_with('-')).map(PathBuf::from);
+    let mut projects = load_projects();
+    let repo = match &arg {
+        Some(dir) => match Repo::open(dir) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("collate: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => projects.iter().find_map(|p| Repo::open(p).ok()),
+    };
+    if let Some(r) = &repo {
+        remember_project(&mut projects, r.root.clone());
+    }
+    let title: &'static str = Box::leak(repo.as_ref().map_or_else(|| "Collate".to_owned(), |r| format!("{} — Collate", r.name())).into_boxed_str());
+    let base = repo.as_ref().and_then(Repo::default_base);
+    // History opens on the latest commit; the window's own state picks the same one.
+    let first_commit = repo.as_ref().and_then(|r| r.graph(1, None).1);
+    let root = repo.as_ref().map(|r| r.root.clone());
+    set_repo(repo);
+    let start = Settings::load().default_scope;
+
+    let spec = AppSpec {
+        on_key: Some(on_key),
+        poll: Some(poll),
+        setup: Some(|s: &mut Collate, waker| {
+            s.avatars.start(rune::ImageCache::new(waker), |email, bytes| {
+                if let Some(app) = HANDLE.get() {
+                    app.update(move |s, _| s.avatars.landed(email, bytes));
+                }
+            });
+        }),
+        families: ("Inter", "ui-monospace, Inter"),
+        min_size: Some((760.0, 440.0)),
+        scenes: &[
+            ("settings", |s: &mut Collate| s.screen = Screen::Settings),
+            ("settings-diff", |s: &mut Collate| {
+                s.screen = Screen::Settings;
+                s.settings_tab = 1;
+            }),
+            ("help", |s: &mut Collate| s.show_help = true),
+            ("staged", |s: &mut Collate| s.set_scope(Scope::Staged)),
+            ("unstaged", |s: &mut Collate| s.set_scope(Scope::Unstaged)),
+            ("branch", |s: &mut Collate| s.set_scope(Scope::Branch)),
+            ("history", |s: &mut Collate| s.set_scope(Scope::History)),
+            ("map", |s: &mut Collate| s.open_map()),
+            ("history-diff", |s: &mut Collate| {
+                s.set_scope(Scope::History);
+                s.history_diff = true;
+            }),
+            ("discard", |s: &mut Collate| s.confirm = Some(Discard { file: 0, hunk: Some(0), path: "src/state.rs".into() })),
+        ],
+        ..AppSpec::new(title, (1280.0, 840.0), init, view)
+    };
+    // The traffic lights centred on the 48-point title band the toolbar and the sidebar's
+    // toggle sit in (its middle 24 points down), 16 points in, as SplitView lays out for.
+    let chrome = rune::Chrome { full_size_content: true, traffic_lights: Some((16.0, 17.0)), drag_regions: true };
+    let app = App::new(spec).chrome(chrome).modifier_keys().standard_menus();
+    let (tx, rx) = mpsc::channel();
+    let _ = WATCHER.set(tx);
+    watch_project_files(root);
+    let handle = app.handle();
+    let _ = HANDLE.set(handle.clone());
+    std::thread::spawn(move || watch(handle, rx, start, base, first_commit));
+    // Read the first snapshot right away rather than after one poll interval.
+    let _ = WATCHER.get().unwrap().send(Cmd::Refresh);
+    app.run();
+}
+
