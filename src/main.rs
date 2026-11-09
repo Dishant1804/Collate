@@ -2145,3 +2145,349 @@ fn history_graph(s: &Collate, k: &Kit) -> El {
         .child(col().key("graph-scroll").w_full().grow(1.0).min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows))
 }
 
+/// A round badge with someone's initials, tinted by their name so each author keeps a colour.
+/// An author's GitHub picture, else their initials on a colour of their own.
+fn avatar(k: &Kit, s: &Collate, c: &graph::Commit, size: f32) -> El {
+    if let Some(img) = s.avatars.get(&c.email) {
+        return row().size(size, size).radius(size / 2.0).border(1.0, k.c.border_weak).pixels_fit(img.pixels(), rune::SurfaceFit::Fill).a11y_hidden();
+    }
+    let name = c.author.as_str();
+    let initials: String = name.split(|c: char| c.is_whitespace() || c == '.' || c == '_' || c == '-')
+        .filter_map(|w| w.chars().next()).take(if size < 24.0 { 1 } else { 2 }).collect::<String>().to_uppercase();
+    let hue = name.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
+    let tint = lane_color(hue);
+    row().size(size, size).center().radius(size / 2.0).fill(k.alpha(tint, 0.22)).border(1.0, k.alpha(tint, 0.6))
+        .child(text(if initials.is_empty() { "?".to_owned() } else { initials }).font(if size >= 40.0 { k.ty.text_small_medium } else if size >= 24.0 { k.ty.text_xsmall_medium } else { rune::TextStyle { size: 9.0, line_height: 12.0, ..k.ty.text_xsmall_medium } }).color(k.c.text_base))
+}
+
+fn open_url(url: &str) {
+    let _ = std::process::Command::new("open").arg(url).spawn();
+}
+
+/// The host's name for a web link: "GitHub" for github.com, else the host.
+fn web_name(url: &str) -> String {
+    let host = url.trim_start_matches("https://").split('/').next().unwrap_or_default();
+    match host {
+        "github.com" => "GitHub".to_owned(),
+        "gitlab.com" => "GitLab".to_owned(),
+        "bitbucket.org" => "Bitbucket".to_owned(),
+        h => h.to_owned(),
+    }
+}
+
+/// The chosen commit at the head of History's side panel, as Zed shows it: who and when, its
+/// branches, email, full hash, a link to the host, and the whole message.
+fn commit_card(s: &Collate, k: &Kit) -> Option<El> {
+    let id = s.commit.as_deref()?;
+    let c = s.graph_commits.iter().find(|c| c.id == id)?;
+    let mono = rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono };
+    // Named fields on one column edge, so the values line up.
+    let line = |key: &str, name: &str, body: El| row().key(key.to_owned()).w_full().gap(8.0).items_center()
+        .child(text(name.to_owned()).w(52.0).font(k.ty.text_small).color(k.c.text_faint)).child(body);
+    let mut card = col().key("commit-card").w_full().px(PANEL_INSET).pt(4.0).pb(10.0).gap(8.0)
+        .child(col().w_full().items_center().gap(4.0)
+            .child(avatar(k, s, c, 44.0))
+            .child(text(c.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base).truncate().min_w(0.0))
+            .child(text(c.date.clone()).font(k.ty.text_small).color(k.c.text_muted)));
+    let labels = ref_labels(&c.refs);
+    if !labels.is_empty() {
+        // Wrapped onto as many lines as the names need, each name whole unless it alone is too wide.
+        let mut refs = row().key("commit-refs").w_full().gap(4.0).justify_center().flex_wrap();
+        for (label, kind, _) in labels {
+            let tag = kind == graph::RefKind::Tag;
+            refs = refs.child(text(label).font(mono).color(k.c.text_base).truncate().min_w(0.0).px(6.0).h(20.0).radius(4.0)
+                .border(1.0, if tag { k.c.border_weak } else { k.alpha(lane_color(s.graph_rows.get(s.graph_commits.iter().position(|x| x.id == c.id).unwrap_or(0)).map_or(0, |r| r.col)), 0.8) }));
+        }
+        card = card.child(refs);
+    }
+    let sha = c.id.clone();
+    card = card
+        .child(line("commit-email", "Email", text(c.email.clone()).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0)))
+        .child(line("commit-sha", "Commit", text(c.id.clone()).font(mono).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0)
+            .cursor(Cursor::Pointer).role("button").label("Copy the commit's full hash").help("Copy hash")
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(sha.clone()); s.say("Copied the commit hash", false); })));
+    if let Some(web) = &s.web {
+        let url = format!("{web}/commit/{}", c.id);
+        card = card.child(line("commit-web", "", text(format!("View on {}", web_name(web))).font(k.ty.text_small).color(k.c.text_accent)
+            .cursor(Cursor::Pointer).role("link").label(format!("Open {url}")).on_press(move |_: &mut Collate| open_url(&url))));
+    }
+    if c.parents.len() > 1 {
+        let parents = c.parents.iter().map(|p| p.chars().take(8).collect::<String>()).collect::<Vec<_>>().join("  ");
+        card = card.child(line("commit-parents", "Merge", text(parents).font(mono).color(k.c.text_muted)));
+    }
+    let message = if s.commit_body.is_empty() { c.subject.clone() } else { format!("{}\n\n{}", c.subject, s.commit_body) };
+    let (adds, dels) = s.diff.totals();
+    card = card
+        .child(col().w_full().h(1.0).fill(k.c.border_weak))
+        .child(text("Message").font(k.ty.text_xsmall_medium).color(k.c.text_faint))
+        .child(text(message).font(k.ty.text_small).color(k.c.text_base).wrap().w_full().max_lines(14))
+        .child(row().key("commit-stat").w_full().gap(6.0).items_center().pt(4.0)
+            .child(text(if s.loaded { "Lines changed" } else { "Reading files…" }.to_owned()).font(k.ty.text_small).color(k.c.text_muted).grow(1.0))
+            .child(text(format!("+{adds}")).font(mono).color(k.c.success.fg))
+            .child(text(format!("−{dels}")).font(mono).color(k.c.danger.fg)));
+    Some(card)
+}
+
+/// Above a commit's diff: the way back to the list, who made it and when, its subject, and
+/// the hash to copy.
+fn commit_header(s: &Collate, k: &Kit) -> El {
+    let back = Button::new("‹ All Commits").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+        .help("Back to the commit list (Esc)")
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_commit_diff(tx)).build(k).key("history-back");
+    let mut r = row().key("commit-header").w_full().px(EDGE).py(10.0).gap(12.0).items_center().child(back.ml(-GHOST_PAD));
+    if let Some(c) = s.commit.as_deref().and_then(|id| s.graph_commits.iter().find(|c| c.id == id)) {
+        let sha = c.id.clone();
+        let copy = Button::new("Copy SHA").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+            .help("Copy the commit's full hash")
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(sha.clone()); s.say("Copied the commit hash", false); }).build(k).key("copy-sha");
+        r = r.child(avatar(k, s, c, 32.0))
+            .child(col().grow(1.0).min_w(0.0).gap(2.0)
+                .child(row().gap(8.0).items_center()
+                    .child(text(c.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
+                    .child(text(format!("{} - {}", c.date, c.email)).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0)))
+                .child(text(c.subject.clone()).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0)))
+            .child(copy.mr(-GHOST_PAD));
+    }
+    col().w_full().child(r).child(col().w_full().h(1.0).fill(k.c.border_weak))
+}
+
+/// Points on the S-curve from lane `a` in one row's middle to lane `b` in the next row's, cut
+/// at the row boundary: the upper half (`upper`) in the first row's coordinates, else the lower
+/// half in the second's. Vertical where it meets each dot, as Git Graph draws its branches.
+fn edge_half(xa: f32, xb: f32, upper: bool) -> rune::Path {
+    let (h, c) = (GRAPH_ROW, GRAPH_ROW / 2.0);
+    let mid = [(xa + xb) / 2.0, if upper { h } else { 0.0 }];
+    if upper {
+        rune::Path::new().move_to([xa, c]).cubic_to([xa, c + h / 4.0], [(3.0 * xa + xb) / 4.0, c + 3.0 * h / 8.0], mid)
+    } else {
+        rune::Path::new().move_to(mid).cubic_to([(xa + 3.0 * xb) / 4.0, h / 8.0], [xb, h / 4.0], [xb, c])
+    }
+}
+
+fn graph_row(s: &Collate, k: &Kit, i: usize, width: f32) -> El {
+    use rune::{Shape, LineCap, canvas};
+    let x = |lane: usize| 4.0 + LANE / 2.0 + lane as f32 * LANE;
+    let r = &s.graph_rows[i];
+    let c = &s.graph_commits[i];
+    let uncommitted = c.id == graph::UNCOMMITTED;
+    let head = s.head.as_deref() == Some(c.id.as_str());
+    let faint = k.c.text_faint;
+    // A line belongs to the branch that opens or closes on it: the lane further right.
+    let edge_color = |from_uncommitted: bool, a: usize, b: usize| if from_uncommitted { faint } else { lane_color(a.max(b)) };
+    let mut shape = Shape::new();
+    if i > 0 {
+        let above = s.graph_commits[i - 1].id == graph::UNCOMMITTED;
+        for &(a, b) in &s.graph_rows[i - 1].down {
+            let color = edge_color(above, a, b);
+            shape = if a == b {
+                shape.line([x(a), 0.0], [x(a), GRAPH_ROW / 2.0], 2.0, LineCap::Butt, color)
+            } else {
+                shape.stroke_path(&edge_half(x(a), x(b), false), 2.0, LineCap::Butt, color)
+            };
+        }
+    }
+    for &(a, b) in &r.down {
+        let color = edge_color(uncommitted, a, b);
+        shape = if a == b {
+            shape.line([x(a), GRAPH_ROW / 2.0], [x(a), GRAPH_ROW], 2.0, LineCap::Butt, color)
+        } else {
+            shape.stroke_path(&edge_half(x(a), x(b), true), 2.0, LineCap::Butt, color)
+        };
+    }
+    let ring = |radius: f32| -> Vec<[f32; 2]> {
+        (0..=32).map(|n| { let t = n as f32 * std::f32::consts::TAU / 32.0; [x(r.col) + t.cos() * radius, GRAPH_ROW / 2.0 + t.sin() * radius] }).collect()
+    };
+    let dot = if uncommitted { faint } else { lane_color(r.col) };
+    // HEAD and the uncommitted changes are hollow, so where you are reads at a glance.
+    shape = if head || uncommitted {
+        shape.fill(ring(5.0), k.c.bg_base).stroke(ring(4.0), 2.0, dot)
+    } else {
+        shape.fill(ring(4.0), dot)
+    };
+    let selected = s.commit.as_deref() == Some(c.id.as_str());
+    let mut description = row().gap(6.0).items_center().grow(1.0).min_w(0.0);
+    // Two labels at most, each cut short if long, so the subject keeps its room; the side
+    // panel lists them all.
+    let labels = ref_labels(&c.refs);
+    let more = labels.len().saturating_sub(2);
+    for (label, kind, at_head) in labels.into_iter().take(2) {
+        let tint = lane_color(r.col);
+        let pill = text(label).font(if at_head { k.ty.text_xsmall_medium } else { k.ty.text_xsmall }).truncate().max_w(220.0).px(6.0).h(18.0).radius(4.0);
+        description = description.child(match kind {
+            graph::RefKind::Tag => pill.color(k.c.text_base).border(1.0, k.c.border_weak).fill(k.alpha(k.c.text_base, 0.06)),
+            graph::RefKind::Remote => pill.color(k.c.text_muted).border(1.0, k.alpha(tint, 0.5)),
+            graph::RefKind::Branch => pill.color(k.c.text_base).border(1.0, k.alpha(tint, if at_head { 1.0 } else { 0.6 })).fill(k.alpha(tint, 0.18)),
+        });
+    }
+    if more > 0 {
+        description = description.child(text(format!("+{more}")).font(k.ty.text_xsmall).color(k.c.text_muted).px(6.0).h(18.0).radius(4.0).border(1.0, k.c.border_weak)
+            .help(format!("{more} more on this commit: listed in the side panel")));
+    }
+    let subject = if uncommitted { format!("Uncommitted Changes ({})", s.total) } else { c.subject.clone() };
+    description = description.child(text(subject).font(if head { k.ty.text_small_medium } else { k.ty.text_small })
+        .color(if uncommitted { k.c.text_muted } else { k.c.text_base }).truncate().min_w(0.0).grow(1.0));
+    let muted = |t: String, w: f32| text(t).w(w).truncate().font(k.ty.text_small).color(k.c.text_muted);
+    let mono = rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono };
+    let fill = if selected { k.alpha(k.c.border_focus, 0.22) } else { k.alpha(k.c.text_base, 0.0) };
+    let id = c.id.clone();
+    row().key(format!("graph-{}", c.id)).w_full().h(GRAPH_ROW).px(EDGE).gap(12.0).items_center()
+        .fill(fill).hover(if selected { fill } else { k.alpha(k.c.text_base, 0.06) }).cursor(Cursor::Pointer).role("button")
+        .label(if uncommitted { "Uncommitted changes: open All Changes".to_owned() } else { format!("{}{}, {}, {}", if selected { "Selected: " } else { "" }, c.subject, c.author, c.id) })
+        .on_press(move |s: &mut Collate| if id == graph::UNCOMMITTED { s.set_scope(Scope::Uncommitted) } else { s.set_commit(&id) })
+        .on_double_press(move |s: &mut Collate| if !uncommitted { s.history_diff = true })
+        .child(canvas(shape).w(width).h(GRAPH_ROW)).child(description)
+        .child(if uncommitted { muted(String::new(), AUTHOR_W) } else {
+            row().w(AUTHOR_W).gap(6.0).items_center().child(avatar(k, s, c, 16.0)).child(muted(c.author.clone(), AUTHOR_W - 22.0).min_w(0.0).shrink())
+        })
+        .child(muted(c.date.clone(), DATE_W))
+        .child(text(if uncommitted { String::new() } else { c.id.chars().take(8).collect() }).w(HASH_W).font(mono).color(k.c.text_muted))
+}
+
+/// A commit's labels, a local branch and its remote counterparts shown as one
+/// (`main - origin`), as Git Graph does: (text, kind, whether HEAD is on it).
+fn ref_labels(refs: &[graph::Ref]) -> Vec<(String, graph::RefKind, bool)> {
+    let mut out = Vec::new();
+    let mut merged = vec![false; refs.len()];
+    for (i, r) in refs.iter().enumerate() {
+        match r.kind {
+            graph::RefKind::Branch => {
+                let mut label = r.name.clone();
+                for (j, o) in refs.iter().enumerate() {
+                    if o.kind == graph::RefKind::Remote
+                        && let Some((remote, name)) = o.name.split_once('/')
+                        && name == r.name
+                    {
+                        label.push_str(&format!(" - {remote}"));
+                        merged[j] = true;
+                    }
+                }
+                out.push((label, r.kind, r.head));
+            }
+            graph::RefKind::Remote if !merged[i] => out.push((r.name.clone(), r.kind, false)),
+            graph::RefKind::Remote => {}
+            graph::RefKind::Tag => out.push((r.name.clone(), r.kind, false)),
+        }
+    }
+    out
+}
+
+fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
+    let n = s.diff.files().len();
+    let (adds, dels) = s.diff.totals();
+    let viewed = (0..n).filter(|&i| s.is_viewed(i)).count();
+    let short = |h: &str| h[..h.len().min(8)].to_owned();
+    let head = s.head.as_deref().map(|h| format!(" ({})", short(h))).unwrap_or_default();
+    let basis = match (s.scope, s.head.is_some()) {
+        (Scope::Branch, _) => match (&s.base, &s.base_commit) {
+            (Some(b), Some(mb)) => format!("since {b} - merge base {}", short(mb)),
+            (Some(b), None) => format!("vs {b}"),
+            _ => "choose a base branch".to_owned(),
+        },
+        (Scope::History, _) => match &s.commit {
+            Some(c) => format!("{} against its parent", short(c)),
+            None => "no commits yet".to_owned(),
+        },
+        (_, false) => "before the first commit".to_owned(),
+        (Scope::Uncommitted, _) => format!("working tree vs HEAD{head}"),
+        (Scope::Staged, _) => format!("index vs HEAD{head}"),
+        (Scope::Unstaged, _) => "working tree vs index".to_owned(),
+    };
+    let mono = rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono };
+    let files = match n {
+        1 => "1 file".to_owned(),
+        n => format!("{n} files"),
+    };
+    // Row 1: what this is (counts, what it's measured against) and the tools that work on it.
+    let mut what = row()
+        .key("what")
+        .gap(10.0)
+        .items_center()
+        .min_w(0.0)
+        .shrink()
+        .child(text(files).font(k.ty.ui_medium).color(k.c.text_base))
+        .child(text(format!("+{adds}")).font(mono).color(k.c.success.fg))
+        .child(text(format!("\u{2212}{dels}")).font(mono).color(k.c.danger.fg))
+        .child(stat_bar(k, adds, dels, 72.0));
+    what = match compare_picker(s, k, layer) {
+        Some(picker) => what.child(picker),
+        None => what.child(text(basis).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).shrink()),
+    };
+    let hits = match (s.hits.len(), s.hit) {
+        (0, _) if !s.search.text.trim().is_empty() => "No matches".to_owned(),
+        (0, _) => String::new(),
+        (n, Some(i)) => format!("{} of {n}", i + 1),
+        (n, None) => format!("{n} matches"),
+    };
+    let mut search = TextInput::new(&s.search).placeholder("Search the diff").leading_icon(k.glyph.search);
+    if !s.search.text.is_empty() {
+        search = search.clear_button();
+    }
+    let search = search
+        .width(Some(220.0))
+        .on_edit(|s: &mut Collate| &mut s.search)
+        .on_change(|s: &mut Collate, _| {
+            s.hit = None;
+            s.find();
+        })
+        .on_key(|s: &mut Collate, ev: &KeyEvent, tx: &mut Tx| {
+            if ev.key == Key::Enter {
+                s.next_hit(!ev.mods.shift, tx);
+                return true;
+            }
+            false
+        })
+        .build(k)
+        .key("search");
+    // While ⌘F has the keys, the field looks focused.
+    let search = if s.searching { row().key("ring").radius(8.0).border(2.0, k.c.border_focus).child(search) } else { search };
+    let top = row()
+        .key("totals")
+        .w_full()
+        .gap(12.0)
+        .items_center()
+        .child(what)
+        .child(row().grow(1.0))
+        .child(text(hits).key("hits").font(k.ty.text_small).color(k.c.text_muted))
+        .child(search)
+        .child(text(format!("{viewed}/{n} viewed")).key("viewed-count").font(k.ty.text_small).color(k.c.text_muted));
+    // Row 2, only when there's something to say about how the diff is drawn.
+    // A 28 pt band right under the first, as the sidebar's and the panel's second rows are, so
+    // all three second rows centre on one line.
+    let mut notes = row().key("notes").w_full().h(28.0).gap(14.0).items_center();
+    let mut any = false;
+    if s.hidden > 0 || s.show_low_signal {
+        any = true;
+        let (note, word) = if s.show_low_signal {
+            (String::new(), "Hide Low-Signal Files")
+        } else {
+            (format!("{} low-signal file{} hidden", s.hidden, if s.hidden == 1 { "" } else { "s" }), "Show")
+        };
+        notes = notes.child(chip(k, "low-signal", &note, word, "Lockfiles, bundles, snapshots and generated files", |s: &mut Collate, _: &mut Tx| {
+            s.show_low_signal = !s.show_low_signal;
+            s.reload();
+        }));
+    }
+    let moved: usize = s.diff.files().iter().map(|f| f.moves.len()).sum();
+    if moved > 0 {
+        any = true;
+        notes = notes.child(
+            row()
+                .key("moved")
+                .gap(5.0)
+                .items_center()
+                .help("Blocks removed in one place and added unchanged in another show in blue: moves, not new code. m jumps between the two ends.")
+                .child(col().size(8.0, 8.0).radius(2.0).fill(k.c.info.icon))
+                .child(text(format!("{moved} moved lines")).font(k.ty.text_small).color(k.c.text_muted)),
+        );
+    }
+    if s.settings.ignore_whitespace {
+        any = true;
+        notes = notes.child(chip(k, "ws", "Whitespace changes hidden", "Show", "Lines that only changed whitespace show as unchanged (W)", |s: &mut Collate, _: &mut Tx| s.configure(|c| c.ignore_whitespace = false)));
+    }
+    let mut c = col().key("summary").w_full().px(16.0).pt(COLUMN_TOP).pb(PANEL_INSET).fill(k.c.bg_base).child(top);
+    if any {
+        c = c.child(notes);
+    }
+    c
+}
+
