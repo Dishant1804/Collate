@@ -1419,3 +1419,334 @@ fn kit(s: &Collate, cx: &Cx<Collate>) -> Kit {
     Kit::neutral(s.settings.dark(cx.system_dark()))
 }
 
+fn view(s: &Collate, cx: &mut Cx<Collate>) -> El {
+    let k = kit(s, cx);
+    let mut layer = Vec::new();
+    // Settings float over the review, which stays where it was underneath.
+    let base = review(s, cx, &k, &mut layer);
+    if s.screen == Screen::Settings {
+        settings_panel(s, &k, &mut layer);
+    }
+    rune_kit::root(base, layer)
+}
+
+/// The project menu: every added project, then "Add local project…".
+fn project_switcher(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
+    let mut options = project_labels(&s.projects);
+    let current = current_repo().and_then(|r| s.projects.iter().position(|p| *p == r.root)).map(|i| options[i].clone());
+    options.push(ADD_PROJECT.to_owned());
+    Select::new("project", &options)
+        .current(current.as_deref())
+        .placeholder("Open a project")
+        .label("Project")
+        .width(240.0)
+        .open(s.project_open)
+        .on_toggle(|s: &mut Collate| s.project_open = !s.project_open)
+        .on_close(|s: &mut Collate| s.project_open = false)
+        .on_choose(|s: &mut Collate, v: &str, tx: &mut Tx| {
+            if v == ADD_PROJECT {
+                s.add_project();
+            } else if let Some(i) = project_labels(&s.projects).iter().position(|l| l == v) {
+                let p = s.projects[i].clone();
+                s.open_project(&p, tx);
+            }
+        })
+        .build(k, layer)
+}
+
+/// What the window shows with no project open: the projects to pick from and a way to add one.
+fn welcome(s: &Collate, k: &Kit) -> El {
+    let mut list = col().key("recent").w_full().max_w(560.0).gap(4.0);
+    let labels = project_labels(&s.projects);
+    for (i, p) in s.projects.iter().enumerate() {
+        let path = p.clone();
+        // A project whose folder has gone (moved, deleted) shows faint.
+        let exists = p.exists();
+        list = list.child(
+            row()
+                .key(format!("p{i}"))
+                .w_full()
+                .h(40.0)
+                .px(12.0)
+                .gap(10.0)
+                .items_center()
+                .radius(8.0)
+                .hover(k.alpha(k.c.text_base, 0.06))
+                .cursor(Cursor::Pointer)
+                .role("button")
+                .label(labels[i].clone())
+                .on_press_tx(move |s: &mut Collate, tx| s.open_project(&path, tx))
+                .child(text(labels[i].clone()).font(k.ty.ui_medium).color(if exists { k.c.text_base } else { k.c.text_faint }))
+                .child(text(tilde(p)).font(k.ty.text_small).color(k.c.text_faint).truncate().min_w(0.0).grow(1.0))
+                .child(Button::new("Remove").variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small).on_press(move |s: &mut Collate| s.forget_project(i)).build(k)),
+        );
+    }
+    let add = Button::new(if s.picking { "Choose a folder…" } else { ADD_PROJECT }).variant(ButtonVariant::Contrast).shortcut("⌘O").disabled(s.picking).on_press(|s: &mut Collate| s.add_project()).build(k).key("add-project");
+    let mut c = col()
+        .key("welcome")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .center()
+        .gap(14.0)
+        .px(24.0)
+        .fill(k.c.bg_base)
+        .child(text("Open a project").font(rune::TextStyle { size: 22.0, line_height: 28.0, ..k.ty.ui_medium }).color(k.c.text_base))
+        .child(text("Pick a folder inside a git repository to review its changes.").font(k.ty.ui).color(k.c.text_muted))
+        .child(add);
+    if !s.projects.is_empty() {
+        c = c.child(text("Recent").font(k.ty.text_xsmall_medium).color(k.c.text_muted).pt(12.0)).child(list);
+    }
+    if let Some(n) = &s.notice {
+        c = c.child(text(n.text.clone()).font(k.ty.text_small).color(if n.error { k.c.danger.icon } else { k.c.text_muted }));
+    }
+    c
+}
+
+/// A small text button for file and hunk actions.
+fn action(k: &Kit, key: &str, label: &str, help: &str, danger: bool, f: impl Fn(&mut Collate) + 'static) -> El {
+    let b = Button::new(label.to_owned()).variant(if danger { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost }).control_size(ControlSize::Small).help(help.to_owned());
+    b.on_press(f).build(k).key(key.to_owned())
+}
+
+/// A file header's controls: its one likely action (Stage File or Unstage File), a "⋯" menu
+/// with the rest (the destructive one last), and the viewed check.
+fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
+    let mut r = row().gap(4.0).items_center();
+    if s.diff.files().get(f).is_some_and(|file| s.stale.contains(file.path())) {
+        r = r.child(
+            row()
+                .key("stale")
+                .h(20.0)
+                .px(6.0)
+                .mr(4.0)
+                .items_center()
+                .radius(4.0)
+                .fill(k.alpha(k.c.warning.icon, 0.14))
+                .help("You marked this file viewed; it has changed since.")
+                .child(text("Changed since viewed").font(k.ty.text_xsmall_medium).color(k.c.warning.icon)),
+        );
+    }
+    let staged = s.info.get(f).map_or(Staged::No, |i| i.staged);
+    let primary = match s.scope {
+        Scope::Uncommitted if staged == Staged::Fully => Some(action(k, "unstage", "Unstage File", "Unstage the whole file (U)", false, move |s| s.unstage_file(f))),
+        Scope::Uncommitted | Scope::Unstaged => Some(action(k, "stage", "Stage File", "Stage the whole file (A)", false, move |s| s.stage_file(f))),
+        Scope::Staged => Some(action(k, "unstage", "Unstage File", "Unstage the whole file (U)", false, move |s| s.unstage_file(f))),
+        Scope::Branch | Scope::History => None,
+    };
+    if let Some(p) = primary {
+        r = r.child(p);
+    }
+    let more_key = format!("file-more-{f}");
+    let anchor = more_key.clone();
+    let more = IconButton::new(&MORE_ICON)
+        .variant(IconButtonVariant::GhostMuted)
+        .label("More actions for this file")
+        .help("More actions")
+        .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.file_menu(f, &anchor, tx))
+        .build(k)
+        .key(more_key);
+    r.child(more).child(viewed_toggle(k, f, s.is_viewed(f)))
+}
+
+/// A hunk header's controls: its likely action, Discard after it with less weight (it asks
+/// first), and Pick Words when one line pair is selected.
+fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
+    let r = row().gap(2.0).items_center();
+    if s.scope.read_only() {
+        return r;
+    }
+    if s.settings.ignore_whitespace {
+        // Hunks drawn without whitespace don't match the file byte for byte.
+        return r.child(text("Whitespace hidden: stage whole files").font(k.ty.text_small).color(k.c.text_faint));
+    }
+    let staged = s.info.get(f).map_or(Staged::No, |i| i.staged);
+    // With lines selected in this hunk, its actions act on them alone.
+    let lines = s.picked(f, h).is_some();
+    let (st, un, di) = if lines { ("Stage Lines", "Unstage Lines", "Discard Lines…") } else { ("Stage Hunk", "Unstage Hunk", "Discard Hunk…") };
+    let stage = action(k, "stage", st, "Stage (a)", false, move |s| {
+        let p = s.picked(f, h);
+        s.stage_hunk(f, h, p)
+    });
+    let unstage = action(k, "unstage", un, "Unstage (u)", false, move |s| {
+        let p = s.picked(f, h);
+        s.unstage_hunk(f, h, p)
+    });
+    let discard = action(k, "discard", di, "Discard (x); asks first", true, move |s| s.ask_discard(f, Some(h)));
+    let words = s.word_candidate().filter(|w| w.file == f && w.hunk == h).is_some();
+    let r = if words { r.child(action(k, "words", "Pick Words…", "Stage, unstage or discard single word changes in this line (p)", false, |s| s.pick_words())) } else { r };
+    match s.scope {
+        // All of a file staged: its HEAD → working tree hunks are exactly what's in the index.
+        Scope::Uncommitted if staged == Staged::Fully => r.child(unstage).child(discard),
+        Scope::Uncommitted | Scope::Unstaged => r.child(stage).child(discard),
+        Scope::Staged => r.child(unstage),
+        Scope::Branch | Scope::History => r,
+    }
+}
+
+fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El {
+    let no_project = !s.has_project;
+    let sidebar = if no_project { col().key("sidebar").w_full().h_full() } else { views_sidebar(s, k) };
+    let inspector = if no_project { col().key("staging").w_full().h_full() } else { staging_panel(s, k) };
+
+    // Toolbar, Mac regions: where you are (project, branch) leading, what you're looking at as
+    // the title, and the tools for it trailing: layout, the staging panel, and a menu of the rest.
+    // Where the work is, as Zed's title bar says it: the branch it comes from, then the branch
+    // it's on (`main / fix/x`). On the base branch itself, just its name.
+    let branch = if s.branch.is_empty() {
+        row()
+    } else {
+        // Only the current branch's name gives way to a narrow bar.
+        let part = |key: &str, glyph: &'static Icon, name: String, gives: bool| {
+            let label = text(name).font(k.ty.ui).color(k.c.text_muted);
+            let r = row().key(key.to_owned()).gap(5.0).items_center().child(icon(glyph, 14.0).color(k.c.icon_faint));
+            if gives { r.min_w(0.0).shrink().child(label.truncate().min_w(0.0).shrink()) } else { r.child(label) }
+        };
+        // One button, as GitHub Desktop's branch menu: preview the branch as a pull request,
+        // and choose the base it's compared against.
+        let mut r = row().key("branch").gap(8.0).px(6.0).h(26.0).radius(6.0).items_center().min_w(0.0).shrink()
+            .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button")
+            .label(format!("Branch {}: preview pull request, choose base", s.branch))
+            .help("Preview pull request, choose the base branch")
+            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.branch_menu(tx));
+        let base = s.base.as_deref().map(|b| b.strip_prefix("origin/").unwrap_or(b).to_owned()).filter(|b| *b != s.branch);
+        if let Some(b) = base {
+            r = r.child(part("base-branch", &MERGE_ICON, b, false)).child(text("/".to_owned()).font(k.ty.ui).color(k.c.text_faint));
+        }
+        r.child(part("current-branch", &BRANCH_ICON, s.branch.clone(), true))
+            .child(icon(k.glyph.chevron_down, 12.0).color(k.c.icon_faint))
+    };
+    // The switcher's label, not its hover box, starts on the content's 16-point edge below
+    // (the toolbar pads 12; the trigger pads its label 8).
+    // With the sidebar closed the toolbar starts just past its toggle, where back and forward
+    // sit: it starts past them instead.
+    let past_arrows = if s.sidebar.is_open() { 0.0 } else { NAV_W + 8.0 };
+    let mut leading = row().key("toolbar-leading").gap(10.0).items_center().min_w(0.0).ml(EDGE - 12.0 - 8.0 + past_arrows).child(project_switcher(s, k, layer)).child(branch);
+    // Long branch names truncate 16 points before the centred title rather than run under it.
+    let title_x = rune::memo::layout_with("title", |r| (r[0] * 2.0).round() / 2.0);
+    let lead_x = rune::memo::layout_with("toolbar-leading", |r| (r[0] * 2.0).round() / 2.0);
+    if let (Some(t), Some(l)) = (title_x, lead_x) {
+        leading = leading.max_w((t - l - 16.0).max(120.0));
+    }
+    let split = s.diff.mode() == DiffMode::Split;
+    let modes = SegmentedControl::new(&["Unified", "Split"], Some(split as usize)).label("Diff layout").fit().on_pick(|s: &mut Collate, i, tx: &mut Tx| {
+        tx.motion(rune::tok::motion::SNAPPY);
+        s.configure(|c| c.layout = if i == 1 { DiffMode::Split } else { DiffMode::Unified });
+    });
+    let panel = IconButton::new(&shell::INSPECTOR)
+        .variant(IconButtonVariant::GhostMuted)
+        .expanded(s.inspector.is_open())
+        .label(if s.inspector.is_open() { "Hide staging panel" } else { "Show staging panel" })
+        .help("Staging panel (⌥⌘0)")
+        .on_press(|s: &mut Collate| s.inspector.toggle())
+        .build(k)
+        .key("panel-toggle");
+    let more = IconButton::new(&MORE_ICON)
+        .variant(IconButtonVariant::GhostMuted)
+        .label("View options and more")
+        .help("View options, shortcuts, settings")
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.more_menu(tx))
+        .build(k)
+        .key("more");
+    let panel_w = if s.inspector.is_open() && !no_project { s.inspector.width() } else { 0.0 };
+    // The title's slot is the bar less 96 points each side.
+    let bar = rune::memo::layout_with("toolbar", |r| r[2]).unwrap_or(f32::MAX);
+    let title_offset = if bar - 192.0 - panel_w >= 140.0 { panel_w } else { 0.0 };
+    let toolbar = Toolbar::new()
+        .leading(leading)
+        // Centred over the diff it names, not over the diff and the staging panel together;
+        // over the whole bar when that leaves the title too little room.
+        .center(
+            row().w_full().pr(title_offset).center().child(
+                text(if no_project { "Collate".to_owned() } else if s.map.open { "Repository Map".to_owned() } else { s.scope_title() }).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate(),
+            ),
+        )
+        .trailing(row().gap(6.0).items_center().child(modes.build(k)).child(panel).child(more));
+
+    let n = s.diff.files().len();
+    let body = if !s.has_project {
+        welcome(s, k)
+    } else if let Some(e) = &s.error {
+        col().key("failed").w_full().grow(1.0).min_h(0.0).child(message(k, "Can't show these changes", e))
+    } else if !s.loaded {
+        message(k, "Reading changes…", "")
+    } else if n == 0 {
+        let why = match s.scope {
+            Scope::Uncommitted => "The working tree matches HEAD.",
+            Scope::Staged => "Nothing is staged.",
+            Scope::Unstaged => "Everything is staged.",
+            Scope::Branch => "This branch has no changes against its base.",
+            Scope::History => "This commit changes no files (an empty commit, or a merge).",
+        };
+        col().key("empty").w_full().grow(1.0).min_h(0.0).child(summary(s, k, layer)).child(message(k, if s.hidden > 0 { "Only low-signal files changed" } else { "No changes" }, why))
+    } else {
+        let (fk, hk) = (k.clone(), k.clone());
+        let diff = DiffView::new(|s: &Collate| &s.diff, |s: &mut Collate| &mut s.diff)
+            .header_actions(move |s: &Collate, f| file_actions(s, &fk, f))
+            .hunk_actions(move |s: &Collate, f, h| hunk_actions(s, &hk, f, h))
+            .dim(|s: &Collate, f| s.is_viewed(f))
+            .on_visible_file(|s: &mut Collate, f| {
+                if let Some(p) = s.diff.files().get(f).map(|f| f.path().to_owned()) {
+                    s.select_in_lists(&p);
+                }
+            })
+            .build(s, k);
+        col().key("review").w_full().grow(1.0).min_h(0.0).child(summary(s, k, layer)).child(diff)
+    };
+    let body = if s.has_project && s.scope == Scope::History && s.error.is_none() {
+        if s.history_diff {
+            col().key("history-body").w_full().grow(1.0).min_h(0.0).child(commit_header(s, k)).child(body)
+        } else {
+            history_graph(s, k)
+        }
+    } else { body };
+    let body = if s.has_project && s.map.open { map_view::map_view(s, k) } else { body };
+    let body = match status_bar(s, k) {
+        Some(bar) => col().key("body").w_full().grow(1.0).min_h(0.0).child(body).child(bar),
+        None => body,
+    };
+
+    if s.show_help {
+        let keys: &[(&str, &str)] = &[
+            ("j  k", "Next / previous change"),
+            ("]  [", "Next / previous file"),
+            ("a  u  x", "Stage, unstage, discard the change at the top"),
+            ("Click line numbers", "Pick lines; a, u and x then act on just those (shift-click or drag for more)"),
+            ("p", "With one line and its replacement picked: pick single word changes"),
+            ("A  U  X", "Stage, unstage, discard the whole file in view"),
+            ("v", "Mark the file viewed"),
+            ("o", "Open the file in your editor"),
+            ("⌘F", "Search the diff: type, ⏎ next match, ⇧⏎ previous, esc done"),
+            ("n  N  ⌘G", "Next / previous search match"),
+            ("m", "Jump to the other end of a move (blue lines)"),
+            ("z  Z", "Collapse / expand every file"),
+            ("s", "Unified / split"),
+            ("w  W", "Wrap long lines / hide whitespace changes"),
+            ("1 2 3 4 5", "All changes, staged, unstaged, pull request preview, history"),
+            ("<  >", "Git Graph: older / newer commit"),
+            ("r", "Reread the repository"),
+            ("⌘↩", "Commit what's staged"),
+            ("⌘O", "Add a local project (the project menu, top left, switches)"),
+            ("⌘,", "Settings"),
+            ("⇧⌘B", "Show / hide the views sidebar"),
+            ("⌥⌘0", "Show / hide the staging panel"),
+        ];
+        let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
+        let rows = keys.iter().enumerate().map(|(i, (key, what))| {
+            row()
+                .key(format!("k{i}"))
+                .w_full()
+                .gap(16.0)
+                .items_start()
+                .child(text(key.to_string()).font(mono).color(k.c.text_base).w(150.0))
+                .child(text(what.to_string()).font(k.ty.text_small).color(k.c.text_muted).wrap().grow(1.0).min_w(0.0))
+        });
+        Dialog::new("help", "Keyboard shortcuts")
+            .open(true)
+            .fit()
+            .width(560.0)
+            .on_close(|s: &mut Collate| s.show_help = false)
+            .child(col().key("keys").w_full().px(24.0).pb(20.0).gap(8.0).children(rows))
+            .build(k, layer);
+    }
+
