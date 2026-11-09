@@ -663,3 +663,326 @@ fn quoted_end(s: &str) -> Option<usize> {
     None
 }
 
+/// A path as git writes it: bare, or in double quotes with C escapes (octal bytes for
+/// non-ASCII).
+fn unquote(p: &str) -> String {
+    let Some(inner) = p.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else { return p.to_owned() };
+    let mut bytes = Vec::new();
+    let mut it = inner.bytes().peekable();
+    while let Some(c) = it.next() {
+        if c != b'\\' {
+            bytes.push(c);
+            continue;
+        }
+        match it.next() {
+            Some(b'n') => bytes.push(b'\n'),
+            Some(b't') => bytes.push(b'\t'),
+            Some(b'r') => bytes.push(b'\r'),
+            Some(d @ b'0'..=b'7') => {
+                let mut v = u32::from(d - b'0');
+                for _ in 0..2 {
+                    match it.peek() {
+                        Some(&e @ b'0'..=b'7') => {
+                            v = v * 8 + u32::from(e - b'0');
+                            it.next();
+                        }
+                        _ => break,
+                    }
+                }
+                bytes.push(v as u8);
+            }
+            Some(other) => bytes.push(other),
+            None => bytes.push(b'\\'),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn strip_prefix(p: &str) -> String {
+    let p = unquote(p);
+    match p.get(..2) {
+        Some("a/" | "b/") => p[2..].to_owned(),
+        _ => p,
+    }
+}
+
+/// The path of a `---` or `+++` line: `None` for `/dev/null`, without a trailing timestamp.
+fn path_of(s: &str) -> Option<String> {
+    let s = if s.starts_with('"') { s } else { s.split('\t').next().unwrap_or(s) };
+    let s = s.trim_end();
+    if s == "/dev/null" {
+        return None;
+    }
+    Some(strip_prefix(s))
+}
+
+fn hunk_header(l: &str) -> Option<Hunk> {
+    let rest = l.strip_prefix("@@ -")?;
+    let (ranges, section) = rest.split_once(" @@")?;
+    let (old, new) = ranges.split_once(" +")?;
+    let range = |r: &str| -> Option<(u32, u32)> {
+        match r.split_once(',') {
+            Some((s, c)) => Some((s.parse().ok()?, c.parse().ok()?)),
+            None => Some((r.parse().ok()?, 1)),
+        }
+    };
+    let ((os, oc), (ns, nc)) = (range(old)?, range(new)?);
+    Some(Hunk { old_start: os, old_count: oc, new_start: ns, new_count: nc, section: section.trim().to_owned(), lines: Vec::new() })
+}
+
+/// The lines of hunk `h` from `lines[i..]`, read until its counts are used up: the index of
+/// the line after it.
+fn hunk_body(mut h: Hunk, lines: &[&str], mut i: usize) -> (Hunk, usize) {
+    let (mut old, mut new) = (h.first(Side::Old), h.first(Side::New));
+    let (mut old_left, mut new_left) = (h.old_count, h.new_count);
+    while i < lines.len() {
+        let l = lines[i];
+        if l.starts_with('\\') {
+            if let Some(last) = h.lines.last_mut() {
+                last.no_newline = true;
+            }
+            i += 1;
+            continue;
+        }
+        if old_left == 0 && new_left == 0 {
+            break;
+        }
+        let (kind, text) = match l.as_bytes().first() {
+            Some(b' ') => (LineKind::Context, &l[1..]),
+            // A context line whose space an editor trimmed.
+            None if i + 1 < lines.len() => (LineKind::Context, ""),
+            Some(b'-') if old_left > 0 => (LineKind::Removed, &l[1..]),
+            Some(b'+') if new_left > 0 => (LineKind::Added, &l[1..]),
+            _ => break,
+        };
+        let line = match kind {
+            LineKind::Context if old_left > 0 && new_left > 0 => {
+                old_left -= 1;
+                new_left -= 1;
+                let (o, n) = (old, new);
+                old = old.saturating_add(1);
+                new = new.saturating_add(1);
+                Line::new(kind, Some(o), Some(n), text)
+            }
+            LineKind::Context => break,
+            LineKind::Removed => {
+                old_left -= 1;
+                let o = old;
+                old = old.saturating_add(1);
+                Line::new(kind, Some(o), None, text)
+            }
+            LineKind::Added => {
+                new_left -= 1;
+                let n = new;
+                new = new.saturating_add(1);
+                Line::new(kind, None, Some(n), text)
+            }
+        };
+        h.lines.push(line);
+        i += 1;
+    }
+    h.old_count -= old_left;
+    h.new_count -= new_left;
+    (h, i)
+}
+
+/// Marks lines that moved: a block removed in one place and added, unchanged and in the same
+/// order, in another (this file or another), as `git diff --color-moved` does. A block needs
+/// at least `MOVE_MIN_LINES` lines with real content, so scattered common lines (`}`,
+/// `return Ok(())`) aren't called moves; short lines inside a matched block move with it.
+/// Each moved line's counterpart is recorded in its file's [`FileDiff::moves`].
+pub fn mark_moved(files: &mut [FileDiff]) {
+    const MOVE_MIN_LINES: usize = 3;
+    let meaningful = |t: &str| t.chars().filter(|c| c.is_alphanumeric()).take(4).count() >= 4;
+    // Runs of one kind: (file, hunk, first line, length).
+    let runs = |kind: LineKind| -> Vec<(usize, usize, usize, usize)> {
+        let mut out = Vec::new();
+        for (f, file) in files.iter().enumerate() {
+            for (h, hunk) in file.hunks.iter().enumerate() {
+                let mut i = 0;
+                while i < hunk.lines.len() {
+                    if hunk.lines[i].kind != kind {
+                        i += 1;
+                        continue;
+                    }
+                    let start = i;
+                    while i < hunk.lines.len() && hunk.lines[i].kind == kind {
+                        i += 1;
+                    }
+                    out.push((f, h, start, i - start));
+                }
+            }
+        }
+        out
+    };
+    let (removed, added) = (runs(LineKind::Removed), runs(LineKind::Added));
+    // Where each meaningful added text starts a candidate: (run, offset in it).
+    // Sized for every added line, so filling it doesn't rehash.
+    let mut starts: std::collections::HashMap<&str, Vec<(usize, usize)>> = std::collections::HashMap::with_capacity(added.iter().map(|r| r.3).sum());
+    for (r, &(f, h, start, len)) in added.iter().enumerate() {
+        for k in 0..len {
+            let t = files[f].hunks[h].lines[start + k].text.trim();
+            if meaningful(t) {
+                starts.entry(t).or_default().push((r, k));
+            }
+        }
+    }
+    let text = |f: usize, h: usize, i: usize| files[f].hunks[h].lines[i].text.trim();
+    let mut claimed: Vec<Vec<bool>> = added.iter().map(|r| vec![false; r.3]).collect();
+    // A line's place: (file, hunk, line). Pairs to mark: removed side, added side.
+    type At = (usize, usize, usize);
+    let mut pairs: Vec<(At, At)> = Vec::new();
+    for &(f, h, start, len) in &removed {
+        let mut i = 0;
+        while i < len {
+            let t = text(f, h, start + i);
+            let mut best: Option<(usize, usize, usize)> = None; // (run, offset, length)
+            if meaningful(t) {
+                for &(r, k) in starts.get(t).map_or(&[][..], |v| &v[..]) {
+                    let (af, ah, astart, alen) = added[r];
+                    let mut n = 0;
+                    while i + n < len && k + n < alen && !claimed[r][k + n] && text(f, h, start + i + n) == text(af, ah, astart + k + n) {
+                        n += 1;
+                    }
+                    if best.is_none_or(|b| n > b.2) {
+                        best = Some((r, k, n));
+                    }
+                }
+            }
+            match best {
+                Some((r, k, n)) if (0..n).filter(|&d| meaningful(text(f, h, start + i + d))).count() >= MOVE_MIN_LINES => {
+                    let (af, ah, astart, _) = added[r];
+                    for d in 0..n {
+                        claimed[r][k + d] = true;
+                        pairs.push(((f, h, start + i + d), (af, ah, astart + k + d)));
+                    }
+                    i += n;
+                }
+                _ => i += 1,
+            }
+        }
+    }
+    for f in files.iter_mut() {
+        f.moves.clear();
+    }
+    for ((rf, rh, ri), (af, ah, ai)) in pairs {
+        let new_line = files[af].hunks[ah].lines[ai].new.unwrap_or(0);
+        let old_line = files[rf].hunks[rh].lines[ri].old.unwrap_or(0);
+        files[rf].moves.insert((rh as u32, ri as u32), (af as u32, new_line));
+        files[af].moves.insert((ah as u32, ai as u32), (rf as u32, old_line));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn texts_make_hunks_with_three_lines_of_context() {
+        let old: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        let new = old.replace("line 5\n", "line five\n").replace("line 17\n", "").replace("line 20\n", "line 20\nline 21\n");
+        let f = FileDiff::from_texts("a.txt", &old, &new);
+        let headers: Vec<String> = f.hunks.iter().map(Hunk::header).collect();
+        assert_eq!(headers, vec!["@@ -2,7 +2,7 @@ line 1", "@@ -14,7 +14,7 @@ line 13"]);
+        let second: Vec<(LineKind, Option<u32>, Option<u32>)> = f.hunks[1].lines.iter().map(|l| (l.kind, l.old, l.new)).collect();
+        assert_eq!(second[3], (LineKind::Removed, Some(17), None));
+        assert_eq!(second.last(), Some(&(LineKind::Added, None, Some(20))));
+        assert_eq!((f.additions(), f.deletions()), (2, 2));
+        let five = &f.hunks[0].lines;
+        let added = five.iter().find(|l| l.kind == LineKind::Added).unwrap();
+        assert_eq!(&added.text[added.changes[0].clone()], "five");
+    }
+
+    #[test]
+    fn a_missing_final_newline_is_a_change() {
+        let f = FileDiff::from_texts("a", "one\ntwo", "one\ntwo\n");
+        let l: Vec<(LineKind, &str, bool)> = f.hunks[0].lines.iter().map(|l| (l.kind, l.text.as_str(), l.no_newline)).collect();
+        assert_eq!(l, vec![(LineKind::Context, "one", false), (LineKind::Removed, "two", true), (LineKind::Added, "two", false)]);
+        let both_missing = FileDiff::from_texts("a", "one\ntwo", "one\nthree");
+        let l2: Vec<(LineKind, &str, bool)> = both_missing.hunks[0].lines.iter().map(|l| (l.kind, l.text.as_str(), l.no_newline)).collect();
+        assert_eq!(l2, vec![(LineKind::Context, "one", false), (LineKind::Removed, "two", true), (LineKind::Added, "three", true)]);
+        assert!(FileDiff::from_texts("a", "same\n", "same\n").hunks.is_empty());
+        assert!(FileDiff::from_texts("a", "same", "same").hunks.is_empty());
+        // CRLF normalizes line endings while preserving changes.
+        assert!(FileDiff::from_texts("a", "one\r\ntwo\r\n", "one\ntwo\n").hunks.is_empty());
+        let crlf = FileDiff::from_texts("a", "one\r\ntwo\r\n", "one\r\nthree\r\n");
+        assert_eq!(crlf.hunks[0].lines[1].text, "two");
+        assert_eq!(crlf.hunks[0].lines[2].text, "three");
+        // NUL bytes mark a binary file.
+        let bin = FileDiff::from_texts("img.bin", "a\0b", "c\0d");
+        assert!(bin.binary && bin.hunks.is_empty());
+    }
+
+    #[test]
+    fn hostile_and_fuzzed_patches_never_panic_or_blow_up() {
+        let cases = [
+            "",
+            "diff --git\n--- \n+++ \n@@ -4294967295,4294967295 +4294967295,4294967295 @@\n-a\n+b\n\\ No newline",
+            "diff --git \"a/unclosed b/unclosed\n--- \"a/\\777\\x\n+++ b/\n@@ -0,0 +0,0 @@\n",
+            "diff --git 🚀 a/x 🚀 b/y\n@@ -1,999999 +1,999999 @@\n+truncated",
+            "--- a/f\n+++ b/f\n@@ -10,2 +10,2 @@\n ctx\n-old\n+new\n@@ -2,1 +2,1 @@\n-out_of_order\n+ok\n",
+        ];
+        for patch in cases {
+            let files = parse(patch);
+            let _ = crate::diff::DiffState::new(files);
+        }
+
+        // Fuzz-style random line soup of headers, hunks, escapes and markers.
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed as usize) % n
+        };
+        let fragments = [
+            "diff --git a/f.rs b/f.rs\n",
+            "diff --git \"a/sp ace\\303\\251\" \"b/sp ace\\n\"\n",
+            "--- a/f.rs\n",
+            "+++ b/f.rs\n",
+            "--- /dev/null\n",
+            "+++ /dev/null\n",
+            "@@ -1,3 +1,3 @@ fn f()\n",
+            "@@ -0,0 +1,5 @@\n",
+            "@@ -4294967295,10 +0,4294967295 @@\n",
+            "@@ malformed @@\n",
+            " context line\n",
+            "-removed line\n",
+            "+added line\n",
+            "\\ No newline at end of file\n",
+            "rename from \"a/\\123\"\n",
+            "similarity index 999%\n",
+            "Binary files a/x and b/x differ\n",
+            "\r\n",
+        ];
+        for _ in 0..300 {
+            let len = 1 + next(24);
+            let patch: String = (0..len).map(|_| fragments[next(fragments.len())]).collect();
+            let files = parse(&patch);
+            let mut state = crate::diff::DiffState::new(files);
+            state.set_mode(crate::diff::DiffMode::Split);
+            for f in 0..state.files().len() {
+                let _ = state.side_line(f, Side::Old, 1);
+                let _ = state.side_line(f, Side::New, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn an_added_file_and_an_insertion_count_from_zero() {
+        let f = FileDiff::between(None, Some("new.rs".into()), "", "fn main() {}\n");
+        assert_eq!((f.status, f.hunks[0].header()), (FileStatus::Added, "@@ -0,0 +1 @@".to_owned()));
+        let reparsed = parse("--- /dev/null\n+++ b/new.rs\n@@ -0,0 +1 @@\n+fn main() {}\n");
+        assert_eq!(reparsed[0].hunks[0].lines, f.hunks[0].lines);
+        assert_eq!(reparsed[0].status, FileStatus::Added);
+    }
+
+    #[test]
+    fn languages_come_from_the_extension() {
+        let f = |p: &str| FileDiff::from_texts(p, "", "x").language().map(str::to_owned);
+        assert_eq!(f("src/lib.rs").as_deref(), Some("rs"));
+        assert_eq!(f("web/App.tsx").as_deref(), Some("tsx"));
+        assert_eq!(f(".gitignore"), None);
+        assert_eq!(f("Makefile").as_deref(), Some("Makefile"));
+    }
+}
