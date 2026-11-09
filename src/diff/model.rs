@@ -327,3 +327,339 @@ impl FileDiff {
         w
     }
 
+    /// Where moved line `i` of hunk `h` went (or came from): the file's index in the diff
+    /// and its line number on the other side. `None` for a line that didn't move.
+    pub fn twin(&self, h: usize, i: usize) -> Option<(u32, u32)> {
+        self.moves.get(&(h as u32, i as u32)).copied()
+    }
+
+    /// The widest line, in columns (measured once).
+    pub fn width(&self) -> u32 {
+        self.columns()
+    }
+
+    fn scan_columns(&self) -> u32 {
+        let hunks = self.hunks.iter().flat_map(|h| &h.lines).map(|l| columns(&l.text));
+        let texts = [&self.old_text, &self.new_text].into_iter().flatten().flat_map(|t| (1..=t.len()).filter_map(|n| t.line(n))).map(columns);
+        hunks.chain(texts).max().unwrap_or(0)
+    }
+
+    /// The largest line number either side shows.
+    pub(crate) fn last_line(&self) -> u32 {
+        let hunks = self.hunks.last().map_or(0, |h| h.end(Side::Old).max(h.end(Side::New)).saturating_sub(1));
+        let texts = [&self.old_text, &self.new_text].into_iter().flatten().map(|t| t.len()).max().unwrap_or(0);
+        hunks.max(texts)
+    }
+
+    /// Word changes for each removed line followed by an added one, pairing them in order.
+    fn pair_words(&mut self) {
+        for h in Arc::make_mut(&mut self.hunks) {
+            let mut i = 0;
+            while i < h.lines.len() {
+                let del = i;
+                while i < h.lines.len() && h.lines[i].kind == LineKind::Removed {
+                    i += 1;
+                }
+                let add = i;
+                while i < h.lines.len() && h.lines[i].kind == LineKind::Added {
+                    i += 1;
+                }
+                if add == del || i == add {
+                    i = i.max(del + 1);
+                    continue;
+                }
+                let pairs = (add - del).min(i - add);
+                if pairs <= 128 {
+                    for k in 0..pairs {
+                        let (a, b) = myers::words(&h.lines[del + k].text, &h.lines[add + k].text);
+                        h.lines[del + k].changes = a;
+                        h.lines[add + k].changes = b;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Columns `line` takes with tabs stopping every four.
+pub(crate) fn columns(line: &str) -> u32 {
+    // Most lines are ASCII without tabs, a column a byte: no need to decode those.
+    if line.is_ascii() && !line.as_bytes().contains(&b'\t') {
+        return line.len() as u32;
+    }
+    line.chars().fold(0, |col, c| if c == '\t' { col + 4 - col % 4 } else { col + 1 })
+}
+
+/// Hunks of `old` to `new` with `context` lines around each change, merged when their
+/// context would touch.
+fn hunks(old: &Source, new: &Source, context: u32, ignore_whitespace: bool) -> Vec<Hunk> {
+    // Intern lines; a last line without its break differs from the same text with one.
+    // Sized for the longer side (the other mostly repeats it), so filling it doesn't rehash.
+    let mut ids: HashMap<(std::borrow::Cow<str>, bool), u32> = HashMap::with_capacity(old.len().max(new.len()) as usize);
+    let (a, b) = (intern(old, &mut ids, ignore_whitespace), intern(new, &mut ids, ignore_whitespace));
+    let ops = myers::diff(&a, &b);
+    // Changes as (old range, new range), 0-based.
+    let changes: Vec<(Range<u32>, Range<u32>)> = {
+        let mut out: Vec<(Range<u32>, Range<u32>)> = Vec::new();
+        let (mut i, mut j) = (0u32, 0u32);
+        for op in &ops {
+            match *op {
+                Op::Equal { len, .. } => {
+                    i += len as u32;
+                    j += len as u32;
+                }
+                Op::Delete { len, .. } => {
+                    match out.last_mut() {
+                        Some(c) if c.0.end == i && c.1.end == j => c.0.end += len as u32,
+                        _ => out.push((i..i + len as u32, j..j)),
+                    }
+                    i += len as u32;
+                }
+                Op::Insert { len, .. } => {
+                    match out.last_mut() {
+                        Some(c) if c.0.end == i && c.1.end == j => c.1.end += len as u32,
+                        _ => out.push((i..i, j..j + len as u32)),
+                    }
+                    j += len as u32;
+                }
+            }
+        }
+        out
+    };
+    let mut groups: Vec<Vec<(Range<u32>, Range<u32>)>> = Vec::new();
+    for c in changes {
+        match groups.last_mut().and_then(|g| g.last().cloned().map(|l| (g, l))) {
+            Some((g, last)) if c.0.start - last.0.end <= 2 * context => g.push(c),
+            _ => groups.push(vec![c]),
+        }
+    }
+    let line = |s: &Source, n: u32| s.line(n + 1).unwrap_or("").to_owned();
+    groups
+        .into_iter()
+        .map(|g| {
+            let (first, last) = (&g[0], &g[g.len() - 1]);
+            let start = first.0.start.saturating_sub(context);
+            let shift = first.0.start - start;
+            let (os, ns) = (start, first.1.start - shift);
+            let end_old = (last.0.end + context).min(old.len());
+            let mut lines = Vec::new();
+            let (mut i, mut j) = (os, ns);
+            for c in &g {
+                while i < c.0.start {
+                    lines.push(Line { text: line(old, i), ..Line::new(LineKind::Context, Some(i + 1), Some(j + 1), "") });
+                    i += 1;
+                    j += 1;
+                }
+                for n in c.0.clone() {
+                    lines.push(Line { text: line(old, n), ..Line::new(LineKind::Removed, Some(n + 1), None, "") });
+                }
+                for n in c.1.clone() {
+                    lines.push(Line { text: line(new, n), ..Line::new(LineKind::Added, None, Some(n + 1), "") });
+                }
+                i = c.0.end;
+                j = c.1.end;
+            }
+            while i < end_old {
+                lines.push(Line { text: line(old, i), ..Line::new(LineKind::Context, Some(i + 1), Some(j + 1), "") });
+                i += 1;
+                j += 1;
+            }
+            for l in &mut lines {
+                l.no_newline = match l.kind {
+                    LineKind::Removed => l.old == Some(old.len()) && old.ends_without_newline(),
+                    LineKind::Added => l.new == Some(new.len()) && new.ends_without_newline(),
+                    LineKind::Context => l.old == Some(old.len()) && old.ends_without_newline(),
+                };
+            }
+            let (oc, nc) = (i - os, j - ns);
+            Hunk {
+                old_start: if oc == 0 { os } else { os + 1 },
+                old_count: oc,
+                new_start: if nc == 0 { ns } else { ns + 1 },
+                new_count: nc,
+                section: section(old, os),
+                lines,
+            }
+        })
+        .collect()
+}
+
+fn intern<'a>(s: &'a Source, ids: &mut HashMap<(std::borrow::Cow<'a, str>, bool), u32>, ignore_whitespace: bool) -> Vec<u32> {
+    let last = s.len();
+    (1..=last)
+        .map(|n| {
+            let line = s.line(n).unwrap_or("");
+            let text = if ignore_whitespace && line.contains(char::is_whitespace) {
+                std::borrow::Cow::Owned(line.chars().filter(|c| !c.is_whitespace()).collect())
+            } else {
+                std::borrow::Cow::Borrowed(line)
+            };
+            // Ignoring whitespace ignores a missing final line break too.
+            let key = (text, !ignore_whitespace && n == last && s.ends_without_newline());
+            let next = ids.len() as u32;
+            *ids.entry(key).or_insert(next)
+        })
+        .collect()
+}
+
+/// The nearest line above 0-based line `before` that starts with a letter, `_` or `$` (a
+/// function or type at the left margin), as `git diff` names a hunk by default.
+fn section(s: &Source, before: u32) -> String {
+    (1..=before.min(s.len()))
+        .rev()
+        .take(2000)
+        .filter_map(|n| s.line(n))
+        .find(|l| l.starts_with(|c: char| c.is_alphabetic() || c == '_' || c == '$'))
+        .map(|l| l.trim_end().chars().take(80).collect())
+        .unwrap_or_default()
+}
+
+/// Every file in a unified diff, as `git diff`, `git show`, `git format-patch` or `diff -u`
+/// write them: renames, copies, mode changes, added and deleted files, binary files and
+/// `\ No newline at end of file` included. Text around the diffs (a commit message, a mail
+/// header) is skipped. Word changes are paired as [`FileDiff::from_texts`] pairs them.
+pub fn parse(patch: &str) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let lines: Vec<&str> = patch.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let mut i = 0;
+    let mut cur: Option<FileDiff> = None;
+    // In a `diff --git` section, before its first hunk.
+    let mut in_header = false;
+    while i < lines.len() {
+        let l = lines[i];
+        if let Some(rest) = l.strip_prefix("diff --git ") {
+            files.extend(cur.take());
+            let (a, b) = git_paths(rest);
+            cur = Some(FileDiff::empty(a, b));
+            in_header = true;
+            i += 1;
+            continue;
+        }
+        if l.starts_with("--- ") && lines.get(i + 1).is_some_and(|n| n.starts_with("+++ ")) && lines.get(i + 2).is_some_and(|n| n.starts_with("@@ ")) {
+            let (a, b) = (path_of(&l[4..]), path_of(&lines[i + 1][4..]));
+            match cur.as_mut() {
+                Some(f) if in_header => {
+                    // These name the paths unambiguously (and `/dev/null` for none).
+                    f.old_path = a;
+                    f.new_path = b;
+                }
+                _ => {
+                    files.extend(cur.take());
+                    cur = Some(FileDiff::empty(a, b));
+                }
+            }
+            in_header = false;
+            i += 2;
+            continue;
+        }
+        if let Some(f) = cur.as_mut() {
+            if l.starts_with("@@ ") {
+                in_header = false;
+                if let Some(h) = hunk_header(l) {
+                    let (h, next) = hunk_body(h, &lines, i + 1);
+                    Arc::make_mut(&mut f.hunks).push(h);
+                    i = next;
+                    continue;
+                }
+            } else if in_header {
+                header_line(f, l);
+            }
+        }
+        i += 1;
+    }
+    files.extend(cur);
+    for f in &mut files {
+        if f.status == FileStatus::Modified {
+            f.status = match (&f.old_path, &f.new_path) {
+                (None, Some(_)) => FileStatus::Added,
+                (Some(_), None) => FileStatus::Deleted,
+                (Some(a), Some(b)) if a != b => FileStatus::Renamed,
+                _ => FileStatus::Modified,
+            };
+        }
+        f.pair_words();
+    }
+    files
+}
+
+fn header_line(f: &mut FileDiff, l: &str) {
+    let word = |p: &str| l.strip_prefix(p).map(str::trim);
+    if let Some(m) = word("old mode ") {
+        f.old_mode = Some(m.to_owned());
+    } else if let Some(m) = word("new mode ") {
+        f.new_mode = Some(m.to_owned());
+    } else if let Some(m) = word("new file mode ") {
+        f.new_mode = Some(m.to_owned());
+        f.status = FileStatus::Added;
+        f.old_path = None;
+    } else if let Some(m) = word("deleted file mode ") {
+        f.old_mode = Some(m.to_owned());
+        f.status = FileStatus::Deleted;
+        f.new_path = None;
+    } else if let Some(p) = word("rename from ") {
+        f.old_path = Some(unquote(p));
+        f.status = FileStatus::Renamed;
+    } else if let Some(p) = word("rename to ") {
+        f.new_path = Some(unquote(p));
+        f.status = FileStatus::Renamed;
+    } else if let Some(p) = word("copy from ") {
+        f.old_path = Some(unquote(p));
+        f.status = FileStatus::Copied;
+    } else if let Some(p) = word("copy to ") {
+        f.new_path = Some(unquote(p));
+        f.status = FileStatus::Copied;
+    } else if let Some(s) = word("similarity index ") {
+        f.similarity = s.trim_end_matches('%').parse().ok();
+    } else if let Some(rest) = word("index ") {
+        if let Some((_, mode)) = rest.split_once(' ') {
+            f.old_mode.get_or_insert_with(|| mode.to_owned());
+            f.new_mode.get_or_insert_with(|| mode.to_owned());
+        }
+    } else if l.starts_with("Binary files ") || l == "GIT binary patch" {
+        f.binary = true;
+    }
+}
+
+/// The two paths of a `diff --git a/x b/y` line. With unquoted paths containing spaces the
+/// split is ambiguous; the `---`/`+++` or rename lines that follow correct it.
+fn git_paths(rest: &str) -> (Option<String>, Option<String>) {
+    if rest.starts_with('"')
+        && let Some((a, b)) = split_quoted(rest)
+    {
+        return (Some(strip_prefix(&a)), Some(strip_prefix(&b)));
+    }
+    // Equal paths split in the middle; otherwise at the first " b/".
+    let half = rest.len() / 2;
+    if rest.len() % 2 == 1
+        && rest.as_bytes().get(half) == Some(&b' ')
+        && rest[..half].strip_prefix("a/").zip(rest[half + 1..].strip_prefix("b/")).is_some_and(|(a, b)| a == b)
+    {
+        return (Some(strip_prefix(&rest[..half])), Some(strip_prefix(&rest[half + 1..])));
+    }
+    match rest.find(" b/") {
+        Some(at) => (Some(strip_prefix(&rest[..at])), Some(strip_prefix(&rest[at + 1..]))),
+        None => (None, None),
+    }
+}
+
+fn split_quoted(rest: &str) -> Option<(String, String)> {
+    let end = quoted_end(rest)?;
+    let a = unquote(&rest[..end]);
+    let tail = rest[end..].trim_start();
+    Some((a, unquote(tail)))
+}
+
+/// The byte after the closing quote of the quoted string `s` starts with.
+fn quoted_end(s: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (i, c) in s.char_indices().skip(1) {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return Some(i + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
