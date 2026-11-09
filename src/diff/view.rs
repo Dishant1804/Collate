@@ -316,3 +316,300 @@ impl Cell<'_> {
         }
     }
 
+    fn label(&self) -> String {
+        let (_, n) = self.source();
+        let kind = match self.kind {
+            LineKind::Added if self.moved => "moved here",
+            LineKind::Removed if self.moved => "moved away",
+            LineKind::Added => "added",
+            LineKind::Removed => "removed",
+            LineKind::Context => "unchanged",
+        };
+        format!("{kind} line {n}: {}", self.text)
+    }
+}
+
+struct View<S> {
+    d: DiffView<S>,
+    look: Look,
+}
+
+impl<S: 'static> View<S> {
+    /// How wide unwrapped (unified) content is, so the list doesn't change width as rows are built.
+    fn content_width(&self, st: &DiffState) -> f32 {
+        let l = &self.look;
+        let digits = (0..st.files().len()).map(|f| st.digits(f)).max().unwrap_or(3);
+        l.gutter_w(digits, true) + st.columns() as f32 * l.adv + CODE_PAD.0 + CODE_PAD.1
+    }
+
+    /// The most a full-width part of a row (a header) spans: the viewport, not
+    /// the unwrapped content.
+    fn view_w(&self, st: &DiffState, split_half: bool) -> Option<f32> {
+        let w = st.view_width();
+        (w > 0.0 && !st.wraps()).then_some(if split_half { (w / 2.0).floor() } else { w })
+    }
+
+    fn row(&self, s: &S, i: usize) -> El {
+        let st = (self.d.get)(s);
+        let r = st.rows[i];
+        let key = &st.row_key(i);
+        match r {
+            Row::File(f) => self.file_header(s, st, f as usize, false),
+            Row::Note(f) => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.note(st, f as usize)),
+            // A hunk's actions read app state, so those rows build every commit; there are few.
+            Row::Gap { f, gap } if self.d.hunk.is_some() => self.gap(s, st, f as usize, gap as usize),
+            Row::Gap { f, gap } => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.gap(s, st, f as usize, gap as usize)),
+            _ => {
+                let version = (self.look.version, st.rev, st.row_selected(i, None), st.copy_side(), st.selection().map(|s| s.start.side), st.search_rev());
+                memo(key, version, || self.line(st, i))
+            }
+        }
+    }
+
+    fn cells<'a>(&self, st: &'a DiffState, r: Row) -> (Option<Cell<'a>>, Option<Cell<'a>>) {
+        let of = |f: u32, h: u32, i: u32| {
+            let file = &st.files()[f as usize];
+            let l = &file.hunks[h as usize].lines[i as usize];
+            let twin = file.twin(h as usize, i as usize);
+            Cell { moved: twin.is_some(), twin, kind: l.kind, old: l.old, new: l.new, text: &l.text, changes: &l.changes, no_newline: l.no_newline }
+        };
+        match r {
+            Row::Ctx { f, old, new } => {
+                let text = st.side_line(f as usize, Side::New, new).or_else(|| st.side_line(f as usize, Side::Old, old)).unwrap_or("");
+                let c = Cell { moved: false, twin: None, kind: LineKind::Context, old: Some(old), new: Some(new), text, changes: &[], no_newline: false };
+                (Some(c), None)
+            }
+            Row::Line { f, h, i } => (Some(of(f, h, i)), None),
+            Row::Pair { f, h, del, add } => (Some(of(f, h, del)), Some(of(f, h, add))),
+            _ => (None, None),
+        }
+    }
+
+    fn line(&self, st: &DiffState, i: usize) -> El {
+        let r = st.rows[i];
+        let f = r.file();
+        let (a, b) = self.cells(st, r);
+        let Some(a) = a else { return col() };
+        match st.mode() {
+            DiffMode::Unified => self.unified(st, i, f, a),
+            DiffMode::Split => {
+                let (old, new) = match (b, a.kind) {
+                    (Some(b), _) => (Some(a), Some(b)),
+                    (None, LineKind::Removed) => (Some(a), None),
+                    (None, LineKind::Added) => (None, Some(a)),
+                    (None, LineKind::Context) => (Some(a), Some(a)),
+                };
+                self.split(st, i, f, old, new)
+            }
+        }
+    }
+
+    fn unified(&self, st: &DiffState, i: usize, f: usize, c: Cell<'_>) -> El {
+        let l = &self.look;
+        let selected = st.row_selected(i, None);
+        let tints = l.tints(c.kind, c.moved);
+        let fill = if selected { l.selected } else { tints.map_or(l.bg, |t| t.line) };
+        let digits = st.digits(f);
+        let copy = match c.kind {
+            LineKind::Context => true,
+            LineKind::Added => st.copy_side() == Side::New,
+            LineKind::Removed => st.copy_side() == Side::Old,
+        };
+        let hover_side = if c.kind == LineKind::Removed { Side::Old } else { Side::New };
+        // The marker, numbers and "+" hold to the viewport's left edge while the code scrolls
+        // sideways under them, on the gutter's own opaque fill.
+        let mut gutter = row()
+            .key("gutter")
+            .self_stretch()
+            .items_stretch()
+            .fill(l.gutter_fill(c.kind, c.moved, selected));
+        gutter = if l.one_number {
+            let (n, side) = match (c.kind, c.new) {
+                (LineKind::Removed, _) | (_, None) => (c.old, Side::Old),
+                (_, n) => (n, Side::New),
+            };
+            gutter.child(self.number(st, i, f, n, side, c.kind, c.moved, selected, digits).key("nn"))
+        } else {
+            gutter
+                .child(self.number(st, i, f, c.old, Side::Old, c.kind, c.moved, selected, digits).key("no"))
+                .child(self.number(st, i, f, c.new, Side::New, c.kind, c.moved, selected, digits).key("nn"))
+        };
+        gutter = gutter.child(self.twin_help(st, &c, self.marker(c.kind, c.moved))).child(self.bar(c.kind, c.moved));
+        if !st.wraps() {
+            gutter = gutter.sticky_left(0.0);
+        }
+        row()
+            .w_full()
+            .min_h(self.look.line_h)
+            .items_start()
+            .fill(fill)
+            .hover(l.hover)
+            .hover_group()
+            .role("listitem")
+            .label(c.label())
+            .child(gutter)
+            .child(self.code(st, f, &c, copy, hover_side, &st.row_key(i)).key("code"))
+    }
+
+    fn split<'a>(&self, st: &'a DiffState, i: usize, f: usize, old: Option<Cell<'a>>, new: Option<Cell<'a>>) -> El {
+        let digits = st.digits(f);
+        let single = st.single_column(f);
+        let half = |side: Side, c: Option<Cell<'a>>| -> El {
+            let l = &self.look;
+            let key = if side == Side::Old { "old" } else { "new" };
+            let h = row().key(key).w_frac(if single.is_some() { 1.0 } else { 0.5 }).min_w(0.0).min_h(self.look.line_h).items_start().self_stretch();
+            let Some(c) = c else {
+                return h.fill(l.empty_bg);
+            };
+            // An unchanged line shows on both sides as context.
+            let kind = c.kind;
+            let selected = st.row_selected(i, Some(side));
+            let fill = if selected { l.selected } else { l.tints(kind, c.moved).map_or(l.bg, |t| t.line) };
+            let n = if side == Side::Old { c.old } else { c.new };
+            let mut cell = c;
+            if kind == LineKind::Context {
+                cell.text = st.side_line(f, side, n.unwrap_or(1)).unwrap_or(c.text);
+            }
+            let copy = st.copy_side() == side;
+            h.fill(fill)
+                .hover(l.hover)
+                .hover_group()
+                .role("listitem")
+                .label(cell.label())
+                .child(self.number(st, i, f, n, side, kind, c.moved, selected, digits).key("n"))
+                .child(self.twin_help(st, &c, self.marker(kind, c.moved).fill(l.gutter_fill(kind, c.moved, selected))))
+                .child(self.bar(kind, c.moved))
+                .child(self.code(st, f, &cell, copy, side, &st.row_key(i)).key("code"))
+        };
+        let line = row().w_full().min_h(self.look.line_h).items_stretch();
+        // An added or deleted file has one side: it takes the whole width, as one column.
+        match single {
+            Some(Side::Old) => line.child(half(Side::Old, old)),
+            Some(Side::New) => line.child(half(Side::New, new)),
+            None => {
+                let divider = col().key("divider").w(1.0).self_stretch().fill(self.look.border);
+                line.child(half(Side::Old, old)).child(divider).child(half(Side::New, new))
+            }
+        }
+    }
+
+    /// For a moved line, the marker says where the other end is.
+    fn twin_help(&self, st: &DiffState, c: &Cell<'_>, marker: El) -> El {
+        let Some((f, n)) = c.twin else { return marker };
+        let path = st.files().get(f as usize).map_or("", |f| f.path());
+        let way = if c.kind == LineKind::Removed { "Moved to" } else { "Moved from" };
+        marker.help(format!("{way} {path}:{n} (m jumps there)"))
+    }
+
+    /// The `+` or `−` beside the numbers, in the line's colour.
+    fn marker(&self, kind: LineKind, moved: bool) -> El {
+        let l = &self.look;
+        let mut m = row().key("mark").w(l.marker_w()).min_h(l.line_h).self_stretch().justify_center().items_start().a11y_hidden();
+        if !l.markers {
+            return m;
+        }
+        let glyph = match kind {
+            LineKind::Added => "+",
+            LineKind::Removed => "\u{2212}",
+            LineKind::Context => return m,
+        };
+        if let Some(t) = l.tints(kind, moved) {
+            m = m.child(text(glyph).font(l.font).color(t.count));
+        }
+        m
+    }
+
+    fn bar(&self, kind: LineKind, moved: bool) -> El {
+        let b = col().key("bar").w(BAR).self_stretch().a11y_hidden();
+        match self.look.tints(kind, moved) {
+            Some(t) => b.fill(t.bar),
+            None => b,
+        }
+    }
+
+    /// A line-number cell: pressing it selects the line, shift-pressing extends the selection
+    /// to it, and dragging down the numbers selects the lines passed.
+    #[allow(clippy::too_many_arguments)]
+    fn number(&self, st: &DiffState, i: usize, f: usize, n: Option<u32>, side: Side, kind: LineKind, moved: bool, selected: bool, digits: u32) -> El {
+        let l = &self.look;
+        let unified = st.mode() == DiffMode::Unified;
+        let mut c = row().w(l.number_w(digits)).min_h(self.look.line_h).self_stretch().px(8.0).justify_end().items_start().a11y_hidden();
+        if !unified {
+            c = c.fill(l.gutter_fill(kind, moved, selected));
+        }
+        if let Some(n) = n {
+            let color = if selected { l.text } else { l.tints(kind, moved).map_or(l.faint, |t| t.number) };
+            c = c.child(text(n.to_string()).font(l.font).color(color));
+        }
+        let at = n.map(|n| LineRef::new(side, n)).or_else(|| {
+            let other = if side == Side::Old { Side::New } else { Side::Old };
+            unified.then(|| st.row_line(st.rows[i], other).map(|n| LineRef::new(other, n))).flatten()
+        });
+        let Some(at) = at else { return c };
+        let get = self.d.get_mut.clone();
+        let row_at = i as u32;
+        c.cursor(Cursor::Pointer).on_drag(move |s: &mut S, d: &mut Drag, _| {
+            let st = get(s);
+            match d.phase {
+                Phase::Down => st.press_line(f, at),
+                Phase::Move => {
+                    let Some(r) = st.row_from(row_at, d.y) else { return };
+                    let r = st.rows[r as usize];
+                    if r.file() != f {
+                        return;
+                    }
+                    // Unified rows hold one side or both: keep to the pressed side where it can.
+                    let to = st.row_line(r, side).map(|n| LineRef::new(side, n)).or_else(|| {
+                        let other = if side == Side::Old { Side::New } else { Side::Old };
+                        unified.then(|| st.row_line(r, other).map(|n| LineRef::new(other, n))).flatten()
+                    });
+                    if let Some(to) = to {
+                        st.drag_to(f, to);
+                    }
+                }
+                Phase::Up => {
+                    if d.cancelled() {
+                        st.cancel_line();
+                        return;
+                    }
+                    st.release_line();
+                }
+            }
+        })
+    }
+
+    /// The code of a line: syntax colours under word changes, tabs padded to four columns.
+    fn code(&self, st: &DiffState, f: usize, c: &Cell<'_>, copy: bool, side: Side, row_key: &str) -> El {
+        let l = &self.look;
+        let (src, n) = c.source();
+        let syntax: Vec<(Range<usize>, Color)> = st
+            .highlights(f, src, n)
+            .into_iter()
+            .map(|(r, p)| (r, l.syntax.paint(p)))
+            .collect();
+        let word = l.tints(c.kind, c.moved).map(|t| t.word).filter(|_| l.word_diff && !c.moved);
+        let mut spans = layer(c.text.len(), &syntax, word.map_or(&[][..], |_| c.changes), word);
+        if let Some(q) = st.search() {
+            spans = mark(c.text, spans, q, l.found);
+        }
+        let (shown, spans, pads) = tabbed(c.text, spans, st.wraps());
+        let mut t = rich(shown, spans).font(l.font).color(l.text).key("text");
+        t = if st.wraps() { t.w_full() } else { t.single_line() };
+        if copy {
+            t = t.selectable(true).selection_color(l.selection);
+            t = pads.into_iter().fold(t, |t, r| t.uncopied(r));
+        }
+        let (get, cell) = (self.d.get_mut.clone(), format!("{row_key}.{}", side as u8));
+        let mut code = col().grow(1.0).min_w(0.0).pl(CODE_PAD.0).pr(CODE_PAD.1).child(t).on_hover_change(move |s: &mut S, inside, tx: &mut Tx| {
+            if !get(s).hover_text(side, &cell, inside) { tx.live_only(); }
+        });
+        if c.no_newline {
+            code = code.child(text("No newline at end of file").font(l.small).color(l.muted).opacity(0.6).key("eof").pb(2.0));
+        }
+        code
+    }
+
+    fn gutter_w(&self, st: &DiffState, f: usize) -> f32 {
+        self.look.gutter_w(st.digits(f), st.mode() == DiffMode::Unified)
+    }
+
