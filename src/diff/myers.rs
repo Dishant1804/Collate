@@ -228,3 +228,232 @@ pub struct WordEdit {
     pub new: Range<usize>,
 }
 
+/// The changes turning line `old` into `new`, word by word, in order. Changes separated only
+/// by whitespace count as one.
+pub fn word_edits(old: &str, new: &str) -> Vec<WordEdit> {
+    if old == new {
+        return Vec::new();
+    }
+    let (ta, tb) = (tokens(old), tokens(new));
+    let sa: Vec<&str> = ta.iter().map(|r| &old[r.clone()]).collect();
+    let sb: Vec<&str> = tb.iter().map(|r| &new[r.clone()]).collect();
+    let at_a = |i: usize| ta.get(i).map_or(old.len(), |r| r.start);
+    let at_b = |i: usize| tb.get(i).map_or(new.len(), |r| r.start);
+    let mut out: Vec<WordEdit> = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    let mut open: Option<WordEdit> = None;
+    for op in diff(&sa, &sb) {
+        match op {
+            Op::Equal { len, .. } => {
+                // Equal whitespace between two changes doesn't split them.
+                let blank = sa[i..i + len].iter().all(|t| t.trim().is_empty());
+                if !(blank && open.is_some()) {
+                    out.extend(open.take());
+                }
+                i += len;
+                j += len;
+            }
+            Op::Delete { len, .. } => {
+                let e = open.get_or_insert(WordEdit { old: at_a(i)..at_a(i), new: at_b(j)..at_b(j) });
+                i += len;
+                e.old.end = at_a(i);
+                e.new.end = e.new.end.max(at_b(j));
+            }
+            Op::Insert { len, .. } => {
+                let e = open.get_or_insert(WordEdit { old: at_a(i)..at_a(i), new: at_b(j)..at_b(j) });
+                j += len;
+                e.new.end = at_b(j);
+                e.old.end = e.old.end.max(at_a(i));
+            }
+        }
+    }
+    out.extend(open);
+    out
+}
+
+/// Line `old` with only the `picked` edits made: what staging some word changes of a line
+/// puts in the index.
+pub fn apply_edits(old: &str, new: &str, edits: &[WordEdit], picked: &[bool]) -> String {
+    let mut out = String::with_capacity(old.len().max(new.len()));
+    let mut at = 0;
+    for (e, &on) in edits.iter().zip(picked) {
+        out.push_str(&old[at..e.old.start]);
+        out.push_str(if on { &new[e.new.clone()] } else { &old[e.old.clone()] });
+        at = e.old.end;
+    }
+    out.push_str(&old[at..]);
+    out
+}
+
+fn join(text: &str, ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if text[last.end..r.start].chars().all(char::is_whitespace) => last.end = r.end,
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
+fn tokens(s: &str) -> Vec<Range<usize>> {
+    #[derive(PartialEq, Clone, Copy)]
+    enum K {
+        Word,
+        Space,
+        Other,
+    }
+    let kind = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            K::Word
+        } else if c.is_whitespace() {
+            K::Space
+        } else {
+            K::Other
+        }
+    };
+    let mut out: Vec<Range<usize>> = Vec::new();
+    let mut prev: Option<K> = None;
+    for (i, c) in s.char_indices() {
+        let k = kind(c);
+        match out.last_mut() {
+            Some(last) if prev == Some(k) && k != K::Other => last.end = i + c.len_utf8(),
+            _ => out.push(i..i + c.len_utf8()),
+        }
+        prev = Some(k);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn apply<T: Clone + Eq + std::fmt::Debug>(a: &[T], b: &[T], ops: &[Op]) -> (Vec<T>, usize) {
+        let mut out = Vec::new();
+        let mut same = 0;
+        for op in ops {
+            match *op {
+                Op::Equal { old, new, len } => {
+                    assert_eq!(a[old..old + len], b[new..new + len]);
+                    out.extend_from_slice(&a[old..old + len]);
+                    same += len;
+                }
+                Op::Delete { .. } => {}
+                Op::Insert { new, len } => out.extend_from_slice(&b[new..new + len]),
+            }
+        }
+        (out, same)
+    }
+
+    fn lcs<T: Eq>(a: &[T], b: &[T]) -> usize {
+        let mut dp = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+        for i in (0..a.len()).rev() {
+            for j in (0..b.len()).rev() {
+                dp[i][j] = if a[i] == b[j] { dp[i + 1][j + 1] + 1 } else { dp[i + 1][j].max(dp[i][j + 1]) };
+            }
+        }
+        dp[0][0]
+    }
+
+    #[test]
+    fn scripts_are_minimal_and_rebuild_the_new_side() {
+        let mut seed = 0x2545_f491_u64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for round in 0..1200 {
+            let (len, alphabet) = if round % 3 == 0 { (40, 3) } else { (14, 4) };
+            let (la, lb) = (next(len) as usize, next(len) as usize);
+            let a: Vec<u8> = (0..la).map(|_| next(alphabet) as u8).collect();
+            let b: Vec<u8> = (0..lb).map(|_| next(alphabet) as u8).collect();
+            let ops = diff(&a, &b);
+            let (rebuilt, same) = apply(&a, &b, &ops);
+            assert_eq!(rebuilt, b, "{a:?} -> {b:?}: {ops:?}");
+            assert_eq!(same, lcs(&a, &b), "{a:?} -> {b:?}: {ops:?}");
+        }
+    }
+
+    #[test]
+    fn many_scattered_edits_still_diff_line_by_line() {
+        // Far past MAX_D edits: every seventh line changed across 30,000.
+        let a: Vec<u32> = (0..30_000).collect();
+        let b: Vec<u32> = (0..30_000).map(|i| if i % 7 == 3 { i + 1_000_000 } else { i }).collect();
+        let ops = diff(&a, &b);
+        let (rebuilt, same) = apply(&a, &b, &ops);
+        assert_eq!(rebuilt, b);
+        assert_eq!(same, 30_000 - 4_286, "only the changed lines differ");
+    }
+
+    #[test]
+    fn adversarial_inputs_stay_within_bounds_and_rebuild_the_new_side() {
+        // All equal.
+        let eq: Vec<u32> = (0..2_500).collect();
+        assert_eq!(diff(&eq, &eq), vec![Op::Equal { old: 0, new: 0, len: 2_500 }]);
+
+        // All different, both below and past MAX_D.
+        for n in [50usize, 2_000] {
+            let a: Vec<u32> = (0..n as u32).collect();
+            let b: Vec<u32> = (n as u32..2 * n as u32).collect();
+            let ops = diff(&a, &b);
+            let (rebuilt, same) = apply(&a, &b, &ops);
+            assert_eq!(rebuilt, b);
+            assert_eq!(same, 0);
+        }
+
+        // Short side matching inside a much longer side (both within and past MAX_D).
+        let short: Vec<u32> = (1..=5).collect();
+        for len in [20u32, 2_500] {
+            let long: Vec<u32> = (0..len).collect();
+            let ops = diff(&short, &long);
+            let (rebuilt, same) = apply(&short, &long, &ops);
+            assert_eq!(rebuilt, long);
+            assert_eq!(same, 5);
+
+            let ops_rev = diff(&long, &short);
+            let (rebuilt_rev, same_rev) = apply(&long, &short, &ops_rev);
+            assert_eq!(rebuilt_rev, short);
+            assert_eq!(same_rev, 5);
+        }
+
+        // Repeated identical blocks (classic Myers pathology).
+        let mut a: Vec<u32> = (0..400).flat_map(|_| [1, 2, 3, 4]).collect();
+        let mut b = a.clone();
+        a.splice(800..804, [9, 9]);
+        b.splice(400..400, [1, 2, 3, 4, 8, 8]);
+        let ops = diff(&a, &b);
+        let (rebuilt, same) = apply(&a, &b, &ops);
+        assert_eq!(rebuilt, b);
+        assert!(same >= 1_596);
+    }
+
+    #[test]
+    fn runs_coalesce_with_deletions_first() {
+        let a = ["a", "b", "c", "d"];
+        let b = ["a", "x", "y", "d", "e"];
+        assert_eq!(
+            diff(&a, &b),
+            vec![
+                Op::Equal { old: 0, new: 0, len: 1 },
+                Op::Delete { old: 1, len: 2 },
+                Op::Insert { new: 1, len: 2 },
+                Op::Equal { old: 3, new: 3, len: 1 },
+                Op::Insert { new: 4, len: 1 },
+            ]
+        );
+        assert_eq!(diff::<u8>(&[], &[]), vec![]);
+    }
+
+    #[test]
+    fn word_changes_cover_changed_words_and_join_across_spaces() {
+        let (a, b) = words("let total = price * count;", "let total = price * amount + tax;");
+        assert_eq!(a, vec![20..25]);
+        assert_eq!(&"let total = price * amount + tax;"[b[0].clone()], "amount + tax");
+        // Nothing in common: no word emphasis, the line colour says it all.
+        assert_eq!(words("fn main() {}", "SELECT * FROM users"), (vec![], vec![]));
+        assert_eq!(words("same", "same"), (vec![], vec![]));
+    }
+}
