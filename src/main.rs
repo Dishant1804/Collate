@@ -3565,3 +3565,337 @@ mod tests {
         assert_eq!(rt.state.tree.cursor(), Some(above.as_str()));
     }
 
+    #[test]
+    fn shortcuts_work_after_clicking_a_file_in_the_sidebar() {
+        let mut rt = loaded();
+        rt.on_key = Some(on_key);
+        click(&mut rt, "src/api/file3.rs");
+        assert_eq!(rt.state.tree.cursor(), Some("src/api/file3.rs"));
+        let at = rt.state.diff.visible_file();
+        // Routed as the window routes it: focused element first, then the app.
+        rt.key(KeyEvent { key: Key::Text("]".into()), mods: Default::default() });
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.diff.visible_file(), at + 1, "] reached the diff, not the file list");
+        rt.key(KeyEvent { key: Key::Text("v".into()), mods: Default::default() });
+        rt.frame(1.0 / 60.0);
+        assert!(rt.state.is_viewed(at + 1), "v marked the file in view");
+    }
+
+    #[test]
+    fn command_f_then_typing_searches() {
+        let mut rt = loaded();
+        rt.on_key = Some(on_key);
+        click(&mut rt, "src/api/file2.rs");
+        let key = |rt: &mut Runtime<Collate>, key: Key, cmd: bool| {
+            rt.key(KeyEvent { key, mods: rune::Mods { cmd, ..Default::default() } });
+            rt.frame(1.0 / 60.0);
+        };
+        key(&mut rt, Key::Command('f'), true);
+        assert!(rt.state.searching);
+        for c in "also chang".chars() {
+            key(&mut rt, Key::Text(c.to_string()), false);
+        }
+        key(&mut rt, Key::Backspace, false);
+        key(&mut rt, Key::Text("g".into()), false);
+        assert_eq!(rt.state.search.text, "also chang");
+        assert_eq!(rt.state.hits.len(), rt.state.diff.files().len(), "every file matches");
+        assert_eq!(rt.state.hit, Some(0), "typing lands on the first match");
+        key(&mut rt, Key::Enter, false);
+        assert_eq!(rt.state.hit, Some(1), "Return steps on");
+        key(&mut rt, Key::Escape, false);
+        assert!(!rt.state.searching, "Escape ends typing into the search");
+        key(&mut rt, Key::Text("v".into()), false);
+        assert_eq!(rt.state.search.text, "also chang", "and shortcuts are shortcuts again");
+    }
+
+    #[test]
+    fn m_jumps_between_the_ends_of_a_move() {
+        let block = "let total = compute_total();\nrecord_metric(total);\nflush_metrics_now();\n";
+        let pad: String = (0..60).map(|i| format!("filler line {i}\n")).collect();
+        let mut files = vec![
+            FileDiff::between_with_context(Some("c.rs".into()), Some("c.rs".into()), &format!("head\n{block}{pad}"), &format!("head\n{pad}"), 3),
+            FileDiff::between_with_context(Some("d.rs".into()), Some("d.rs".into()), &format!("{pad}start\n"), &format!("{pad}start\n{block}"), 3),
+        ];
+        mark_moved(&mut files);
+        let env = Env { system_dark: true, scale: 2.0 };
+        let mut state = init();
+        state.settings = Settings::default();
+        state.apply_settings(None);
+        state.diff.set_files(files);
+        state.loaded = true;
+        let mut rt = Runtime::new(state, view, (1280.0, 840.0), env);
+        rt.on_key = Some(on_key);
+        for _ in 0..5 {
+            rt.frame(1.0 / 60.0);
+        }
+        rt.key(KeyEvent { key: Key::Text("m".into()), mods: Default::default() });
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.diff.visible_file(), 1, "m went to where the block landed");
+        rt.key(KeyEvent { key: Key::Text("m".into()), mods: Default::default() });
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.diff.visible_file(), 0, "and back to where it came from");
+    }
+
+    #[test]
+    fn the_sidebar_switches_views_and_the_file_menu_acts() {
+        let mut rt = loaded();
+        // Views are sidebar places now, not a toolbar segmented control.
+        click(&mut rt, "view-staged");
+        assert_eq!(rt.state.scope, Scope::Staged);
+        click(&mut rt, "view-all");
+        assert_eq!(rt.state.scope, Scope::Uncommitted);
+        rt.update(|s, tx| {
+            s.hashes.clear();
+            s.apply_snapshot(snapshot(), tx);
+        });
+        for _ in 0..10 {
+            rt.frame(1.0 / 60.0);
+        }
+        // A file header's "⋯" opens a native menu with the rest of its commands.
+        click(&mut rt, "file-more-0");
+        let menu = rt.popup_menu().expect("the file menu opened");
+        for id in ["stage", "open", "copy", "viewed", "discard"] {
+            assert!(menu.find(id).is_some(), "the file menu has {id}");
+        }
+        assert_eq!(menu.find("discard").map(|i| i.title().to_owned()), Some("Discard Changes…".into()), "discard asks first, and says so");
+        rt.resolve_popup(Some("viewed")).unwrap();
+        rt.frame(1.0 / 60.0);
+        assert!(rt.state.is_viewed(0), "picking Viewed marks the file");
+    }
+
+    #[test]
+    fn settings_float_over_the_review_and_close_with_escape() {
+        let mut rt = loaded();
+        rt.on_key = Some(on_key);
+        rt.key(KeyEvent { key: Key::Command(','), mods: rune::Mods { cmd: true, ..Default::default() } });
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.screen, Screen::Settings);
+        assert!(rt.find("summary").is_some(), "the review stays underneath");
+        click(&mut rt, "tab-diff");
+        assert_eq!(rt.state.settings_tab, 1);
+        assert!(rt.find("words").is_some(), "the Diff section's settings show");
+        rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.screen, Screen::Review, "Escape puts the panel away");
+    }
+
+    #[test]
+    fn the_staging_panel_lines_up() {
+        let rt = loaded();
+        let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+        let (panel, filter, search) = (rect("staging"), rect("filter"), rect("search"));
+        let bulk = rect("unstaged-bulk");
+        let left = panel[0] + PANEL_INSET;
+        let right = panel[0] + panel[2] - PANEL_INSET;
+        assert!((filter[0] - left).abs() < 1.0, "the filter starts on the inset: {} vs {left}", filter[0]);
+        assert!((filter[0] + filter[2] - right).abs() < 1.0, "and ends on it: {} vs {right}", filter[0] + filter[2]);
+        let label_end = bulk[0] + bulk[2] - GHOST_PAD;
+        assert!((label_end - right).abs() < 1.5, "Stage All's label ends on the same edge: {label_end} vs {right}");
+        assert!((filter[3] - search[3]).abs() < 0.5, "the filter is as tall as the diff's search");
+        // A row's chevron: its ink (4.5 pt into its 16 pt box) starts on the inset. `find`
+        // takes a path (the key alone also matches the diff's chevrons) and gives the centre.
+        let (cx, _) = rt.find("src/chevron").expect("the list's first chevron");
+        let ink = cx - 8.0 + 4.5;
+        assert!((ink - left).abs() < 1.0, "the list's chevron ink at {ink} vs {left}");
+        // Row buttons end on the inset too.
+        let quick = rect("quick");
+        assert!((quick[0] + quick[2] - right).abs() < 1.0, "a row's + ends on the inset: {} vs {right}", quick[0] + quick[2]);
+        for key in ["message", "commit"] {
+            let r = rect(key);
+            assert!((r[0] - left).abs() < 1.0 && (r[0] + r[2] - right).abs() < 1.0, "the commit {key} spans the inset: {r:?} vs {left}..{right}");
+        }
+    }
+
+    #[test]
+    fn the_diff_has_one_edge_each_side() {
+        let rt = loaded();
+        let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+        let summary = rect("summary");
+        let (left, right) = (summary[0] + 16.0, summary[0] + summary[2] - 16.0);
+        // The summary's text starts on the edge and its last item ends on it.
+        let what = rect("what");
+        assert!((what[0] - left).abs() < 1.0, "summary text at {} vs {left}", what[0]);
+        let viewed = rect("viewed-count");
+        assert!((viewed[0] + viewed[2] - right).abs() < 1.0, "viewed count ends at {} vs {right}", viewed[0] + viewed[2]);
+        // A file header: the chevron glyph (4 pt into its 24 pt box) and the viewed box.
+        let toggle = rect("toggle");
+        assert!((toggle[0] + 8.0 - left).abs() < 1.0, "the header triangle's ink at {} vs {left}", toggle[0] + 8.0);
+        let check = rect("viewed");
+        assert!((check[0] + check[2] - right).abs() < 1.0, "viewed box ends at {} vs {right}", check[0] + check[2]);
+        // A hunk row's last action: its label (inside the ghost padding) ends on the edge.
+        let discard = rect("discard");
+        assert!((discard[0] + discard[2] - 8.0 - right).abs() < 1.5, "Discard Hunk… ends at {} vs {right}", discard[0] + discard[2] - 8.0);
+    }
+
+    #[test]
+    fn the_map_zooms_into_folders_and_opens_a_changed_file() {
+        let mut rt = loaded();
+        click(&mut rt, "view-map");
+        assert!(rt.state.map.open, "Map opens");
+        // Another test owns the shared repository, so this one maps the test repository itself.
+        let built = map::build(test_repo()).expect("the test repository maps");
+        assert!(built.files > 0);
+        rt.update(move |s, _| s.map.data = Some(std::sync::Arc::new(built)));
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.scope_title(), "All Changes", "the view's changes stay what the map shows");
+        let canvas = rt.presented("map-canvas").expect("the map is drawn").0;
+        // A folder takes clicks on its name band; inside it, its files do.
+        let press = |rt: &mut Runtime<Collate>, path: &str, folder: bool| {
+            let r = rt.state.map_rect(path).unwrap_or_else(|| panic!("{path} is on the map"));
+            let (x, y) = (canvas[0] + r[0] + r[2] / 2.0, canvas[1] + r[1] + if folder { 6.0 } else { r[3] / 2.0 });
+            rt.pointer_move(x, y);
+            rt.frame(1.0 / 60.0);
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+            for _ in 0..30 {
+                rt.frame(1.0 / 60.0);
+            }
+        };
+        // Everything in the test repository is under src/: a click opens that folder.
+        press(&mut rt, "src", true);
+        assert_eq!(rt.state.map.zoom, "src");
+        let changed = rt.state.diff.files()[0].path().to_owned();
+        press(&mut rt, &changed, false);
+        assert!(!rt.state.map.open, "a changed file opens its diff");
+        assert!(rt.find("summary").is_some(), "the diff shows again");
+    }
+
+    #[test]
+    fn the_branch_menu_previews_the_pull_request() {
+        let mut rt = loaded();
+        assert!(rt.find("view-branch").is_none(), "no Branch place in the sidebar, as in GitHub Desktop");
+        // On a feature branch, so the repository's other branches are bases to pick. (The menu
+        // rereads the branches from whichever repository the tests share, when one is open.)
+        rt.update(|s, _| {
+            s.branch = "feature".into();
+            s.branches = vec!["main".into()];
+        });
+        click(&mut rt, "branch");
+        let base = rt.state.branches.iter().find(|b| *b != "feature").cloned().expect("a branch to compare against");
+        let menu = rt.popup_menu().expect("the branch menu opened");
+        assert!(menu.find("preview").is_some() && menu.find(&format!("base:{base}")).is_some(), "preview and the bases to compare against");
+        rt.resolve_popup(Some(&format!("base:{base}"))).unwrap();
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.scope, Scope::Branch);
+        assert_eq!(rt.state.base.as_deref(), Some(base.as_str()));
+        assert_eq!(rt.state.scope_title(), "Pull Request Preview");
+    }
+
+    #[test]
+    fn the_three_columns_start_on_one_line() {
+        let rt = loaded();
+        let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+        let mid = |r: [f32; 4]| r[1] + r[3] / 2.0;
+        // One top inset: each column's first row starts COLUMN_TOP below the card's edge and
+        // centres its text in the same band.
+        let (card, summary_row, filter, label) = (rect("main-pane"), rect("totals"), rect("filter"), rect("section-title"));
+        for (name, r) in [("summary row", summary_row), ("filter", filter)] {
+            assert!((r[1] - card[1] - COLUMN_TOP).abs() < 0.5, "the {name} starts {COLUMN_TOP} pt under the card's edge: {} vs {}", r[1], card[1]);
+        }
+        assert!((mid(filter) - mid(summary_row)).abs() < 0.5, "filter and summary centred alike: {} vs {}", mid(filter), mid(summary_row));
+        assert!((mid(label) - mid(summary_row)).abs() < 0.5, "Working Copy centred alike: {} vs {}", mid(label), mid(summary_row));
+        let mut rt = rt;
+        rt.update(|s, _| s.show_low_signal = true);
+        rt.frame(0.0);
+        let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+        let (notes, first_row, list_title) = (rect("notes"), rect("view-all"), rect("unstaged-head"));
+        assert!((mid(notes) - mid(first_row)).abs() < 0.5 && (mid(notes) - mid(list_title)).abs() < 0.5, "second rows centred alike: {} {} {}", mid(notes), mid(first_row), mid(list_title));
+        let (first_row, list_title) = (rect("view-all"), rect("unstaged-head"));
+        assert!((mid(list_title) - mid(first_row)).abs() < 1.0, "the panel's first list title level with the sidebar's first row: {} vs {}", mid(list_title), mid(first_row));
+    }
+
+    #[test]
+    fn a_partly_staged_file_is_in_both_lists() {
+        let mut rt = loaded();
+        rt.update(|s, tx| {
+            let mut snap = snapshot();
+            snap.changes[0].staged = Staged::Partly;
+            snap.changes[1].staged = Staged::Fully;
+            s.hashes.clear();
+            s.apply_snapshot(snap, tx);
+        });
+        let st = &rt.state;
+        let (a, b, c) = (st.diff.files()[0].path(), st.diff.files()[1].path(), st.diff.files()[2].path());
+        assert!(st.tree.contains(a) && st.staged_tree.contains(a), "partly staged: both lists");
+        assert!(!st.tree.contains(b) && st.staged_tree.contains(b), "fully staged: Staged only");
+        assert!(st.tree.contains(c) && !st.staged_tree.contains(c), "not staged: Unstaged only");
+    }
+
+    #[test]
+    fn recent_projects_keep_the_latest_first_once() {
+        let mut list = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        remember_project(&mut list, PathBuf::from("/b"));
+        assert_eq!(list, [PathBuf::from("/b"), PathBuf::from("/a")]);
+        remember_project(&mut list, PathBuf::from("/c"));
+        assert_eq!(list[0], PathBuf::from("/c"));
+        let labels = project_labels(&[PathBuf::from("/w/api"), PathBuf::from("/p/api"), PathBuf::from("/w/web")]);
+        assert_eq!(labels, ["api - w", "api - p", "web"], "short, and distinct when names repeat");
+    }
+
+    #[test]
+    fn only_changes_that_matter_wake_the_watcher() {
+        let root = std::path::Path::new("/r");
+        for p in ["/r/src/a.rs", "/r/.git/index", "/r/.git/HEAD", "/r/.git/refs/heads/main"] {
+            assert!(relevant(std::path::Path::new(p), root), "{p}");
+        }
+        for p in ["/r/.git/objects/ab/cdef", "/r/.git/index.lock", "/r/.git/collate-backup/1/a.rs", "/r/.git/logs/HEAD"] {
+            assert!(!relevant(std::path::Path::new(p), root), "{p}");
+        }
+    }
+
+    #[test]
+    fn a_viewed_mark_holds_across_views() {
+        let mut rt = loaded();
+        rt.update(|s, tx| s.toggle_viewed(0, tx));
+        let path = rt.state.diff.files()[0].path().to_owned();
+        // The same file read for another view: its old side differs, its new side doesn't.
+        rt.update(move |s, tx| {
+            let mut snap = snapshot();
+            for c in &mut snap.changes {
+                c.hash ^= 0xdead_beef;
+            }
+            s.hashes.clear();
+            s.apply_snapshot(snap, tx);
+        });
+        let i = rt.state.diff.file_index(&path).unwrap();
+        assert!(rt.state.is_viewed(i), "still viewed");
+        assert!(rt.state.stale.is_empty(), "and not flagged as changed");
+    }
+
+    #[test]
+    fn the_diff_and_the_sidebar_list_files_in_the_same_order() {
+        let rt = loaded();
+        let diff: Vec<&str> = rt.state.diff.files().iter().map(|f| f.path()).collect();
+        let tree: Vec<&str> = (0..rt.state.tree.visible_len())
+            .filter_map(|r| rt.state.tree.visible_id(r))
+            .filter(|id| rt.state.tree.get(id).is_some_and(|n| !n.dir))
+            .collect();
+        assert_eq!(diff, tree);
+    }
+
+    #[test]
+    fn the_diff_scrolls_to_its_last_file() {
+        let mut rt = loaded();
+        for _ in 0..200 {
+            rt.wheel(700.0, 500.0, -400.0);
+            rt.frame(1.0 / 60.0);
+        }
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let last = rt.state.diff.files().len() - 1;
+        assert!(rt.presented(&format!("df{last}")).is_some(), "the last file's header was reached");
+    }
+
