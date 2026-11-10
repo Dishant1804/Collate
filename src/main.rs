@@ -449,6 +449,11 @@ struct Collate {
     /// A file's blame, and a file's history, while shown.
     blame: Option<(String, Vec<git::Blamed>)>,
     file_log: Option<(String, Vec<graph::Commit>)>,
+    /// ⌘P's palette is up: what's typed into it (a file, `file:line` or `:line`), and the
+    /// match picked. Like ⌘F, the app takes the keys itself.
+    jumping: bool,
+    jump: String,
+    jump_pick: usize,
     /// ⌘F was pressed: typing goes to the search (Rune can't move keyboard focus from code,
     /// so the app takes the keys itself) until Escape.
     searching: bool,
@@ -503,6 +508,9 @@ fn init() -> Collate {
         seen: HashSet::new(),
         show_help: false,
         searching: false,
+        jumping: false,
+        jump: String::new(),
+        jump_pick: 0,
         words: None,
         projects: load_projects(),
         project_open: false,
@@ -1689,6 +1697,48 @@ impl Collate {
         self.hit = self.hit.filter(|&h| h < self.hits.len());
     }
 
+    /// ⌘P's matches for what's typed: the diff's files, best first, and the line asked for.
+    /// `:line` alone is the file in view.
+    fn jump_matches(&self) -> (Vec<usize>, Option<u32>) {
+        let (q, line) = match self.jump.rsplit_once(':') {
+            Some((q, n)) if n.chars().all(|c| c.is_ascii_digit()) => (q.trim(), n.parse().ok()),
+            _ => (self.jump.trim(), None),
+        };
+        let files = self.diff.files();
+        if q.is_empty() && line.is_some() {
+            return ((self.diff.visible_file() < files.len()).then_some(vec![self.diff.visible_file()]).unwrap_or_default(), line);
+        }
+        let mut scored: Vec<(i32, usize)> = files.iter().enumerate().filter_map(|(i, f)| fuzzy(q, f.path()).map(|sc| (sc, i))).collect();
+        scored.sort_by_key(|&(sc, i)| (std::cmp::Reverse(sc), files[i].path().len(), i));
+        (scored.into_iter().take(50).map(|(_, i)| i).collect(), line)
+    }
+
+    /// Goes to ⌘P's pick (or match `pick`): the file, at the line when one was typed.
+    fn jump_to(&mut self, pick: Option<usize>, tx: &mut Tx) {
+        let (matches, line) = self.jump_matches();
+        let Some(&f) = matches.get(pick.unwrap_or(self.jump_pick)) else { return };
+        self.jumping = false;
+        self.map.open = false;
+        if self.scope == Scope::History {
+            self.history_diff = true;
+        }
+        match line {
+            Some(n) => {
+                let side = if self.diff.files()[f].new_path.is_some() { diff::Side::New } else { diff::Side::Old };
+                self.diff.scroll_to_line(f, LineRef::new(side, n), tx);
+            }
+            None => self.diff.scroll_to_file(f, tx),
+        }
+        let path = self.diff.files()[f].path().to_owned();
+        self.select_in_lists(&path);
+    }
+
+    fn start_jump(&mut self, text: &str) {
+        self.jumping = true;
+        self.jump = text.to_owned();
+        self.jump_pick = 0;
+    }
+
     /// Flips one of the search's options and searches again.
     fn search_option(&mut self, flip: fn(&mut Collate)) {
         flip(self);
@@ -2308,6 +2358,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("c", "Comment on the selected line"),
             ("o", "Open the file in your editor"),
             ("⌘F", "Search the diff: type, ⏎ next match, ⇧⏎ previous, esc done"),
+            ("⌘P", "Go to a file: type part of its path; add :line for a line"),
+            ("⌘L", "Go to a line of the file in view"),
             ("n  N  ⌘G", "Next / previous search match"),
             ("⌥⌘C  ⌥⌘W  ⌥⌘R", "Search: match case, whole words, regular expression"),
             ("m", "Jump to the other end of a move (blue lines)"),
@@ -2470,6 +2522,10 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k, layer);
     }
 
+    if s.jumping {
+        jump_palette(s, k, layer);
+    }
+
     if let Some((path, lines)) = &s.blame {
         blame_dialog(k, path, lines.len(), layer);
     }
@@ -2523,6 +2579,70 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .child(arrow(&BACK_ICON, true, "Back", "⌘["))
         .child(arrow(&FORWARD_ICON, false, "Forward", "⌘]"));
     col().key("window").w_full().h_full().child(split).child(arrows)
+}
+
+/// How well `q` matches `path` as letters in order, ignoring case: higher is better, `None`
+/// when it doesn't. Runs of letters, letters starting a word and letters in the file name
+/// count most, as editors' quick open scores them.
+fn fuzzy(q: &str, path: &str) -> Option<i32> {
+    let (q, p) = (q.to_ascii_lowercase().into_bytes(), path.to_ascii_lowercase().into_bytes());
+    let name = path.rfind('/').map_or(0, |i| i + 1);
+    let (mut score, mut at, mut last) = (0, 0, None::<usize>);
+    for &c in q.iter().filter(|c| !c.is_ascii_whitespace()) {
+        let i = at + p[at..].iter().position(|&x| x == c)?;
+        score += 1;
+        if last.is_some_and(|l| l + 1 == i) {
+            score += 5;
+        }
+        if i == 0 || matches!(p[i - 1], b'/' | b'_' | b'-' | b'.' | b' ') {
+            score += 4;
+        }
+        if i >= name {
+            score += 3;
+        }
+        last = Some(i);
+        at = i + 1;
+    }
+    Some(score)
+}
+
+/// ⌘P: the files of the diff matching what's typed, best first; Return goes to the one picked.
+fn jump_palette(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let (matches, line) = s.jump_matches();
+    let typed = if s.jump.is_empty() {
+        text("File name, file:line, or :line".to_owned()).font(k.ty.ui).color(k.c.text_faint)
+    } else {
+        text(format!("{}\u{2502}", s.jump)).font(k.ty.ui).color(k.c.text_base)
+    };
+    let field = row().key("jump-field").w_full().h(32.0).px(10.0).gap(8.0).items_center().radius(k.radius.md).border(2.0, k.c.border_focus)
+        .child(icon(k.glyph.search, 14.0).color(k.c.icon_faint)).child(typed);
+    let files = s.diff.files();
+    let rows = matches.iter().enumerate().map(|(n, &f)| {
+        let path = files[f].path();
+        let (dir, name) = path.rsplit_once('/').map_or(("", path), |(d, n)| (d, n));
+        let picked = n == s.jump_pick;
+        row().key(format!("jump-{n}")).w_full().h(28.0).px(10.0).gap(8.0).items_center().radius(k.radius.sm)
+            .fill(if picked { k.alpha(k.c.text_base, 0.10) } else { k.alpha(k.c.text_base, 0.0) })
+            .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("option").label(path.to_owned())
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.jump_to(Some(n), tx))
+            .child(text(name.to_owned()).font(k.ty.ui).color(k.c.text_base))
+            .child(text(dir.to_owned()).font(k.ty.text_small).color(k.c.text_faint).truncate().min_w(0.0).grow(1.0))
+    });
+    let note = match (matches.is_empty(), line) {
+        (true, _) => "No file in this diff matches".to_owned(),
+        (false, Some(n)) => format!("Return goes to line {n}"),
+        (false, None) => "↑ ↓ to pick, Return to go, esc to close".to_owned(),
+    };
+    Dialog::new("jump", "Go to File")
+        .open(true)
+        .fit()
+        .width(560.0)
+        .on_close(|s: &mut Collate| s.jumping = false)
+        .child(col().key("jump-body").w_full().px(16.0).pb(16.0).gap(8.0)
+            .child(field)
+            .child(col().key("jump-list").w_full().max_h(360.0).scroll(rune::ScrollSpec { stick_bottom: false }).children(rows))
+            .child(text(note).font(k.ty.text_small).color(k.c.text_muted)))
+        .build(k, layer);
 }
 
 /// Seconds since 1970 as a day, `2026-11-10`, in UTC.
@@ -3639,6 +3759,24 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.screen == Screen::Settings {
         return false;
     }
+    if s.jumping {
+        match &ev.key {
+            Key::Escape => s.jumping = false,
+            Key::Enter => s.jump_to(None, tx),
+            Key::Up => s.jump_pick = s.jump_pick.saturating_sub(1),
+            Key::Down => s.jump_pick = (s.jump_pick + 1).min(s.jump_matches().0.len().saturating_sub(1)),
+            Key::Backspace => {
+                s.jump.pop();
+                s.jump_pick = 0;
+            }
+            Key::Text(t) if !ev.mods.cmd && !ev.mods.ctrl => {
+                s.jump.push_str(t);
+                s.jump_pick = 0;
+            }
+            _ => return ev.is_command('p') || ev.is_command('l'),
+        }
+        return true;
+    }
     // A dialog takes its own keys (Escape closes it); nothing else acts behind it.
     if s.confirm.is_some() || s.words.is_some() || s.prompt.is_some() || s.risky.is_some() || s.compare.is_some() || s.blame.is_some() || s.file_log.is_some() {
         return false;
@@ -3688,6 +3826,14 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.is_command('f') {
         s.searching = true;
+        return true;
+    }
+    if ev.is_command('p') && s.has_project {
+        s.start_jump("");
+        return true;
+    }
+    if ev.is_command('l') && s.has_project {
+        s.start_jump(":");
         return true;
     }
     // Typing into the search after ⌘F, unless a field has the keyboard (it types there).
@@ -5030,6 +5176,40 @@ mod tests {
             s.find();
         });
         assert!(rt.state.search_error.is_some() && rt.state.hits.is_empty(), "a bad pattern says so and finds nothing");
+    }
+
+    #[test]
+    fn command_p_goes_to_a_file_and_a_line() {
+        let mut rt = loaded();
+        rt.on_key = Some(on_key);
+        let key = |rt: &mut Runtime<Collate>, key: Key, cmd: bool| {
+            rt.key(KeyEvent { key, mods: rune::Mods { cmd, ..Default::default() } });
+            rt.frame(1.0 / 60.0);
+        };
+        key(&mut rt, Key::Command('p'), true);
+        assert!(rt.state.jumping && rt.find("jump-field").is_some(), "the palette opens");
+        for c in "util/file17".chars() {
+            key(&mut rt, Key::Text(c.to_string()), false);
+        }
+        let (matches, _) = rt.state.jump_matches();
+        assert_eq!(rt.state.diff.files()[matches[0]].path(), "src/util/file17.rs", "the closest path first");
+        key(&mut rt, Key::Enter, false);
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(!rt.state.jumping);
+        assert_eq!(rt.state.diff.files()[rt.state.diff.visible_file()].path(), "src/util/file17.rs");
+        key(&mut rt, Key::Command('l'), true);
+        assert_eq!(rt.state.jump, ":");
+        for c in "41".chars() {
+            key(&mut rt, Key::Text(c.to_string()), false);
+        }
+        assert_eq!(rt.state.jump_matches(), (vec![rt.state.diff.visible_file()], Some(41)), ":line is the file in view");
+        key(&mut rt, Key::Escape, false);
+        assert!(!rt.state.jumping, "Escape closes it");
+        assert!(fuzzy("fl17", "src/util/file17.rs").is_some());
+        assert!(fuzzy("file17", "src/util/file17.rs") > fuzzy("file17", "src/file1/x7.rs"), "a run in the name beats letters spread out");
+        assert_eq!(fuzzy("zz", "src/util/file17.rs"), None);
     }
 
     #[test]
