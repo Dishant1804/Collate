@@ -23,6 +23,36 @@ a difference under about 5% as noise.
 `COLLATE_COLOUR=on|off cargo test --release colour_ab -- --ignored --nocapture` measures
 scrolling a 60,000-line diff with and without syntax colours.
 
+## The fixed set
+
+For start, refresh and scroll on real trees, `scripts/bench-set.py <folder>` makes four
+repositories with seeded changes: `heavy` (the one above), `linux` (v6.12), `kubernetes`
+(v1.31.0) and `bigfile` (a 400,000-line file edited every 50 lines and a new 400,000-line
+file). Clones are shallow, about 2.2 GB in all; run it again to put the changes back.
+
+```sh
+for r in heavy linux kubernetes bigfile; do
+    for b in bench_refresh bench_start_scroll; do
+        COLLATE_BENCH_REPO=<folder>/$r cargo test --release $b -- --ignored --nocapture
+    done
+done
+```
+
+`bench_start_scroll` times each step from opening the repository to the first frame, then
+scrolls with every file unfolded. Baseline, Apple M5 Pro, 2026-11-11 (medians, ms):
+
+| Repository | Files, diff lines | git status | Start | Refresh, 1 file edited | Scroll p99 reading / flicking |
+|---|---|---|---|---|---|
+| heavy | 416, 95,280 | 9 | 108 | 8 + 4 + 2 | 9.2 / 8.2 |
+| linux | 323, 39,407 | 197 | 278 | 11 + 2 + 1 | 9.0 / 11.5 |
+| kubernetes | 298, 26,926 | 129 | 183 | 12 + 1 + 1 | 9.0 / 8.4 |
+| bigfile | 2, 464,000 | 40 | 325 | 7 + 56 + 5 | 7.8 / 6.7 |
+
+Refresh is snapshot + diff + apply from `bench_refresh`; every refresh also pays one
+`git status`, which dominates on the big trees. Start in `bigfile` is mostly its first
+frame (90 ms) and the cold diff (159 ms). Files over 8 MB (`git::MAX_BYTES`) aren't diffed at
+all, so a 400,000-line file of ordinary width shows as too large.
+
 ## Finding the cost
 
 Build with symbols and sample the phase you care about:

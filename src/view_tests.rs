@@ -1537,7 +1537,7 @@ fn bench_refresh() {
         warm.push(ms(t));
     }
     // A real refresh: the watcher's memory in place, one file edited on disk.
-    let readme = std::path::Path::new(&dir).join("README.md");
+    let readme = ["README.md", "README"].iter().map(|n| std::path::Path::new(&dir).join(n)).find(|p| p.exists()).expect("a README");
     let original = std::fs::read(&readme).unwrap();
     for i in 0..runs {
         let mut memo = git::Memo::default();
@@ -1569,5 +1569,86 @@ fn bench_refresh() {
     ] {
         let (m, lo, hi) = median(v);
         eprintln!("{name:36} median {m:8.1} ms   min {lo:8.1}   max {hi:8.1}");
+    }
+}
+
+/// Opening a project and scrolling its review. `COLLATE_BENCH_REPO=<repo> cargo test
+/// --release bench_start_scroll -- --ignored --nocapture`. Start is each step from opening
+/// the repository to the first frame of its diff, medians of 5 runs in milliseconds; scroll
+/// is frame times at 60 Hz, reading pace (150 pt a frame) then flicking (2,500 pt a frame),
+/// with no file folded however large.
+#[test]
+#[ignore]
+fn bench_start_scroll() {
+    use std::time::{Duration, Instant};
+    let dir = std::env::var("COLLATE_BENCH_REPO").expect("COLLATE_BENCH_REPO");
+    let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    let env = Env { system_dark: true, scale: 2.0 };
+    let steps = ["open", "git status", "snapshot", "diff (watcher thread)", "apply (UI thread)", "first frame"];
+    let mut times: Vec<Vec<f64>> = vec![Vec::new(); steps.len() + 1];
+    let mut rt = None;
+    for _ in 0..5 {
+        let mut t = [0.0; 6];
+        let start = Instant::now();
+        let at = Instant::now();
+        let repo = Repo::open(std::path::Path::new(&dir)).unwrap();
+        t[0] = ms(at);
+        let at = Instant::now();
+        let raw = repo.status_raw().unwrap();
+        t[1] = ms(at);
+        let at = Instant::now();
+        let snap = repo.snapshot_with(Scope::Uncommitted, &raw, None, &mut git::Memo::default()).unwrap();
+        t[2] = ms(at);
+        let mut state = init();
+        state.settings = Settings::default();
+        // Every file open, large ones too: the worst case to scroll.
+        state.settings.fold_large = 0;
+        state.apply_settings(None);
+        let at = Instant::now();
+        let p = prepare(snap, state.opts(), &mut DiffCache::new()).unwrap();
+        t[3] = ms(at);
+        let mut r = Runtime::new(state, view, (1280.0, 840.0), env);
+        let at = Instant::now();
+        r.update(move |s, tx| s.apply(p, tx));
+        t[4] = ms(at);
+        let at = Instant::now();
+        r.frame(0.0);
+        t[5] = ms(at);
+        let total = ms(start);
+        for (v, x) in times.iter_mut().zip(t.into_iter().chain([total])) {
+            v.push(x);
+        }
+        rt = Some(r);
+    }
+    let mut rt = rt.unwrap();
+    let files = rt.state.diff.files().len();
+    let lines: usize = rt.state.diff.files().iter().map(|f| f.hunks.iter().map(|h| h.lines.len()).sum::<usize>()).sum();
+    eprintln!("{dir}: {files} files, {lines} diff lines");
+    let median = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    for (name, v) in steps.iter().chain(&["start, in all"]).zip(&times) {
+        eprintln!("{name:36} median {:8.1} ms", median(v));
+    }
+    let stats = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let q = |p: f64| v[((v.len() - 1) as f64 * p) as usize];
+        let over = v.iter().filter(|&&t| t > 16.7).count();
+        format!("p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} ms, {over} of {} over 16.7", q(0.5), q(0.95), q(0.99), q(1.0), v.len())
+    };
+    for (name, frames, dy) in [("scroll, reading", 300, -150.0), ("scroll, flicking", 300, -2500.0)] {
+        let mut phase = Vec::new();
+        for _ in 0..frames {
+            let t = Instant::now();
+            rt.wheel(700.0, 500.0, dy);
+            rt.frame(1.0 / 60.0);
+            let spent = t.elapsed();
+            phase.push(spent.as_secs_f64() * 1000.0);
+            std::thread::sleep(Duration::from_micros(16_667).saturating_sub(spent));
+        }
+        eprintln!("{name:36} {}", stats(&phase));
     }
 }
