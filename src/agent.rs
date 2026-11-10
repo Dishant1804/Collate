@@ -178,6 +178,25 @@ impl Collate {
     }
 
     /// Acts on an item of [`Collate::agent_menu`]; other ids do nothing.
+    /// The agent to run, with its instructions to edit, under the sidebar's agent row.
+    pub fn agent_picker(&mut self, tx: &mut Tx) {
+        let mut menu = PopupMenu::new();
+        for (i, a) in Agent::ALL.iter().enumerate() {
+            menu = menu.item(PopupItem::new(format!("agent:{i}"), a.title()).checked(*a == self.settings.agent));
+        }
+        menu = menu.separator()
+            .item(PopupItem::new("ask:edit", "Edit Review Questions…"))
+            .item(PopupItem::new("ask:commit-rules", "Edit Commit Message Instructions…"));
+        tx.popup_menu(menu, "agent-pick", |s: &mut Collate, picked, _| match picked.and_then(|p| p.strip_prefix("agent:")).and_then(|i| i.parse::<usize>().ok()) {
+            Some(i) => s.configure(|c| c.agent = Agent::ALL[i]),
+            None => {
+                if let Some(id) = picked {
+                    s.agent_menu_pick(id);
+                }
+            }
+        });
+    }
+
     pub fn agent_menu_pick(&mut self, id: &str) {
         match id.strip_prefix("ask:") {
             Some("all") => self.ask_checklist(None),

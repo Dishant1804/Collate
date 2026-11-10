@@ -133,6 +133,10 @@ macro_rules! lucide {
 pub(crate) use lucide;
 lucide!(ALL_ICON, "collate-file-diff", r#"<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M9 10h6"/><path d="M12 13V7"/><path d="M9 17h6"/>"#);
 lucide!(UNSTAGED_ICON, "collate-circle-dashed", r#"<path d="M10.1 2.182a10 10 0 0 1 3.8 0"/><path d="M13.9 21.818a10 10 0 0 1-3.8 0"/><path d="M17.609 3.721a10 10 0 0 1 2.69 2.7"/><path d="M2.182 13.9a10 10 0 0 1 0-3.8"/><path d="M20.279 17.609a10 10 0 0 1-2.7 2.69"/><path d="M21.818 10.1a10 10 0 0 1 0 3.8"/><path d="M3.721 6.391a10 10 0 0 1 2.7-2.69"/><path d="M6.391 20.279a10 10 0 0 1-2.69-2.7"/>"#);
+lucide!(CHECKLIST_ICON, "collate-list-checks", r#"<path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/>"#);
+lucide!(COMMENTS_ICON, "collate-message-square-text", r#"<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/>"#);
+lucide!(CHECKPOINTS_ICON, "collate-history", r#"<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>"#);
+lucide!(AGENT_ICON, "collate-bot", r#"<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>"#);
 lucide!(STAGED_ICON, "collate-circle-check", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
 lucide!(GRAPH_ICON, "collate-git-graph", r#"<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>"#);
 lucide!(PULLS_ICON, "collate-git-pull-request", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/>"#);
@@ -1379,7 +1383,6 @@ impl Collate {
             .separator()
             .item(PopupItem::new("comments", format!("Copy {} Comment{} as Markdown", self.comments.len(), if self.comments.len() == 1 { "" } else { "s" })).enabled(!self.comments.is_empty()))
             .submenu("Ask Agent", self.agent_menu())
-            .item(PopupItem::new("checkpoints", "Checkpoints…"))
             .separator()
             .item(PopupItem::new("reread", "Reread Repository"))
             .item(PopupItem::new("add", "Add Local Project…"))
@@ -1399,7 +1402,6 @@ impl Collate {
             Some("add") => s.add_project(),
             Some("keys") => s.show_help = true,
             Some("settings") => s.screen = Screen::Settings,
-            Some("checkpoints") => s.checkpoints_menu(),
             Some(id) => s.agent_menu_pick(id),
             None => {}
         });
@@ -3112,10 +3114,32 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
             s.open_map();
         }).build(k).key("view-map"),
     ]);
-    let apart = col().key("sections-apart").w_full().h(12.0).a11y_hidden();
+    // The coding agent's part of the loop, always in sight: ask it about the change, hand it
+    // the comments, go back to before it ran, and have it settle what git stopped on.
+    let agent = s.settings.agent.title();
+    let mut agent_rows = vec![
+        SidebarRow::new("Review Change").icon(&CHECKLIST_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.ask_checklist(None)).build(k).key("agent-review"),
+        {
+            let mut r = SidebarRow::new("Send Comments").icon(&COMMENTS_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.send_comments());
+            if !s.comments.is_empty() {
+                r = r.badge(s.comments.len().to_string());
+            }
+            r.build(k).key("agent-comments")
+        },
+        SidebarRow::new("Checkpoints").icon(&CHECKPOINTS_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.checkpoints_menu("agent-checkpoints")).build(k).key("agent-checkpoints"),
+    ];
+    let (ahead, behind) = s.ahead_behind.unwrap_or((0, 0));
+    let settle = s.stopped_settle().or((ahead > 0 && behind > 0).then_some(agent::Settle::Diverged(ahead, behind)));
+    if let Some(settle) = settle {
+        agent_rows.push(SidebarRow::new("Settle Conflicts").icon(&MERGE_ICON).on_select(move |s: &mut Collate, _: &mut Tx| s.settle_with_agent(settle.clone())).build(k).key("agent-settle"));
+    }
+    let agents = SidebarSection::new("Agent").rows(agent_rows);
+    let picker = SidebarRow::new(agent).icon(&AGENT_ICON).detail("Change").on_select(|s: &mut Collate, tx: &mut Tx| s.agent_picker(tx)).build(k).key("agent-pick");
+    let apart = |key: &str| col().key(key.to_owned()).w_full().h(12.0).a11y_hidden();
     // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
     // 24 pt row, so 2 less here centres "Working Copy" in the same 28 pt band.
-    col().key("sidebar").w_full().h_full().pt(COLUMN_TOP - 2.0).child(Sidebar::new().section(working).child(apart).section(review).build(k))
+    let bar = Sidebar::new().section(working).child(apart("sections-apart")).section(review).child(apart("agent-apart")).section(agents).footer(picker);
+    col().key("sidebar").w_full().h_full().pt(COLUMN_TOP - 2.0).child(bar.build(k))
 }
 
 /// The staging panel's inset, shared by its filter, list titles, rows and commit box.

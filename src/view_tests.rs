@@ -1368,9 +1368,7 @@ fn checkpoints_are_in_the_more_menu_and_restoring_one_asks_first() {
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
-    click(&mut rt, "more");
-    assert!(rt.popup_menu().expect("the more menu").find("checkpoints").is_some());
-    rt.resolve_popup(None).unwrap();
+    assert!(rt.find("agent-checkpoints").is_some(), "in the sidebar's Agent section");
     rt.update(|s, _| s.risky = Some(Risky::RestoreCheckpoint("0123456789".into(), 1_700_000_000)));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("risky-ok").is_some());
@@ -1379,6 +1377,29 @@ fn checkpoints_are_in_the_more_menu_and_restoring_one_asks_first() {
     rt.update(|s, _| s.run_agent("Fix it."));
     assert!(rt.state.notice.as_ref().is_some_and(|n| n.error));
     assert!(rt.state.terminals.list.is_empty());
+}
+
+#[test]
+fn the_agent_has_its_own_sidebar_section_and_picker() {
+    let mut rt = loaded();
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    for key in ["agent-review", "agent-comments", "agent-checkpoints", "agent-pick"] {
+        assert!(rt.find(key).is_some(), "{key} in the sidebar");
+    }
+    assert!(rt.find("agent-settle").is_none(), "nothing to settle");
+    click(&mut rt, "agent-pick");
+    let menu = rt.popup_menu().expect("the agent picker");
+    assert!(menu.find("agent:0").is_some_and(|i| i.is_checked()) && menu.find("ask:edit").is_some());
+    rt.resolve_popup(Some("agent:1")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.settings.agent, crate::settings::Agent::Codex);
+    rt.update(|s, _| s.ahead_behind = Some((1, 1)));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("agent-settle").is_some(), "a diverged branch has something to settle");
 }
 
 #[test]

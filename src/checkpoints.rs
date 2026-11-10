@@ -24,19 +24,19 @@ impl Collate {
         self.act_bg("Saving a checkpoint…", |r| r.checkpoint("Checkpoint").map(|sha| format!("Saved a checkpoint ({})", abbrev(&sha))));
     }
 
-    /// Reads the checkpoints off the UI thread, then shows them in a menu under the "⋯" button.
-    pub fn checkpoints_menu(&mut self) {
+    /// Reads the checkpoints off the UI thread, then shows them in a menu under `anchor`.
+    pub fn checkpoints_menu(&mut self, anchor: &'static str) {
         let (Some(repo), Some(app)) = (current_repo(), HANDLE.get().cloned()) else { return };
         std::thread::spawn(move || {
             let got = repo.checkpoints();
             app.update(move |s, tx| match got {
-                Ok(list) => s.show_checkpoints(&list, tx),
+                Ok(list) => s.show_checkpoints(&list, anchor, tx),
                 Err(e) => s.say(format!("Couldn't read the checkpoints: {e}"), true),
             });
         });
     }
 
-    fn show_checkpoints(&mut self, list: &[(String, i64, String)], tx: &mut Tx) {
+    fn show_checkpoints(&mut self, list: &[(String, i64, String)], anchor: &'static str, tx: &mut Tx) {
         let now = now_secs();
         let mut menu = PopupMenu::new().item(PopupItem::new("save", "Save Checkpoint Now"));
         if list.is_empty() {
@@ -50,7 +50,7 @@ impl Collate {
                 .item(PopupItem::new(format!("restore:{sha}:{time}"), "Restore…"));
             menu = menu.submenu(format!("{} - {label}", ago(*time, now)), each);
         }
-        tx.popup_menu(menu, "more", |s: &mut Collate, picked, _| {
+        tx.popup_menu(menu, anchor, |s: &mut Collate, picked, _| {
             let Some(picked) = picked else { return };
             if picked == "save" {
                 return s.save_checkpoint();
