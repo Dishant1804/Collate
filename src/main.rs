@@ -5827,18 +5827,6 @@ mod tests {
     }
 
     #[test]
-    fn the_overview_marks_where_the_changes_are() {
-        let mut rt = loaded();
-        for _ in 0..5 {
-            rt.frame(1.0 / 60.0);
-        }
-        assert!(rt.find("overview").is_some(), "drawn at the diff's right edge");
-        let marks = &rt.state.diff.overview;
-        assert!(!marks.is_empty() && marks.windows(2).all(|w| w[0].bottom <= w[1].top), "in order, not overlapping");
-        assert!(marks.iter().all(|m| m.adds && m.dels), "each fixture change replaces a line");
-    }
-
-    #[test]
     fn a_changed_png_is_drawn_not_called_binary() {
         // A 1×1 PNG, then another.
         let png = |byte: u8| -> Vec<u8> {

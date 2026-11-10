@@ -204,8 +204,6 @@ pub struct DiffState {
     sel_rows: std::cell::Cell<Option<SelRows>>,
     file_rows: Vec<u32>,
     hunk_rows: Vec<u32>,
-    /// Where the changes are, for the marks beside the scroll bar.
-    pub(crate) overview: Vec<Mark>,
     /// Each comment's line as (file, hunk, line in hunk); `None` for one whose line isn't in
     /// the diff.
     comments: Vec<Option<(u32, u32, u32)>>,
@@ -221,18 +219,6 @@ pub struct DiffState {
     nav: Option<u32>,
     /// The visible range first reported after navigating to a row, while it holds.
     nav_range: Option<(u32, std::ops::Range<usize>)>,
-}
-
-/// A run of changed rows, as the overview beside the scroll bar marks it: where it starts and
-/// ends as fractions of the list's height (rows at their estimated heights), its first row,
-/// and whether it adds lines, removes them, or both.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Mark {
-    pub top: f32,
-    pub bottom: f32,
-    pub row: u32,
-    pub adds: bool,
-    pub dels: bool,
 }
 
 /// A selection, the revision it was looked up at, and the rows it covers then.
@@ -279,7 +265,6 @@ impl DiffState {
             sel_rows: std::cell::Cell::new(None),
             file_rows: Vec::new(),
             hunk_rows: Vec::new(),
-            overview: Vec::new(),
             comments: Vec::new(),
             rev: 0,
             keys_rev: 0,
@@ -867,7 +852,7 @@ impl DiffState {
 
     /// Scroll so row `r` sits just below the sticky header: the row a header's height above
     /// it goes to the top.
-    pub(crate) fn reveal_below_header(&self, r: u32, tx: &mut Tx) {
+    fn reveal_below_header(&self, r: u32, tx: &mut Tx) {
         let mut top = r as usize;
         let mut room = 0.0;
         while top > 0 && room < HEADER_H {
@@ -1076,39 +1061,6 @@ impl DiffState {
         static KEYS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.keys_rev = KEYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.rows = rows;
-        self.overview = self.marks();
-    }
-
-    /// The runs of changed rows, at their places in the list.
-    fn marks(&self) -> Vec<Mark> {
-        let total: f32 = (0..self.rows.len()).map(|r| self.estimate(r)).sum();
-        if total <= 0.0 {
-            return Vec::new();
-        }
-        let mut out: Vec<Mark> = Vec::new();
-        let (mut y, mut last) = (0.0, None::<usize>);
-        for (r, row) in self.rows.iter().enumerate() {
-            let h = self.estimate(r);
-            let kind = |f: u32, h: u32, i: u32| self.files[f as usize].hunks[h as usize].lines[i as usize].kind;
-            let (adds, dels) = match *row {
-                Row::Line { f, h, i } => (kind(f, h, i) == LineKind::Added, kind(f, h, i) == LineKind::Removed),
-                Row::Pair { .. } => (true, true),
-                _ => (false, false),
-            };
-            if adds || dels {
-                match out.last_mut() {
-                    Some(m) if last == Some(r - 1) => {
-                        m.bottom = (y + h) / total;
-                        m.adds |= adds;
-                        m.dels |= dels;
-                    }
-                    _ => out.push(Mark { top: y / total, bottom: (y + h) / total, row: r as u32, adds, dels }),
-                }
-                last = Some(r);
-            }
-            y += h;
-        }
-        out
     }
 
     /// A row's key: the same for an unchanged or removed line in both modes, so switching
