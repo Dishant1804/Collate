@@ -6,6 +6,7 @@ use std::path::Path;
 use rune::{PopupItem, PopupMenu, TextEdit, Tx};
 
 use crate::diff::Side;
+use crate::git::Operation;
 use crate::settings::Agent;
 use crate::{Collate, HANDLE, Scope, abbrev, current_repo, paths_file};
 
@@ -15,6 +16,36 @@ const COMMIT_RULES: &str = "A subject line of at most 72 characters in the imper
 /// The most of a staged diff the agent is given: its prompt is one shell argument, and macOS
 /// caps those at about 1 MB.
 const DIFF_CAP: usize = 200_000;
+
+/// What the agent is asked to bring together.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Settle {
+    /// The branch and its upstream both moved: commits ahead and behind.
+    Diverged(usize, usize),
+    /// A merge, rebase, cherry-pick or revert stopped on conflicts in these files.
+    Stopped(Operation, Vec<String>),
+    /// A pull request (number, branch, base) that conflicts with its base.
+    Pull(u32, String, String),
+}
+
+/// The prompt for [`Settle`]. Every one ends with the agent leaving the push to the reader:
+/// what it settled is reviewed here first.
+pub fn settle_prompt(settle: &Settle) -> String {
+    let ask = match settle {
+        Settle::Diverged(ahead, behind) => format!(
+            "This branch and its upstream have both moved: it has {ahead} commit{} the upstream doesn't, and the upstream has {behind} it doesn't. Rebase this branch's own commits onto its upstream: run `git fetch`, then `git rebase @{{u}}`, settle any conflicts, and go on with `GIT_EDITOR=true git rebase --continue` until it's done.",
+            if *ahead == 1 { "" } else { "s" }
+        ),
+        Settle::Stopped(op, files) => {
+            let files = if files.is_empty() { "the files `git status` lists as unmerged".to_owned() } else { files.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ") };
+            format!("A {} is stopped on conflicts in {files}. Settle each conflict, stage the files, and finish with `GIT_EDITOR=true git {} --continue`.", op.noun(), op.command())
+        }
+        Settle::Pull(number, head, base) => format!(
+            "Pull request #{number} ({head} into {base}) conflicts with {base}. On branch `{head}` (switch to it first; stop and tell me if the working tree has uncommitted changes), run `git fetch origin`, then `git merge origin/{base}`, settle the conflicts, and finish with `GIT_EDITOR=true git merge --continue`. Merge rather than rebase, so the commits already pushed stay as they are."
+        ),
+    };
+    format!("{ask}\n\nKeep what both sides meant. Where they truly clash, stop and ask me. Run the project's tests if it has them. Don't push: I'll review the result and push it myself.")
+}
 
 /// The checklist until the reader writes their own: what a reviewer asks of every change.
 const CHECKLIST: [&str; 5] = [
@@ -232,6 +263,18 @@ impl Collate {
         self.run_agent(&prompt);
     }
 
+    /// Asks the agent to settle `settle` in a new terminal.
+    pub fn settle_with_agent(&mut self, settle: Settle) {
+        self.run_agent(&settle_prompt(&settle));
+    }
+
+    /// The operation git stopped in, to settle, with the files still in conflict.
+    pub fn stopped_settle(&self) -> Option<Settle> {
+        let op = self.operation?;
+        let files = self.diff.files().iter().zip(&self.info).filter(|(_, i)| i.conflicted).map(|(f, _)| f.path().to_owned()).collect();
+        Some(Settle::Stopped(op, files))
+    }
+
     /// Starts the agent in a new terminal in the project's folder, with `prompt` as its first
     /// message, after saving the working tree as a checkpoint to come back to. The prompt goes
     /// through a file, so the shell neither echoes nor parses it.
@@ -387,5 +430,19 @@ mod tests {
         assert!(p.contains("[the diff goes on; cut here]") && p.len() < DIFF_CAP + 1000, "cut on a character, not mid-way");
         assert_eq!(clean_message("\n```text\nAdd it\n\nBecause.\n```\n"), "Add it\n\nBecause.");
         assert_eq!(clean_message("  Add it  "), "Add it");
+    }
+
+    #[test]
+    fn the_agent_settles_conflicts_and_leaves_the_push_to_the_reader() {
+        let diverged = settle_prompt(&Settle::Diverged(1, 3));
+        assert!(diverged.starts_with("This branch and its upstream have both moved: it has 1 commit the upstream doesn't, and the upstream has 3 it doesn't.") && diverged.contains("`git rebase @{u}`"), "{diverged}");
+        let stopped = settle_prompt(&Settle::Stopped(Operation::CherryPick, vec!["a.rs".into(), "b.rs".into()]));
+        assert!(stopped.starts_with("A cherry-pick is stopped on conflicts in `a.rs`, `b.rs`.") && stopped.contains("`GIT_EDITOR=true git cherry-pick --continue`"), "{stopped}");
+        assert!(settle_prompt(&Settle::Stopped(Operation::Merge, vec![])).contains("in the files `git status` lists as unmerged."));
+        let pull = settle_prompt(&Settle::Pull(7, "fix".into(), "main".into()));
+        assert!(pull.starts_with("Pull request #7 (fix into main) conflicts with main. On branch `fix`") && pull.contains("`git merge origin/main`"), "{pull}");
+        for p in [diverged, stopped, pull] {
+            assert!(p.ends_with("Don't push: I'll review the result and push it myself."), "never pushes: {p}");
+        }
     }
 }

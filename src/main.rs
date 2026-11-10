@@ -1238,6 +1238,7 @@ impl Collate {
         let stashes = repo.as_deref().map(Repo::stashes).unwrap_or_default();
         let base = self.base.clone().unwrap_or_default();
         let (ahead, behind) = self.ahead_behind.unwrap_or((0, 0));
+        let diverged = ahead > 0 && behind > 0;
         let count = |verb: &str, n: usize| if n == 0 { verb.to_owned() } else { format!("{verb} {n} Commit{}", if n == 1 { "" } else { "s" }) };
         let idle = self.busy.is_none();
         let mut switch = PopupMenu::new();
@@ -1292,6 +1293,7 @@ impl Collate {
         let menu = PopupMenu::new()
             .item(PopupItem::new("fetch", "Fetch").enabled(idle))
             .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
+            .item(PopupItem::new("agent-rebase", format!("Rebase Onto Upstream with {}", self.settings.agent.title())).enabled(idle && diverged && self.operation.is_none()))
             .item(PopupItem::new("push", count("Push", ahead)).enabled(idle))
             .item(PopupItem::new("force-push", "Force Push…").enabled(idle && self.ahead_behind.is_some()))
             .item(PopupItem::new("unpushed", if ahead == 0 { "Show Unpushed Commits".to_owned() } else { format!("Show {ahead} Unpushed Commit{}", if ahead == 1 { "" } else { "s" }) }).enabled(ahead > 0))
@@ -1310,13 +1312,16 @@ impl Collate {
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
             .submenu("Compare Against", bases)
             .item(PopupItem::new("compare", "Compare Branches or Tags…"));
-        tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| {
+        tx.popup_menu(menu, "branch", move |s: &mut Collate, picked, _| {
             let Some(p) = picked else { return };
             let (what, arg) = p.split_once(':').unwrap_or((p, ""));
             let arg = arg.to_owned();
             match what {
                 "fetch" => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
+                // A pull only fast-forwards; one that can't says what can.
+                "pull" if diverged => s.say(format!("This branch and its upstream have both moved, so a pull can't fast-forward: rebase or merge, or Rebase Onto Upstream with {}", s.settings.agent.title()), true),
                 "pull" => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
+                "agent-rebase" => s.settle_with_agent(agent::Settle::Diverged(ahead, behind)),
                 "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
                 "force-push" => s.risky = Some(Risky::ForcePush),
                 "switch" => s.act_bg("Switching…", move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
@@ -3580,6 +3585,9 @@ fn operation_bar(s: &Collate, k: &Kit) -> Option<El> {
     let mut r = row().key("operation").w_full().h(40.0).px(EDGE).gap(8.0).items_center().fill(k.alpha(k.c.warning.icon, 0.10))
         .role("status").label(say.clone())
         .child(text(say).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0).grow(1.0))
+        .child(Button::new(format!("Settle with {}", s.settings.agent.title())).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
+            .help("Start the coding agent in the terminal to settle the conflicts and continue; it doesn't push")
+            .on_press(|s: &mut Collate| if let Some(settle) = s.stopped_settle() { s.settle_with_agent(settle) }).build(k).key("op-agent"))
         .child(Button::new("Abort").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
             .help(format!("Stop the {} and put everything back as it was", op.noun())).on_press(step("abort", "Aborted")).build(k).key("op-abort"));
     if op == git::Operation::Rebase {

@@ -11,6 +11,7 @@ use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton,
 
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 
+use crate::agent::Settle;
 use crate::github::{self, CheckState, Detail, Draft, Gh, Method, PrState, Pull, Verdict};
 use crate::{COLUMN_TOP, Collate, EDGE, GHOST_PAD, HANDLE, MERGE_ICON, MORE_ICON, PANEL_INSET, PULLS_ICON, PULL_CLOSED_ICON, PULL_DRAFT_ICON, REFRESH_ICON, current_repo, diff, message, open_url};
 
@@ -804,6 +805,13 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
             if open && pr.merge_state == "BEHIND" {
                 r = r.child(Button::new("Update Branch").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(s.busy.is_some())
                     .help("Merge the base's new commits into this branch, on GitHub").on_press(|s: &mut Collate| s.update_branch(false)).build(k).key("pr-update").mr(-GHOST_PAD));
+            }
+            // Conflicts: GitHub can't settle them; the reader's agent can, here.
+            if open && (pr.mergeable == "CONFLICTING" || pr.merge_state == "DIRTY") {
+                let settle = Settle::Pull(p.number, p.head.clone(), p.base.clone());
+                r = r.child(Button::new(format!("Settle with {}", s.settings.agent.title())).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+                    .help("Start the coding agent in the terminal to merge the base into this branch and settle the conflicts; it doesn't push")
+                    .on_press(move |s: &mut Collate| s.settle_with_agent(settle.clone())).build(k).key("pr-agent").mr(-GHOST_PAD));
             }
             r
         });

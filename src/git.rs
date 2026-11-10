@@ -125,7 +125,7 @@ pub enum Operation {
 
 impl Operation {
     /// The git command that continues or aborts it.
-    fn command(self) -> &'static str {
+    pub fn command(self) -> &'static str {
         match self {
             Operation::Merge => "merge",
             Operation::Rebase => "rebase",

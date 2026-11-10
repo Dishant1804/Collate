@@ -1382,6 +1382,39 @@ fn checkpoints_are_in_the_more_menu_and_restoring_one_asks_first() {
 }
 
 #[test]
+fn a_diverged_pull_or_a_stopped_merge_goes_to_the_agent() {
+    let mut rt = loaded();
+    let item = |rt: &mut Runtime<Collate>| {
+        click(rt, "branch");
+        let enabled = rt.popup_menu().expect("the branch menu opened").find("agent-rebase").map(|i| i.is_enabled()).expect("the agent's rebase");
+        rt.resolve_popup(None).unwrap();
+        enabled
+    };
+    rt.update(|s, _| s.ahead_behind = Some((2, 0)));
+    assert!(!item(&mut rt), "only when the upstream moved too");
+    rt.update(|s, _| s.ahead_behind = Some((2, 3)));
+    assert!(item(&mut rt));
+    // A pull can't fast-forward then, and says what can.
+    click(&mut rt, "branch");
+    rt.resolve_popup(Some("pull")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.ends_with("Rebase Onto Upstream with Claude Code")));
+    // A merge stopped on conflicts: the bar offers the agent, which gets the conflicted files.
+    rt.update(|s, _| {
+        s.operation = Some(git::Operation::Merge);
+        if let Some(i) = s.info.first_mut() {
+            i.conflicted = true;
+        }
+    });
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("op-agent").is_some());
+    let first = rt.state.diff.files()[0].path().to_owned();
+    assert_eq!(rt.state.stopped_settle(), Some(agent::Settle::Stopped(git::Operation::Merge, vec![first])));
+}
+
+#[test]
 fn a_changed_png_is_drawn_not_called_binary() {
     // A 1×1 PNG, then another.
     let png = |byte: u8| -> Vec<u8> {
