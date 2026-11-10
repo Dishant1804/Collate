@@ -226,6 +226,17 @@ static MERGE_ICON: Icon = Icon {
     view: 24.0,
     body: r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></g>"#,
 };
+/// A commit on its line, and a tag, for the toolbar search's results.
+static COMMIT_ICON: Icon = Icon {
+    name: "collate-commit",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><line x1="3" y1="12" x2="8" y2="12"/><line x1="16" y1="12" x2="21" y2="12"/></g>"#,
+};
+static TAG_ICON: Icon = Icon {
+    name: "collate-tag",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/></g>"#,
+};
 
 /// Back and forward through the places visited.
 static BACK_ICON: Icon = Icon {
@@ -464,9 +475,21 @@ struct Collate {
     jumping: bool,
     jump: String,
     jump_pick: usize,
-    /// ⌘F was pressed: typing goes to the search (Rune can't move keyboard focus from code,
-    /// so the app takes the keys itself) until Escape.
-    searching: bool,
+    /// The toolbar search's text in the Map and in History (the diff's is `search`), what it
+    /// found there, best first, and the row picked.
+    map_query: TextEdit,
+    history_query: TextEdit,
+    found: Vec<search::Found>,
+    found_pick: usize,
+}
+
+/// What the toolbar's search looks through: the diff's lines, the Map's files, or History's
+/// commits and refs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Searched {
+    Diff,
+    Map,
+    History,
 }
 
 fn init() -> Collate {
@@ -517,7 +540,10 @@ fn init() -> Collate {
         stale: HashSet::new(),
         seen: HashSet::new(),
         show_help: false,
-        searching: false,
+        map_query: TextEdit::new(""),
+        history_query: TextEdit::new(""),
+        found: Vec::new(),
+        found_pick: 0,
         jumping: false,
         jump: String::new(),
         jump_pick: 0,
@@ -1822,6 +1848,89 @@ impl Collate {
         self.find();
     }
 
+    /// Where the toolbar's search looks now.
+    fn searched(&self) -> Searched {
+        if self.map.open {
+            Searched::Map
+        } else if self.scope == Scope::History && !self.history_diff {
+            Searched::History
+        } else {
+            Searched::Diff
+        }
+    }
+
+    /// The toolbar search's text in `place`.
+    fn query_mut(&mut self, place: Searched) -> &mut TextEdit {
+        match place {
+            Searched::Diff => &mut self.search,
+            Searched::Map => &mut self.map_query,
+            Searched::History => &mut self.history_query,
+        }
+    }
+
+    /// ⌘F: the toolbar's search takes the keys, its text selected so typing replaces it.
+    fn focus_search(&mut self) {
+        let place = self.searched();
+        let q = self.query_mut(place);
+        q.focused = true;
+        (q.anchor, q.focus) = (0, q.text.len());
+        self.lookup();
+    }
+
+    /// Runs the Map's or History's search again for what's typed.
+    fn lookup(&mut self) {
+        self.found_pick = 0;
+        self.found = match self.searched() {
+            Searched::Diff => Vec::new(),
+            Searched::Map => self.map.data.as_deref().map(|m| search::files(m, &self.map_query.text)).unwrap_or_default(),
+            Searched::History => search::commits(&self.graph_commits, &self.history_query.text),
+        };
+    }
+
+    /// Goes to result `i`: a folder opens in the Map and a file is picked in its folder; a
+    /// commit, branch or tag is picked in the graph.
+    fn take_found(&mut self, i: usize, tx: &mut Tx) {
+        let Some(f) = self.found.get(i).cloned() else { return };
+        let place = self.searched();
+        self.query_mut(place).focused = false;
+        tx.blur();
+        match place {
+            Searched::Map => {
+                let Some(m) = self.map.data.clone() else { return };
+                let Some(&node) = m.by_path.get(&f.target) else { return };
+                let dir = m.nodes[node].dir;
+                self.map.zoom = if dir { f.target } else { f.target.rsplit_once('/').map(|(p, _)| p.to_owned()).unwrap_or_default() };
+                self.map.hover = (!dir).then_some(node);
+            }
+            Searched::History => {
+                tx.scroll_into_view(format!("graph-{}", f.target));
+                self.set_commit(&f.target);
+            }
+            Searched::Diff => {}
+        }
+    }
+
+    /// Keys in the toolbar's search: Return steps through the diff's matches or takes the
+    /// picked result, the arrows move the pick, Escape gives the keys back.
+    fn search_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        let place = self.searched();
+        match ev.key {
+            Key::Escape => {
+                self.query_mut(place).focused = false;
+                tx.blur();
+            }
+            Key::Enter if place == Searched::Diff => self.next_hit(!ev.mods.shift, tx),
+            Key::Enter => self.take_found(self.found_pick, tx),
+            Key::Up | Key::Down if place != Searched::Diff && !self.found.is_empty() => {
+                let last = self.found.len() - 1;
+                self.found_pick = if ev.key == Key::Up { self.found_pick.saturating_sub(1) } else { (self.found_pick + 1).min(last) };
+                tx.scroll_into_view(format!("found-{}", self.found_pick));
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// Jump to the next (or previous) line holding the search text, opening its file.
     fn next_hit(&mut self, forward: bool, tx: &mut Tx) {
         if self.hits.is_empty() {
@@ -2471,7 +2580,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     // No title: the sidebar already marks the view shown.
     let toolbar = Toolbar::new()
         .leading(leading)
-        .trailing(row().gap(6.0).items_center().child(modes.build(k)).child(term).child(panel).child(more));
+        .trailing(row().gap(6.0).items_center().child(toolbar_search(s, k, layer)).child(modes.build(k)).child(term).child(panel).child(more));
 
     let n = s.diff.files().len();
     let body = if !s.has_project {
@@ -2538,7 +2647,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("v", "Mark the file viewed"),
             ("c", "Comment on the selected line"),
             ("o", "Open the file in your editor"),
-            ("⌘F", "Search the diff: type, ⏎ next match, ⇧⏎ previous, esc done"),
+            ("⌘F", "Search this view: the diff (⏎ next match, ⇧⏎ previous), the Map's files, History's commits and branches"),
             ("⌘P", "Go to a file: type part of its path; add :line for a line"),
             ("⌘L", "Go to a line of the file in view"),
             ("n  N  ⌘G", "Next / previous search match"),
@@ -3553,73 +3662,15 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         Some(picker) => what.child(picker),
         None => what.child(text(basis).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).shrink()),
     };
-    let hits = match (s.hits.len(), s.hit) {
-        _ if s.search_error.is_some() => "Bad pattern".to_owned(),
-        (0, _) if !s.search.text.trim().is_empty() => "No matches".to_owned(),
-        (0, _) => String::new(),
-        (n, Some(i)) => format!("{} of {n}", i + 1),
-        (n, None) => format!("{n} matches"),
-    };
-    let mut search = TextInput::new(&s.search).placeholder("Search the diff").leading_icon(k.glyph.search);
-    if !s.search.text.is_empty() {
-        search = search.clear_button();
-    }
-    let search = search
-        .width(Some(220.0))
-        .on_edit(|s: &mut Collate| &mut s.search)
-        .on_change(|s: &mut Collate, _| {
-            s.hit = None;
-            s.find();
-        })
-        .on_key(|s: &mut Collate, ev: &KeyEvent, tx: &mut Tx| {
-            if ev.key == Key::Enter {
-                s.next_hit(!ev.mods.shift, tx);
-                return true;
-            }
-            false
-        })
-        .build(k)
-        .key("search");
-    // While ⌘F has the keys, the field looks focused.
-    let search = if s.searching { row().key("ring").radius(8.0).border(2.0, k.c.border_focus).child(search) } else { search };
-    // The search's options, as an editor's find bar has them.
-    let option = |key: &str, glyph: &str, name: &str, keys: &str, on: bool, flip: fn(&mut Collate)| {
-        text(glyph.to_owned())
-            .key(key.to_owned())
-            .font(rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono })
-            .color(if on { k.c.text_base } else { k.c.text_faint })
-            .px(5.0)
-            .h(20.0)
-            .radius(k.radius.sm)
-            .fill(if on { k.alpha(k.c.text_base, 0.12) } else { k.alpha(k.c.text_base, 0.0) })
-            .hover(k.alpha(k.c.text_base, 0.08))
-            .cursor(Cursor::Pointer)
-            .role("checkbox")
-            .label(format!("{name}{}", if on { ", on" } else { ", off" }))
-            .help(format!("{name} ({keys})"))
-            .on_press(move |s: &mut Collate| s.search_option(flip))
-    };
-    let options = row()
-        .key("search-options")
-        .gap(2.0)
-        .items_center()
-        .child(option("find-case", "Aa", "Match case", "⌥⌘C", s.find_case, |s| s.find_case ^= true))
-        .child(option("find-word", "ab", "Whole words", "⌥⌘W", s.find_word, |s| s.find_word ^= true))
-        .child(option("find-regex", ".*", "Regular expression", "⌥⌘R", s.find_regex, |s| s.find_regex ^= true));
-    let hits = match &s.search_error {
-        Some(e) => text(hits).key("hits").font(k.ty.text_small).color(k.c.danger.fg).help(e.clone()),
-        None => text(hits).key("hits").font(k.ty.text_small).color(k.c.text_muted),
-    };
+    // As tall as the staging panel's filter field, so the columns' first rows centre alike.
     let top = row()
         .key("totals")
         .w_full()
+        .h(28.0)
         .gap(12.0)
         .items_center()
         .child(what)
         .child(row().grow(1.0))
-        .child(hits)
-        .child(search)
-        .child(options)
         .child(text(format!("{viewed}/{n} viewed")).key("viewed-count").font(k.ty.text_small).color(k.c.text_muted));
     // Row 2, only when there's something to say about how the diff is drawn.
     // A 28 pt band right under the first, as the sidebar's and the panel's second rows are, so
@@ -3746,6 +3797,121 @@ fn message(k: &Kit, title: &str, detail: &str) -> El {
         c = c.child(text(detail.to_owned()).font(k.ty.ui).color(k.c.text_muted).wrap().max_w(520.0));
     }
     c
+}
+
+/// The toolbar search's width: room in the diff for its match count and options.
+const SEARCH_W: f32 = 300.0;
+
+/// The toolbar's search, left of the layout switch, one field for every place: the diff's
+/// lines in a review or a commit's diff, files in the Map, commits and refs in History, with
+/// what it found there listed under it.
+fn toolbar_search(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
+    let place = s.searched();
+    let (edit, hint) = match place {
+        Searched::Diff => (&s.search, "Search the diff"),
+        Searched::Map => (&s.map_query, "Search files"),
+        Searched::History => (&s.history_query, "Search commits, branches, tags"),
+    };
+    let mut field = TextInput::new(edit).placeholder(hint).label(hint).leading_icon(k.glyph.search).width(Some(SEARCH_W));
+    if !edit.text.is_empty() {
+        field = field.clear_button();
+    }
+    if place == Searched::Diff {
+        field = field.trailing(find_extras(s, k));
+    }
+    let field = field
+        .on_edit(|s: &mut Collate| {
+            let place = s.searched();
+            s.query_mut(place)
+        })
+        .on_change(|s: &mut Collate, tx: &mut Tx| {
+            if s.searched() == Searched::Diff {
+                s.hit = None;
+                s.find();
+                // Land on the first match as you type, as a browser's find does.
+                s.next_hit(true, tx);
+            } else {
+                s.lookup();
+            }
+        })
+        .on_key(|s: &mut Collate, ev: &KeyEvent, tx: &mut Tx| s.search_key(ev, tx))
+        .build(k)
+        .key("search");
+    if place != Searched::Diff && edit.focused && !edit.text.trim().is_empty() {
+        layer.push(found_list(s, k, place));
+    }
+    field
+}
+
+/// Inside the diff's search: where the reader is among the matches, and the options, as an
+/// editor's find bar has them.
+fn find_extras(s: &Collate, k: &Kit) -> El {
+    let hits = match (s.hits.len(), s.hit) {
+        _ if s.search_error.is_some() => "Bad pattern".to_owned(),
+        (0, _) if !s.search.text.trim().is_empty() => "No matches".to_owned(),
+        (0, _) => String::new(),
+        (n, Some(i)) => format!("{} of {n}", i + 1),
+        (n, None) => format!("{n} matches"),
+    };
+    let hits = match &s.search_error {
+        Some(e) => text(hits).key("hits").font(k.ty.text_small).color(k.c.danger.fg).help(e.clone()),
+        None => text(hits).key("hits").font(k.ty.text_small).color(k.c.text_muted),
+    };
+    let option = |key: &str, glyph: &str, name: &str, keys: &str, on: bool, flip: fn(&mut Collate)| {
+        text(glyph.to_owned())
+            .key(key.to_owned())
+            .font(rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono })
+            .color(if on { k.c.text_base } else { k.c.text_faint })
+            .px(4.0)
+            .h(20.0)
+            .radius(k.radius.sm)
+            .fill(if on { k.alpha(k.c.text_base, 0.12) } else { k.alpha(k.c.text_base, 0.0) })
+            .hover(k.alpha(k.c.text_base, 0.08))
+            .cursor(Cursor::Pointer)
+            .role("checkbox")
+            .label(format!("{name}{}", if on { ", on" } else { ", off" }))
+            .help(format!("{name} ({keys})"))
+            .on_press(move |s: &mut Collate| s.search_option(flip))
+    };
+    row()
+        .key("search-options")
+        .gap(2.0)
+        .items_center()
+        .child(hits.mr(4.0))
+        .child(option("find-case", "Aa", "Match case", "⌥⌘C", s.find_case, |s| s.find_case ^= true))
+        .child(option("find-word", "ab", "Whole words", "⌥⌘W", s.find_word, |s| s.find_word ^= true))
+        .child(option("find-regex", ".*", "Regular expression", "⌥⌘R", s.find_regex, |s| s.find_regex ^= true))
+}
+
+/// Under the search in the Map and History: what it found, best first. Return or a click
+/// goes to the pick; the arrows move it.
+fn found_list(s: &Collate, k: &Kit, place: Searched) -> El {
+    let mut rows = col().key("found-rows").w_full().padding(4.0);
+    if s.found.is_empty() {
+        let none = if place == Searched::Map { "No file matches".to_owned() } else { format!("Nothing matches in the {} commits loaded", s.commit_ids.len()) };
+        rows = rows.child(row().key("found-none").h(28.0).px(8.0).items_center().child(text(none).font(k.ty.ui).color(k.c.text_faint)));
+    }
+    for (n, f) in s.found.iter().enumerate() {
+        let glyph: &'static Icon = match f.kind {
+            search::Kind::File => &rune_kit::glyphs::FILE,
+            search::Kind::Folder => &rune_kit::glyphs::FOLDER,
+            search::Kind::Commit => &COMMIT_ICON,
+            search::Kind::Branch => &BRANCH_ICON,
+            search::Kind::Tag => &TAG_ICON,
+        };
+        rows = rows.child(
+            row().key(format!("found-{n}")).w_full().h(28.0).px(8.0).gap(8.0).items_center().radius(k.radius.sm)
+                .fill(if n == s.found_pick { k.c.hover } else { k.alpha(k.c.hover, 0.0) })
+                .cursor(Cursor::Pointer).role("option").label(format!("{} - {}", f.title, f.detail))
+                .on_hover(move |s: &mut Collate| s.found_pick = n)
+                .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.take_found(n, tx))
+                .child(icon(glyph, 14.0).color(k.c.icon_faint).a11y_hidden())
+                .child(text(f.title.clone()).font(k.ty.ui).color(k.c.text_base).truncate().min_w(0.0).shrink().a11y_hidden())
+                .child(text(f.detail.clone()).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).shrink().grow(1.0).a11y_hidden()),
+        );
+    }
+    let body = col().key("found").w(420.0).max_h(360.0).min_h(0.0).child(rune_kit::popover::fit_scroll(rows));
+    rune_kit::popover::anchored(k, rune_kit::popover::raised(k, body, k.radius.md), "search", Placement::BottomEnd, 4.0)
 }
 
 /// The width every settings control is right-aligned in, so each description wraps at the
@@ -3990,8 +4156,8 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.add_project();
         return true;
     }
-    if ev.is_command('f') {
-        s.searching = true;
+    if ev.is_command('f') && s.has_project {
+        s.focus_search();
         return true;
     }
     if ev.is_command('p') && s.has_project {
@@ -4000,31 +4166,6 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.is_command('l') && s.has_project {
         s.start_jump(":");
-        return true;
-    }
-    // Typing into the search after ⌘F, unless a field has the keyboard (it types there).
-    if s.searching && tx.focused().is_none_or(|f| !(f.contains("filter") || f.contains("message"))) && !ev.mods.cmd && !ev.mods.ctrl {
-        let mut q = s.search.text.clone();
-        match &ev.key {
-            Key::Text(t) => q.push_str(t),
-            Key::Backspace => {
-                q.pop();
-            }
-            Key::Enter => {
-                s.next_hit(!ev.mods.shift, tx);
-                return true;
-            }
-            Key::Escape => {
-                s.searching = false;
-                return true;
-            }
-            _ => return false,
-        }
-        s.search = TextEdit::new(q);
-        s.hit = None;
-        s.find();
-        // Land on the first match as you type, as a browser's find does.
-        s.next_hit(true, tx);
         return true;
     }
     if s.map.open && ev.key == Key::Escape && tx.focused().is_none_or(|f| !f.contains("filter")) && s.map_up() {
@@ -4827,7 +4968,10 @@ mod tests {
             rt.frame(1.0 / 60.0);
         };
         key(&mut rt, Key::Command('f'), true);
-        assert!(rt.state.searching);
+        assert!(rt.state.search.focused, "⌘F puts the keys in the toolbar's search");
+        let (field, _) = rt.presented("search").expect("the search is drawn");
+        let (modes, _) = rt.presented("toolbar-leading").map(|_| rt.presented("panel-toggle").unwrap()).unwrap();
+        assert!(field[0] < modes[0] && field[1] < 52.0, "in the toolbar, left of its tools");
         for c in "also chang".chars() {
             key(&mut rt, Key::Text(c.to_string()), false);
         }
@@ -4839,9 +4983,59 @@ mod tests {
         key(&mut rt, Key::Enter, false);
         assert_eq!(rt.state.hit, Some(1), "Return steps on");
         key(&mut rt, Key::Escape, false);
-        assert!(!rt.state.searching, "Escape ends typing into the search");
+        assert!(!rt.state.search.focused, "Escape gives the keys back");
         key(&mut rt, Key::Text("v".into()), false);
         assert_eq!(rt.state.search.text, "also chang", "and shortcuts are shortcuts again");
+    }
+
+    #[test]
+    fn the_search_finds_files_in_the_map_and_commits_in_history() {
+        let mut rt = loaded();
+        rt.on_key = Some(on_key);
+        let cmd_f = KeyEvent { key: Key::Command('f'), mods: rune::Mods { cmd: true, ..Default::default() } };
+        let typed = |rt: &mut Runtime<Collate>, q: &str| {
+            for c in q.chars() {
+                rt.key(KeyEvent { key: Key::Text(c.to_string()), mods: Default::default() });
+                rt.frame(1.0 / 60.0);
+            }
+        };
+        // Another test owns the shared repository, so this one maps the test repository itself.
+        let built = map::build(test_repo()).expect("the test repository maps");
+        rt.update(move |s, _| {
+            s.map.open = true;
+            s.map.data = Some(std::sync::Arc::new(built));
+        });
+        rt.frame(1.0 / 60.0);
+        rt.key(cmd_f.clone());
+        rt.frame(1.0 / 60.0);
+        typed(&mut rt, "file2");
+        assert!(rt.state.map_query.focused && rt.state.search.text.is_empty(), "the Map has its own query");
+        let pick = rt.state.found.iter().position(|f| f.target == "src/api/file2.rs").expect("the file is found");
+        assert!(rt.find("found").is_some(), "the results show under the field");
+        click(&mut rt, &format!("found-{pick}"));
+        assert_eq!(rt.state.map.zoom, "src/api", "a file opens its folder");
+        assert!(rt.state.map.hover.is_some(), "picked there");
+        assert!(rt.find("found").is_none(), "and the results close");
+
+        let (commits, head) = Repo::open(test_repo()).unwrap().graph(50, None);
+        rt.update(move |s, _| {
+            s.map.open = false;
+            s.set_scope(Scope::History);
+            s.show_history(commits, head);
+        });
+        for _ in 0..10 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.searched(), Searched::History);
+        rt.key(cmd_f);
+        rt.frame(1.0 / 60.0);
+        typed(&mut rt, "develop");
+        assert_eq!(rt.state.found.first().map(|f| (f.kind, f.title.as_str())), Some((search::Kind::Branch, "develop")), "a branch by name");
+        let id = rt.state.found[0].target.clone();
+        rt.key(KeyEvent { key: Key::Enter, mods: Default::default() });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.commit.as_deref(), Some(id.as_str()), "Return picks its commit");
+        assert!(!rt.state.history_query.focused && !rt.state.history_diff, "the graph stays, the keys go back");
     }
 
     #[test]
