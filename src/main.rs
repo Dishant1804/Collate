@@ -4255,12 +4255,14 @@ fn find_extras(s: &Collate, k: &Kit) -> El {
         None => text(hits).key("hits").font(k.ty.text_small).color(k.c.text_muted),
     };
     let option = |key: &str, glyph: &str, name: &str, keys: &str, on: bool, flip: fn(&mut Collate)| {
-        text(glyph.to_owned())
+        // The glyph centred in a box of its own, so all three line up and match in size.
+        let glyph = text(glyph.to_owned()).font(rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono }).color(if on { k.c.text_base } else { k.c.text_faint });
+        row()
             .key(key.to_owned())
-            .font(rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono })
-            .color(if on { k.c.text_base } else { k.c.text_faint })
-            .px(4.0)
+            .w(24.0)
             .h(20.0)
+            .center()
+            .child(glyph)
             .radius(k.radius.sm)
             .fill(if on { k.alpha(k.c.text_base, 0.12) } else { k.alpha(k.c.text_base, 0.0) })
             .hover(k.alpha(k.c.text_base, 0.08))
