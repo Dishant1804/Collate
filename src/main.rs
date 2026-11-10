@@ -34,7 +34,7 @@ use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PopupItem, PopupMe
 use rune_kit::shell::{self, PaneState, Sidebar, SidebarRow, SidebarSection, SplitView, Toolbar};
 use rune_kit::syntax::Highlighter;
 use rune_kit::{
-    Checkbox, Button, ButtonVariant, ControlSize, Dialog, FileNode, FileTree, IconButton, IconButtonVariant, Kit, Placement, Popover, SegmentedControl, Select, Switch, TextInput, Tree,
+    Checkbox, Button, ButtonVariant, ControlSize, Dialog, FileNode, FileTree, IconButton, IconButtonVariant, Kit, Placement, Popover, SegmentedControl, Select, Switch, TextArea, TextInput, Tree,
     TreeItem, TreeModel,
 };
 use search::fuzzy;
@@ -3192,12 +3192,20 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     p
 }
 
+/// The commit message box's height: near square at the panel's default width.
+const COMMIT_BOX_H: f32 = 150.0;
+
 /// The commit composer at the foot of the staging panel: a message and the screen's one
 /// prominent action, which commits what's staged.
 fn commit_box(s: &Collate, k: &Kit) -> El {
     let ready = (s.staged > 0 || s.amend) && !s.message.text.trim().is_empty() && !s.committing;
-    let field = TextInput::new(&s.message)
-        .placeholder(if s.staged == 0 && !s.amend { "Stage files to write a commit".to_owned() } else { "Summary".to_owned() })
+    // A box, not a line: room for a summary and a body under it. Return starts a new line;
+    // ⌘↩ commits.
+    let field = TextArea::new(&s.message)
+        .placeholder(if s.staged == 0 && !s.amend { "Stage files to write a commit".to_owned() } else { "Summary, then a blank line and the details".to_owned() })
+        .label("Commit message")
+        .rows(8)
+        .max_height(COMMIT_BOX_H)
         .on_edit(|s: &mut Collate| &mut s.message)
         .on_key(|s: &mut Collate, ev: &KeyEvent, _: &mut Tx| {
             if ev.key == Key::Enter && ev.mods.cmd {
@@ -5169,6 +5177,8 @@ mod tests {
         assert!((tall(&rt, "unstaged") - 28.0).abs() < 0.5, "and it's its title alone");
         click(&mut rt, "unstaged-toggle");
         assert!(rt.find("src/chevron").is_some(), "a second click opens it again");
+        let field = rt.presented("message").expect("the commit box").0;
+        assert!(field[3] >= 140.0, "the message is a box, not a line: {} tall", field[3]);
     }
 
     #[test]
