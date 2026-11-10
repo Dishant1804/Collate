@@ -4400,6 +4400,7 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
             setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
             setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
+            setting(k, "notify", "Review requests", &[], "A notification when someone asks for your review, checked every few minutes", switch(k, "Review requests", st.notify_reviews, |c, v| c.notify_reviews = v)),
             setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
         ],
         PROJECTS_TAB => {
@@ -4932,6 +4933,7 @@ fn main() {
                     app.update_if(move |s, tx| s.terminals.event(id, event, tx));
                 }
             }));
+            pulls::watch_reviews();
             s.avatars.start(rune::ImageCache::new(waker), |email, bytes| {
                 if let Some(app) = HANDLE.get() {
                     app.update(move |s, _| s.avatars.landed(email, bytes));

@@ -61,6 +61,9 @@ pub struct PullsState {
     pub filter: TextEdit,
     /// The comment being written suggests its text in place of the line's.
     pub suggest: bool,
+    /// Pull requests already known to ask for the reader's review: only new ones notify.
+    /// `None` until the first list, which notifies of nothing.
+    pub asking: Option<HashSet<u32>>,
 }
 
 impl Default for PullsState {
@@ -79,6 +82,7 @@ impl Default for PullsState {
             expanded: HashSet::new(),
             filter: TextEdit::new(""),
             suggest: false,
+            asking: None,
         }
     }
 }
@@ -108,6 +112,41 @@ impl PullsState {
     }
 }
 
+/// The pull requests asking `me` for a review, and those of them not in `seen` (none the first
+/// time, when nothing has been seen).
+fn fresh_requests<'a>(seen: Option<&HashSet<u32>>, pulls: &'a [Pull], me: &str) -> (HashSet<u32>, Vec<&'a Pull>) {
+    let now: HashSet<u32> = pulls.iter().filter(|p| p.requested.iter().any(|r| r == me)).map(|p| p.number).collect();
+    let fresh = match seen {
+        Some(seen) => pulls.iter().filter(|p| now.contains(&p.number) && !seen.contains(&p.number)).collect(),
+        None => Vec::new(),
+    };
+    (now, fresh)
+}
+
+/// How often the review requests are read again.
+const REVIEWS_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Read the open pull requests again every few minutes, so a new review request notifies
+/// and the sidebar's count stays true.
+pub fn watch_reviews() {
+    let Some(app) = HANDLE.get().cloned() else { return };
+    std::thread::spawn(move || loop {
+        std::thread::sleep(REVIEWS_EVERY);
+        app.update(|s, _| {
+            if s.settings.notify_reviews && s.has_project {
+                s.load_pulls();
+            }
+        });
+    });
+}
+
+/// A macOS notification, through AppleScript: no permission to ask for, and nothing to bundle.
+fn notify(title: &str, body: &str) {
+    let quote = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!("display notification \"{}\" with title \"{}\"", quote(body), quote(title));
+    let _ = std::process::Command::new("osascript").args(["-e", &script]).spawn();
+}
+
 fn gh() -> Option<Gh> {
     current_repo().map(|r| Gh::new(&r.root))
 }
@@ -132,8 +171,21 @@ impl Collate {
             app.update(move |s, _| {
                 s.pulls.loading = false;
                 s.pulls.list = Some(got);
+                s.note_review_requests();
             });
         });
+    }
+
+    /// Notify of pull requests that newly ask for the reader's review.
+    fn note_review_requests(&mut self) {
+        let Some(Ok((me, pulls))) = &self.pulls.list else { return };
+        let (now, fresh) = fresh_requests(self.pulls.asking.as_ref(), pulls, me);
+        if self.settings.notify_reviews {
+            for p in fresh {
+                notify(&format!("Review requested on {}", self.name), &format!("#{} {} - by {}", p.number, p.title, p.author));
+            }
+        }
+        self.pulls.asking = Some(now);
     }
 
     /// Fetch pull request `n` and show its diff, details and threads.
@@ -758,6 +810,20 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
 #[cfg(test)]
 mod tests {
     use super::preview;
+
+    #[test]
+    fn only_new_review_requests_notify_and_never_the_first_time() {
+        let pull = |number: u32, requested: &[&str]| crate::github::Pull {
+            number, title: String::new(), author: "ana".into(), head: String::new(), base: String::new(), draft: false, decision: String::new(),
+            requested: requested.iter().map(|r| (*r).to_owned()).collect(), additions: 0, deletions: 0, updated: String::new(), labels: vec![], checks: vec![], url: String::new(),
+        };
+        let first = [pull(1, &["me"]), pull(2, &["bo"])];
+        let (seen, fresh) = super::fresh_requests(None, &first, "me");
+        assert!(fresh.is_empty() && seen.contains(&1));
+        let later = [pull(1, &["me"]), pull(2, &["bo"]), pull(3, &["me", "bo"])];
+        let (_, fresh) = super::fresh_requests(Some(&seen), &later, "me");
+        assert_eq!(fresh.iter().map(|p| p.number).collect::<Vec<_>>(), [3]);
+    }
 
     #[test]
     fn a_list_edit_adds_and_removes_only_what_changed() {
