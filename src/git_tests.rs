@@ -472,6 +472,24 @@ fn remotes_give_their_web_pages() {
 }
 
 #[test]
+fn a_range_shows_what_changed_between_two_commits() {
+    let (dir, r) = repo("range", &[("a.txt", "one\n"), ("b.txt", "same\n")]);
+    let first = r.resolve("HEAD").unwrap();
+    write(&dir, "a.txt", "one\ntwo\n");
+    sh(&dir, &["commit", "-qam", "second"]);
+    write(&dir, "c.txt", "new\n");
+    sh(&dir, &["add", "-A"]);
+    sh(&dir, &["commit", "-qm", "third"]);
+    let last = r.resolve("HEAD").unwrap();
+    let range = format!("{first}..{last}");
+    let raw = r.status_raw().unwrap();
+    let snap = r.snapshot(Scope::History, &raw, Some((&range, &range))).unwrap();
+    let paths: Vec<&str> = snap.changes.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(paths, ["a.txt", "c.txt"]);
+    assert!(snap.changes[1].old.is_none(), "c.txt is new in the range");
+}
+
+#[test]
 fn conflicts_settle_by_side_by_block_or_both() {
     let text = "a\n<<<<<<< HEAD\nours 1\n=======\ntheirs 1\n>>>>>>> other\nb\n<<<<<<< HEAD\nours 2\n||||||| base\nbase 2\n=======\ntheirs 2\n>>>>>>> other\nc\n";
     assert_eq!(patch::resolve(text, patch::Keep::Ours, None), ("a\nours 1\nb\nours 2\nc\n".to_owned(), 2));

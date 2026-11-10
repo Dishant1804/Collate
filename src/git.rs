@@ -316,11 +316,20 @@ impl Repo {
     }
 
     /// The files commit `sha` changed, each against its first parent (nothing, for a root
-    /// commit). Commits don't change, so every one of them can be remembered.
+    /// commit); or for a range `a..b`, the files that differ between the two. Commits don't
+    /// change, so every one of them can be remembered.
     fn commit_plans(&self, sha: &str) -> Result<Vec<Plan>, String> {
-        let out = self
-            .git()
-            .args(["diff-tree", "--no-commit-id", "-r", "-z", "--name-only", "--no-renames", "--root", sha])
+        let (old, new) = match sha.split_once("..") {
+            Some((a, b)) => (a.to_owned(), b.to_owned()),
+            None => (format!("{sha}^"), sha.to_owned()),
+        };
+        let mut cmd = self.git();
+        cmd.args(["diff-tree", "--no-commit-id", "-r", "-z", "--name-only", "--no-renames"]);
+        match sha.split_once("..") {
+            Some((a, b)) => cmd.args([a, b]),
+            None => cmd.args(["--root", sha]),
+        };
+        let out = cmd
             .output()
             .map_err(|e| format!("git diff-tree: {e}"))?;
         if !out.status.success() {
@@ -331,8 +340,8 @@ impl Repo {
         Ok(paths
             .into_iter()
             .map(|p| Plan {
-                old: Source::Git(format!("{sha}^:{p}")),
-                new: Source::Git(format!("{sha}:{p}")),
+                old: Source::Git(format!("{old}:{p}")),
+                new: Source::Git(format!("{new}:{p}")),
                 path: p,
                 orig: None,
                 staged: Staged::No,
@@ -670,10 +679,23 @@ impl Repo {
         self.run(&["log", "-1", "--format=%B"], None).ok()
     }
 
+    /// Local branches, remote branches and tags: what a compare can start or end at.
+    pub fn refs(&self) -> Vec<String> {
+        let mut all = self.branches();
+        let tags = self.run(&["tag", "--sort=-creatordate"], None).unwrap_or_default();
+        all.extend(tags.lines().filter(|t| !t.is_empty()).map(str::to_owned));
+        all
+    }
+
     /// Settles a conflicted file with one side's version, `ours` or `theirs`, and stages it.
     pub fn take_side(&self, path: &str, side: &str) -> Result<(), String> {
         self.run(&["checkout", &format!("--{side}"), "--", path], None)?;
         self.stage(path)
+    }
+
+    /// A ref's commit id.
+    pub fn resolve(&self, name: &str) -> Result<String, String> {
+        self.run(&["rev-parse", "--verify", "-q", &format!("{name}^{{commit}}")], None).map_err(|_| format!("{name} names no commit"))
     }
 
     pub fn merge_base(&self, base: &str) -> Result<String, String> {

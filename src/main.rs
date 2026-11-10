@@ -399,6 +399,12 @@ struct Collate {
     settings_tab: usize,
     /// The next commit rewrites the last one.
     amend: bool,
+    /// The compare dialog's two ends (branches, remote branches, tags) while it's open, and
+    /// the refs to pick from.
+    compare: Option<(String, String)>,
+    refs: Vec<String>,
+    /// The names of the two ends of the range History shows, when it shows one.
+    compared: Option<(String, String)>,
     /// ⌘F was pressed: typing goes to the search (Rune can't move keyboard focus from code,
     /// so the app takes the keys itself) until Escape.
     searching: bool,
@@ -475,6 +481,9 @@ fn init() -> Collate {
         nav: nav::Nav::default(),
         commit_body: String::new(),
         amend: false,
+        compare: None,
+        refs: Vec::new(),
+        compared: None,
     };
     s.viewed = load_viewed();
     if s.scope == Scope::History {
@@ -642,7 +651,9 @@ impl Collate {
         self.avatars.request(self.web.as_deref(), &commits);
         self.graph_commits = commits;
         self.graph_version = self.graph_version.wrapping_add(1);
-        let keep = self.commit.clone().filter(|c| self.commit_ids.contains(c));
+        // A commit opened from elsewhere (a stash, a file's history, a compare) stays shown
+        // though the graph doesn't list it.
+        let keep = self.commit.clone();
         if let Some(c) = keep.or_else(|| head.filter(|h| self.commit_ids.contains(h))).or_else(|| self.commit_ids.first().cloned()) {
             self.set_commit(&c);
         }
@@ -653,7 +664,9 @@ impl Collate {
             return;
         }
         self.commit = Some(id.to_owned());
-        self.commit_body = current_repo().map(|r| r.message(id)).unwrap_or_default()
+        // A range has no one message.
+        let message = if id.contains("..") { String::new() } else { current_repo().map(|r| r.message(id)).unwrap_or_default() };
+        self.commit_body = message
             .split_once('\n').map(|(_, rest)| rest.trim().to_owned()).unwrap_or_default();
         if self.scope == Scope::History {
             self.loaded = false;
@@ -712,6 +725,53 @@ impl Collate {
             Err(e) => self.say(e, true),
         }
         refresh();
+    }
+
+    /// Show commit `id`'s diff against its parent (or a range, `a..b`), from any view.
+    fn open_commit(&mut self, id: &str) {
+        self.compared = None;
+        self.map.open = false;
+        self.set_scope(Scope::History);
+        self.set_commit(id);
+        self.history_diff = true;
+    }
+
+    /// Opens the compare dialog, from the base to this branch to begin with.
+    fn start_compare(&mut self) {
+        let Some(r) = current_repo() else { return };
+        self.refs = r.refs();
+        let to = if self.branch == "HEAD" { "HEAD".to_owned() } else { self.branch.clone() };
+        let from = self.base.clone().filter(|b| *b != to).or_else(|| self.refs.iter().find(|b| **b != to).cloned()).unwrap_or_default();
+        self.compare = Some((from, to));
+    }
+
+    /// Picks one end of the compare (`to`, else `from`) from the refs.
+    fn pick_ref(&mut self, to: bool, tx: &mut Tx) {
+        let Some((from, until)) = &self.compare else { return };
+        let current = if to { until.clone() } else { from.clone() };
+        let mut refs: Vec<String> = self.refs.clone();
+        if !refs.contains(&"HEAD".to_owned()) {
+            refs.insert(0, "HEAD".to_owned());
+        }
+        let menu = PopupMenu::picker(refs.iter().map(|r| (r.clone(), r.clone())), &current);
+        tx.popup_menu(menu, if to { "compare-to" } else { "compare-from" }, move |s: &mut Collate, picked, _| {
+            if let (Some(p), Some(c)) = (picked, &mut s.compare) {
+                if to { c.1 = p.to_owned() } else { c.0 = p.to_owned() }
+            }
+        });
+    }
+
+    /// Shows what changed from one ref to the other, as History shows a commit.
+    fn run_compare(&mut self) {
+        let Some((from, to)) = self.compare.take() else { return };
+        let Some(r) = current_repo() else { return };
+        match (r.resolve(&from), r.resolve(&to)) {
+            (Ok(a), Ok(b)) => {
+                self.open_commit(&format!("{a}..{b}"));
+                self.compared = Some((from, to));
+            }
+            (Err(e), _) | (_, Err(e)) => self.say(e, true),
+        }
     }
 
     fn file(&self, i: usize) -> Option<(&FileDiff, FileInfo)> {
@@ -808,6 +868,7 @@ impl Collate {
             Scope::Unstaged => "Unstaged Changes".into(),
             // As GitHub Desktop names it: the branch's whole change against its base.
             Scope::Branch => "Pull Request Preview".into(),
+            Scope::History if self.history_diff && self.commit.as_deref().is_some_and(|c| c.contains("..")) => "Compare".into(),
             Scope::History => "Git Graph".into(),
         }
     }
@@ -879,11 +940,13 @@ impl Collate {
         for b in candidates {
             menu = menu.item(PopupItem::new(format!("base:{b}"), format!("Compare against {b}")).checked(*b == base));
         }
+        menu = menu.separator().item(PopupItem::new("compare", "Compare Branches or Tags…"));
         tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| match picked {
             Some("preview") => {
                 s.map.open = false;
                 s.set_scope(Scope::Branch);
             }
+            Some("compare") => s.start_compare(),
             Some(p) if p.starts_with("base:") => {
                 s.set_base(&p["base:".len()..]);
                 s.map.open = false;
@@ -1949,6 +2012,33 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k, layer);
     }
 
+    if let Some((from, to)) = &s.compare {
+        let end = |key: &'static str, label: &str, value: &str, to: bool| {
+            let pick = Button::new(if value.is_empty() { "Choose…".to_owned() } else { value.to_owned() })
+                .variant(ButtonVariant::Outline)
+                .help(format!("Choose the {}", label.to_lowercase()))
+                .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.pick_ref(to, tx))
+                .build(k)
+                .key(key);
+            row().w_full().gap(12.0).items_center().child(text(label.to_owned()).w(48.0).font(k.ty.text_small).color(k.c.text_muted)).child(pick)
+        };
+        let ready = !from.is_empty() && !to.is_empty() && from != to;
+        let buttons = row()
+            .key("compare-buttons")
+            .w_full()
+            .gap(8.0)
+            .justify_end()
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.compare = None).build(k))
+            .child(Button::new("Compare").variant(ButtonVariant::Contrast).disabled(!ready).on_press(|s: &mut Collate| s.run_compare()).build(k).key("compare-ok"));
+        Dialog::new("compare", "Compare")
+            .open(true)
+            .fit()
+            .description("What changed from one branch, tag or commit to another.")
+            .on_close(|s: &mut Collate| s.compare = None)
+            .child(col().key("compare-body").w_full().gap(10.0).child(end("compare-from", "From", from, false)).child(end("compare-to", "To", to, true)).child(buttons.pt(4.0)))
+            .build(k, layer);
+    }
+
     let lights = cx.titlebar_inset();
     let split = SplitView::new(body)
         .sidebar(&s.sidebar, |s: &mut Collate| &mut s.sidebar, sidebar)
@@ -2342,6 +2432,11 @@ fn file_size(n: usize) -> String {
     }
 }
 
+/// A commit id as git abbreviates it.
+fn abbrev(id: &str) -> String {
+    id.chars().take(7).collect()
+}
+
 fn open_url(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
@@ -2417,7 +2512,18 @@ fn commit_header(s: &Collate, k: &Kit) -> El {
         .help("Back to the commit list (Esc)")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_commit_diff(tx)).build(k).key("history-back");
     let mut r = row().key("commit-header").w_full().px(EDGE).py(10.0).gap(12.0).items_center().child(back.ml(-GHOST_PAD));
-    if let Some(c) = s.commit.as_deref().and_then(|id| s.graph_commits.iter().find(|c| c.id == id)) {
+    if let Some(range) = s.commit.as_deref().filter(|c| c.contains("..")) {
+        let (from, to) = s.compared.clone().unwrap_or_else(|| {
+            let (a, b) = range.split_once("..").unwrap_or_default();
+            (abbrev(a), abbrev(b))
+        });
+        let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
+        r = r.child(row().key("compared").grow(1.0).min_w(0.0).gap(8.0).items_center()
+            .child(text("Comparing").font(k.ty.text_small).color(k.c.text_muted))
+            .child(text(from).font(mono).color(k.c.text_base).truncate().min_w(0.0))
+            .child(text("→").font(k.ty.text_small).color(k.c.text_faint))
+            .child(text(to).font(mono).color(k.c.text_base).truncate().min_w(0.0)));
+    } else if let Some(c) = s.commit.as_deref().and_then(|id| s.graph_commits.iter().find(|c| c.id == id)) {
         let sha = c.id.clone();
         let copy = Button::new("Copy SHA").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
             .help("Copy the commit's full hash")
@@ -2952,7 +3058,7 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return false;
     }
     // A dialog takes its own keys (Escape closes it); nothing else acts behind it.
-    if s.confirm.is_some() || s.words.is_some() {
+    if s.confirm.is_some() || s.words.is_some() || s.compare.is_some() {
         return false;
     }
     if s.show_help {
