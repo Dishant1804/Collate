@@ -2260,7 +2260,16 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
                     _ => "",
                 }
             }
-            FileDiff::between_opts(old_path, new_path, t(&c.old), t(&c.new), context, ignore_whitespace)
+            let mut f = FileDiff::between_opts(old_path, new_path, t(&c.old), t(&c.new), context, ignore_whitespace);
+            // An SVG is text to review and a picture to look at: draw both sides above its lines.
+            if c.path.to_ascii_lowercase().ends_with(".svg") {
+                let side = |b: &Option<Blob>| match b {
+                    Some(Blob::Text(t)) => Some((hash_bytes(t.as_bytes()), t.as_bytes().into())),
+                    _ => None,
+                };
+                f.images = Some([side(&c.old), side(&c.new)]);
+            }
+            f
         }
         _ => {
             // Binary or too large on either side: let the patch parser make a binary entry,
@@ -2294,6 +2303,12 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
             f
         }
     }
+}
+
+fn hash_bytes(b: &[u8]) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(b, &mut h);
+    std::hash::Hasher::finish(&h)
 }
 
 fn tree(changes: &[Change], files: &[FileDiff], viewed: &HashMap<String, u64>, keep: fn(&Change) -> bool) -> TreeModel<FileNode<Stat>> {
@@ -5990,6 +6005,22 @@ mod tests {
         assert!(file_diff(&added, 3, false).images.as_ref().is_some_and(|s| s[0].is_none()), "an added image has no before");
         let against_binary = Change { old: Some(Blob::Binary), ..c };
         assert!(file_diff(&against_binary, 3, false).images.is_none(), "an image against other bytes stays a note");
+    }
+
+    #[test]
+    fn a_changed_svg_is_drawn_above_its_lines() {
+        let svg = |fill: &str| format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">\n<rect width=\"8\" height=\"8\" fill=\"{fill}\"/>\n</svg>\n");
+        let text = |t: String| Some(Blob::Text(t));
+        let c = Change { path: "logo.svg".into(), old_path: None, old: text(svg("red")), new: text(svg("blue")), hash: 1, staged: Staged::No, untracked: false, new_hash: 2, generated: false, reused: false, conflicted: false };
+        let f = file_diff(&c, 3, false);
+        let sides = f.images.as_ref().expect("an SVG has pictures");
+        assert!(sides[0].is_some() && sides[1].is_some());
+        assert!(!f.hunks.is_empty(), "and its lines");
+        let st = DiffState::new(vec![f]);
+        assert!(matches!(st.rows[..2], [diff::Row::File(0), diff::Row::Note(0)]), "the pictures come first");
+        assert!(st.rows.len() > 2);
+        let plain = Change { path: "notes.txt".into(), ..c };
+        assert!(file_diff(&plain, 3, false).images.is_none());
     }
 
     #[test]

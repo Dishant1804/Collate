@@ -1003,8 +1003,10 @@ impl DiffState {
             if self.ui[f].collapsed {
                 continue;
             }
-            if file.hunks.is_empty() {
+            if file.hunks.is_empty() || file.images.is_some() {
                 rows.push(Row::Note(fu));
+            }
+            if file.hunks.is_empty() {
                 continue;
             }
             for gap in 0..=file.hunks.len() {
