@@ -6069,6 +6069,39 @@ mod tests {
     }
 
     #[test]
+    fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
+        let mut rt = loaded();
+        let pull = |number: u32, author: &str, requested: &[&str]| github::Pull {
+            number, title: format!("Change {number}"), author: author.into(), head: format!("b{number}"), base: "main".into(), draft: false,
+            decision: "REVIEW_REQUIRED".into(), requested: requested.iter().map(|r| (*r).to_owned()).collect(), additions: 3, deletions: 1,
+            updated: "2026-11-10T09:00:00Z".into(), labels: vec![], checks: vec![], url: String::new(),
+        };
+        rt.update(move |s, _| {
+            s.pulls.list = Some(Ok(("me".into(), vec![pull(7, "ana", &["me"]), pull(8, "me", &[]), pull(9, "bo", &[])])));
+            s.pulls.open = true;
+        });
+        rt.frame(1.0 / 60.0);
+        for key in ["pulls", "group-Review Requested", "group-Yours", "group-Everyone Else", "pull-7", "pull-8", "pull-9"] {
+            assert!(rt.find(key).is_some(), "{key}");
+        }
+        assert_eq!(rt.state.pulls.asked(), 1, "the sidebar counts what asks for the reader");
+        rt.update(move |s, _| {
+            let detail = github::Detail {
+                pull: pull(7, "ana", &["me"]), body: "Why".into(), state: "OPEN".into(), mergeable: "MERGEABLE".into(), merge_state: "BLOCKED".into(),
+                head_oid: String::new(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![],
+            };
+            s.pulls.open = false;
+            s.pulls.pr = Some(detail);
+        });
+        rt.frame(1.0 / 60.0);
+        for key in ["pr-card", "pr-approve", "pr-changes", "pr-merge", "reviewer-me"] {
+            assert!(rt.find(key).is_some(), "{key}");
+        }
+        rt.update(|s, _| s.set_scope(Scope::Staged));
+        assert!(rt.state.pulls.pr.is_none(), "another view leaves the pull request");
+    }
+
+    #[test]
     fn a_changed_svg_is_drawn_above_its_lines() {
         let svg = |fill: &str| format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">\n<rect width=\"8\" height=\"8\" fill=\"{fill}\"/>\n</svg>\n");
         let text = |t: String| Some(Blob::Text(t));
