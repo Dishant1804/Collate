@@ -2937,6 +2937,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k, layer);
     }
 
+    pulls::compose_dialog(s, k, layer);
+
     if let Some((from, to)) = &s.compare {
         let end = |key: &'static str, label: &str, value: &str, to: bool| {
             let pick = Button::new(if value.is_empty() { "Choose…".to_owned() } else { value.to_owned() })

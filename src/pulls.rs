@@ -9,6 +9,18 @@ use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton,
 use crate::github::{self, CheckState, Detail, Draft, Gh, Method, Pull, Verdict};
 use crate::{COLUMN_TOP, Collate, EDGE, GHOST_PAD, HANDLE, MORE_ICON, PANEL_INSET, REFRESH_ICON, current_repo, diff, message, open_url};
 
+/// What's being written in the compose dialog.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Compose {
+    Review(Verdict),
+    /// A comment in the conversation.
+    Comment,
+    /// A reply in thread `n` of the open pull request.
+    Reply(usize),
+    /// A new pull request from the current branch.
+    Create,
+}
+
 pub struct PullsState {
     /// The list shows in place of the diff.
     pub open: bool,
@@ -19,6 +31,13 @@ pub struct PullsState {
     pub pr: Option<Detail>,
     /// The pull request being fetched to open.
     pub fetching: Option<u32>,
+    pub compose: Option<Compose>,
+    pub text: TextEdit,
+    /// A new pull request's title.
+    pub title: TextEdit,
+    pub draft: bool,
+    /// Merging deletes the branch too.
+    pub delete_branch: bool,
 }
 
 impl Default for PullsState {
@@ -29,6 +48,11 @@ impl Default for PullsState {
             loading: false,
             pr: None,
             fetching: None,
+            compose: None,
+            text: TextEdit::new(""),
+            title: TextEdit::new(""),
+            draft: false,
+            delete_branch: true,
         }
     }
 }
@@ -118,6 +142,151 @@ impl Collate {
         }
     }
 
+    /// Run a change to a pull request off the UI thread, report it, and reread the pull request
+    /// and the list. One at a time, with the app's other slow changes.
+    fn pr_act(&mut self, doing: &str, f: impl FnOnce(&Gh) -> Result<String, String> + Send + 'static, then: impl FnOnce(&mut Collate) + Send + 'static) {
+        let (Some(gh), Some(app)) = (gh(), HANDLE.get().cloned()) else { return };
+        if self.busy.is_some() {
+            self.say(format!("Wait for {} to finish", self.busy.as_deref().unwrap_or_default().trim_end_matches('…').to_lowercase()), true);
+            return;
+        }
+        self.busy = Some(doing.to_owned());
+        std::thread::spawn(move || {
+            let result = f(&gh);
+            app.update(move |s, _| {
+                s.busy = None;
+                let ok = result.is_ok();
+                match result {
+                    Ok(done) => s.say(done, false),
+                    Err(e) => s.say(e, true),
+                }
+                if ok {
+                    then(s);
+                }
+                if let Some(n) = s.pulls.pr.as_ref().map(|p| p.pull.number) {
+                    s.open_pull(n);
+                }
+                s.pulls.list = None;
+                s.load_pulls();
+            });
+        });
+    }
+
+    /// After a merge or a checkout moved branches: read them, and the working tree, again.
+    fn reread(&mut self) {
+        if let Some(r) = current_repo() {
+            self.branches = r.branches();
+        }
+        crate::refresh();
+    }
+
+    /// The reader's comments on lines of the open pull request's diff: a review sends them.
+    pub fn pending(&self) -> Vec<(usize, Draft)> {
+        if self.pulls.pr.is_none() {
+            return Vec::new();
+        }
+        self.comments
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.comments_shown.get(*i).copied().unwrap_or(false))
+            .map(|(i, c)| (i, Draft { path: c.at.path.clone(), line: c.at.line, left: c.at.side == diff::Side::Old, body: c.body.clone() }))
+            .collect()
+    }
+
+
+    pub fn start_compose(&mut self, c: Compose) {
+        self.pulls.compose = Some(c);
+        self.pulls.text = TextEdit::new("");
+        if c == Compose::Create {
+            // The branch's last commit is the likeliest title.
+            let subject = current_repo().and_then(|r| r.last_message()).and_then(|m| m.lines().next().map(str::to_owned)).unwrap_or_default();
+            self.pulls.title = TextEdit::new(&subject);
+            self.pulls.draft = false;
+        }
+    }
+
+    fn send_compose(&mut self) {
+        let Some(c) = self.pulls.compose.take() else { return };
+        let body = self.pulls.text.text.trim().to_owned();
+        let n = self.pulls.pr.as_ref().map_or(0, |p| p.pull.number);
+        match c {
+            Compose::Review(v) => {
+                let pending = self.pending();
+                let drafts: Vec<Draft> = pending.iter().map(|(_, d)| d.clone()).collect();
+                let sent: Vec<usize> = pending.iter().map(|(i, _)| *i).collect();
+                let count = drafts.len();
+                let what = match v {
+                    Verdict::Approve => "Approved",
+                    Verdict::RequestChanges => "Requested changes on",
+                    Verdict::Comment => "Reviewed",
+                };
+                let note = if count == 0 { String::new() } else { format!(" with {count} line comment{}", if count == 1 { "" } else { "s" }) };
+                self.pr_act("Sending the review…", move |gh| gh.review(n, v, &body, &drafts).map(|_| format!("{what} #{n}{note}")), move |s| {
+                    // The comments are on GitHub now; keep them here only once.
+                    let mut i = 0;
+                    s.comments.retain(|_| {
+                        i += 1;
+                        !sent.contains(&(i - 1))
+                    });
+                    s.store_comments();
+                });
+            }
+            Compose::Comment => self.pr_act("Commenting…", move |gh| gh.comment(n, &body).map(|_| format!("Commented on #{n}")), |_| {}),
+            Compose::Reply(t) => {
+                let Some(to) = self.pulls.pr.as_ref().and_then(|p| p.threads.get(t)).map(|t| t.reply_to) else { return };
+                self.pr_act("Replying…", move |gh| gh.reply(n, to, &body).map(|_| "Replied".to_owned()), |_| {});
+            }
+            Compose::Create => {
+                let (title, draft) = (self.pulls.title.text.trim().to_owned(), self.pulls.draft);
+                let Some(base) = self.base.clone().map(|b| b.strip_prefix("origin/").map(str::to_owned).unwrap_or(b)) else {
+                    self.say("Choose a base branch first, from the branch menu", true);
+                    return;
+                };
+                self.pr_act("Opening the pull request…", move |gh| gh.create(&base, &title, &body, draft).map(|url| format!("Opened {url}")), |s| s.open_pulls());
+            }
+        }
+    }
+
+    pub fn toggle_thread(&mut self, t: usize) {
+        let Some(th) = self.pulls.pr.as_ref().and_then(|p| p.threads.get(t)) else { return };
+        let (id, resolve) = (th.id.clone(), !th.resolved);
+        self.pr_act(if resolve { "Resolving…" } else { "Reopening the thread…" }, move |gh| gh.resolve(&id, resolve).map(|_| if resolve { "Resolved".to_owned() } else { "Reopened the thread".to_owned() }), |_| {});
+    }
+
+    fn merge_menu(&mut self, tx: &mut Tx) {
+        let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
+        let mut menu = PopupMenu::new();
+        for m in Method::ALL {
+            menu = menu.item(PopupItem::new(m.title(), m.title()));
+        }
+        tx.popup_menu(menu, "pr-merge", move |s: &mut Collate, picked, _| {
+            let Some(m) = Method::ALL.into_iter().find(|m| Some(m.title()) == picked) else { return };
+            let delete = s.pulls.delete_branch;
+            s.pr_act("Merging…", move |gh| gh.merge(n, m, delete).map(|_| format!("Merged #{n}")), Collate::reread);
+        });
+    }
+
+    fn pr_menu(&mut self, tx: &mut Tx) {
+        let Some(pr) = &self.pulls.pr else { return };
+        let (n, url, open, draft) = (pr.pull.number, pr.pull.url.clone(), pr.state == "OPEN", pr.pull.draft);
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("checkout", "Check Out Branch"))
+            .item(PopupItem::new("web", "Open on GitHub"))
+            .item(PopupItem::new("reload", "Reload"))
+            .separator()
+            .item(PopupItem::new("ready", if draft { "Ready for Review" } else { "Convert to Draft" }).enabled(open))
+            .item(PopupItem::new("state", if open { "Close Pull Request" } else { "Reopen Pull Request" }));
+        tx.popup_menu(menu, "pr-more", move |s: &mut Collate, picked, _| match picked {
+            Some("checkout") => s.pr_act("Checking out…", move |gh| gh.checkout(n).map(|_| format!("Checked out #{n}")), Collate::reread),
+            Some("web") => open_url(&url),
+            Some("reload") => s.open_pull(n),
+            Some("ready") if draft => s.pr_act("Marking ready…", move |gh| gh.set(n, &["ready"]).map(|_| format!("#{n} is ready for review")), |_| {}),
+            Some("ready") => s.pr_act("Converting…", move |gh| gh.set(n, &["ready", "--undo"]).map(|_| format!("#{n} is a draft")), |_| {}),
+            Some("state") if open => s.pr_act("Closing…", move |gh| gh.set(n, &["close"]).map(|_| format!("Closed #{n}")), |_| {}),
+            Some("state") => s.pr_act("Reopening…", move |gh| gh.set(n, &["reopen"]).map(|_| format!("Reopened #{n}")), |_| {}),
+            _ => {}
+        });
+    }
 }
 
 fn check_color(k: &Kit, s: Option<CheckState>) -> rune::Color {
@@ -149,9 +318,12 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
         s.pulls.list = None;
         s.load_pulls();
     });
+    let create = Button::new("New Pull Request").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Open a pull request from this branch")
+        .disabled(s.branch.is_empty() || s.branch == "HEAD").on_press(|s: &mut Collate| s.start_compose(Compose::Create)).build(k).key("pr-new");
     let mono = rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono };
     let head = row().key("pulls-head").w_full().h(28.0).px(EDGE).gap(8.0).items_center()
         .child(text("Pull Requests".to_owned()).font(k.ty.ui_medium).color(k.c.text_base).grow(1.0))
+        .child(create)
         .child(refresh.build(k).key("pulls-reload"));
     let body = match &s.pulls.list {
         None => message(k, "Reading pull requests…", ""),
@@ -215,14 +387,32 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
     let open = pr.state == "OPEN";
     let section = |key: &str, title: &str| text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint).key(key.to_owned()).pt(4.0);
     let (ready, can_merge) = readiness(pr);
+    let more = IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).label("More actions for this pull request").help("Check out, open on GitHub, draft, close")
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_menu(tx)).build(k).key("pr-more");
     let mut card = col().key("pr-card").w_full().px(PANEL_INSET).pt(4.0).pb(10.0).gap(6.0)
         .child(row().w_full().gap(4.0).items_start()
             .child(text(p.title.clone()).font(k.ty.ui_medium).color(k.c.text_base).wrap().grow(1.0).min_w(0.0))
-            )
+            .child(more.mr(-4.0)))
         .child(text(format!("#{} by {} - {} → {}", p.number, p.author, p.head, p.base)).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full())
         .child(row().key("pr-ready").w_full().gap(6.0).items_center()
             .child(dot(k, Some(if can_merge { CheckState::Passed } else if open { CheckState::Pending } else { CheckState::Skipped })))
             .child(text(ready.to_owned()).font(k.ty.text_small).color(k.c.text_base)));
+    if open {
+        let pending = s.pending().len();
+        let verdict = |key: &str, label: &str, v: Verdict| Button::new(label.to_owned()).variant(ButtonVariant::Outline).control_size(ControlSize::Small)
+            .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.start_compose(Compose::Review(v))).build(k).key(key.to_owned());
+        card = card.child(row().key("pr-review").w_full().gap(6.0).flex_wrap()
+            .child(verdict("pr-approve", "Approve", Verdict::Approve))
+            .child(verdict("pr-changes", "Request Changes", Verdict::RequestChanges))
+            .child(verdict("pr-comment-review", if pending > 0 { "Send Comments" } else { "Comment" }, Verdict::Comment)));
+        if pending > 0 {
+            card = card.child(text(format!("{pending} line comment{} go with your review", if pending == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.text_muted));
+        }
+        let merge = Button::new("Merge…").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!can_merge || s.busy.is_some())
+            .help("Squash, merge or rebase into the base").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.merge_menu(tx)).build(k).key("pr-merge");
+        let delete = Checkbox::new(s.pulls.delete_branch).label("Delete branch").on_toggle(|s: &mut Collate| s.pulls.delete_branch ^= true).build(k).key("pr-delete-branch");
+        card = card.child(row().key("pr-merge-row").w_full().gap(10.0).items_center().child(merge).child(delete));
+    }
     if !p.checks.is_empty() {
         let failed = p.checks.iter().filter(|c| c.state == CheckState::Failed).count();
         let passed = p.checks.iter().filter(|c| c.state == CheckState::Passed).count();
@@ -271,6 +461,10 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
     for (i, post) in pr.conversation.iter().enumerate() {
         card = card.child(post_view(k, &format!("post-{i}"), post));
     }
+    if open {
+        card = card.child(row().w_full().child(Button::new("Add a Comment").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+            .on_press(|s: &mut Collate| s.start_compose(Compose::Comment)).build(k).key("pr-add-comment").ml(-GHOST_PAD)));
+    }
     // The panel's file list follows; a long conversation scrolls here rather than pushing it away.
     Some(col().key("pr-scroll").w_full().max_h(440.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(card))
 }
@@ -296,9 +490,14 @@ fn post_view(k: &Kit, key: &str, p: &github::Post) -> El {
 /// A line thread of the open pull request, under its line: its comments, a reply, resolve.
 pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
     let Some(th) = s.pulls.pr.as_ref().and_then(|p| p.threads.get(t)) else { return row() };
+    let resolve = Button::new(if th.resolved { "Unresolve" } else { "Resolve" }).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+        .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.toggle_thread(t)).build(k).key("resolve");
+    let reply = Button::new("Reply").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+        .on_press(move |s: &mut Collate| s.start_compose(Compose::Reply(t))).build(k).key("reply");
     let head = row().w_full().gap(8.0).items_center()
         .child(text(if th.resolved { "Resolved thread" } else { "Thread" }.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).grow(1.0))
-        ;
+        .child(reply)
+        .child(resolve.mr(-GHOST_PAD));
     let mut bubble = col().key("bubble").w_full().max_w(720.0).px(12.0).py(8.0).gap(8.0).radius(k.radius.md)
         .border(1.0, k.c.border_weak).fill(k.alpha(k.c.text_base, if th.resolved { 0.02 } else { 0.05 })).child(head);
     // A resolved thread shows only where it started.
@@ -307,5 +506,55 @@ pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
         bubble = bubble.child(post_view(k, &format!("c{i}"), c));
     }
     row().w_full().pl(96.0).pr(EDGE).py(6.0).role("note").label(format!("Review thread by {}", th.comments.first().map_or("", |c| c.author.as_str()))).child(bubble)
+}
+
+/// The dialog for writing a review, a comment, a reply or a new pull request.
+pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let Some(c) = s.pulls.compose else { return };
+    let pending = s.pending().len();
+    let n = s.pulls.pr.as_ref().map_or(0, |p| p.pull.number);
+    let (title, what, button, placeholder) = match c {
+        Compose::Review(Verdict::Approve) => (format!("Approve #{n}"), "A summary is optional.".to_owned(), "Approve", "Leave a summary (optional)"),
+        Compose::Review(Verdict::RequestChanges) => (format!("Request changes on #{n}"), "Say what needs to change.".to_owned(), "Request Changes", "What needs to change"),
+        Compose::Review(Verdict::Comment) => (format!("Review #{n}"), "Comments without approving or blocking.".to_owned(), "Send Review", "Leave a summary"),
+        Compose::Comment => (format!("Comment on #{n}"), "Added to the conversation.".to_owned(), "Comment", "Write a comment"),
+        Compose::Reply(_) => ("Reply".to_owned(), "Added to the thread.".to_owned(), "Reply", "Write a reply"),
+        Compose::Create => (
+            format!("New pull request into {}", s.base.as_deref().unwrap_or("the base")),
+            format!("From {}. A branch that isn't pushed yet is pushed first.", s.branch),
+            "Open Pull Request",
+            "Describe the change (optional)",
+        ),
+    };
+    let what = match c {
+        Compose::Review(_) if pending > 0 => format!("{what} Your {pending} line comment{} go with it.", if pending == 1 { "" } else { "s" }),
+        _ => what,
+    };
+    let area = TextArea::new(&s.pulls.text).placeholder(placeholder.to_owned()).label(placeholder.to_owned()).rows(6).max_height(180.0)
+        .on_edit(|s: &mut Collate| &mut s.pulls.text).width(None).build(k).key("compose-text").w_full();
+    let empty = s.pulls.text.text.trim().is_empty();
+    // An approval needs no words, a review with line comments has them already, and a new
+    // pull request needs only its title.
+    let blocked = s.busy.is_some()
+        || match c {
+            Compose::Review(Verdict::Approve) => false,
+            Compose::Review(Verdict::Comment) => pending == 0 && empty,
+            Compose::Create => s.pulls.title.text.trim().is_empty(),
+            _ => empty,
+        };
+    let mut body = col().key("compose-body").w_full().gap(12.0);
+    if c == Compose::Create {
+        body = body.child(TextInput::new(&s.pulls.title).placeholder("Title").on_edit(|s: &mut Collate| &mut s.pulls.title).width(None).build(k).key("compose-title").w_full());
+    }
+    body = body.child(area);
+    let mut buttons = row().key("compose-buttons").w_full().gap(8.0).items_center();
+    if c == Compose::Create {
+        buttons = buttons.child(Checkbox::new(s.pulls.draft).label("Draft").on_toggle(|s: &mut Collate| s.pulls.draft ^= true).build(k).key("compose-draft"));
+    }
+    buttons = buttons.child(row().grow(1.0))
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.pulls.compose = None).build(k))
+        .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(blocked).on_press(|s: &mut Collate| s.send_compose()).build(k).key("compose-ok"));
+    Dialog::new("compose", title).open(true).width(520.0).fit().description(what).on_close(|s: &mut Collate| s.pulls.compose = None)
+        .child(body.child(buttons)).build(k, layer);
 }
 
