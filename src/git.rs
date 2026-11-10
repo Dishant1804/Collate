@@ -834,6 +834,12 @@ impl Repo {
 
     /// Pushes the branch to its upstream; a branch without one goes to `origin` under its own
     /// name and tracks it from then on.
+    /// Push over the remote branch after a rebase or amend, but only if it's still where this
+    /// clone last saw it: someone else's push in between makes it fail rather than vanish.
+    pub fn force_push(&self) -> Result<String, String> {
+        self.run(&["push", "-q", "--force-with-lease"], None)
+    }
+
     pub fn push(&self) -> Result<String, String> {
         if self.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], None).is_ok() {
             self.run(&["push", "-q"], None)

@@ -654,3 +654,22 @@ fn tags_are_made_listed_and_deleted() {
     r.delete_tag("v1", false).unwrap();
     assert_eq!(r.tags(), ["v2"]);
 }
+
+#[test]
+fn force_push_replaces_a_rewritten_branch_unless_the_remote_moved() {
+    let (remote, _) = repo("force-remote", &[("a.txt", "one\n")]);
+    sh(&remote, &["config", "receive.denyCurrentBranch", "ignore"]);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("collate-force-clone-{}-{nanos}", std::process::id()));
+    sh(&std::env::temp_dir(), &["clone", "-q", remote.to_str().unwrap(), dir.to_str().unwrap()]);
+    sh(&dir, &["config", "user.email", "t@t"]);
+    sh(&dir, &["config", "user.name", "t"]);
+    let r = Repo::open(&dir).unwrap();
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "two"]);
+    r.push().unwrap();
+    sh(&dir, &["commit", "-q", "--amend", "-m", "two, reworded"]);
+    assert!(r.push().is_err(), "a plain push refuses a rewritten branch");
+    r.force_push().unwrap();
+    assert_eq!(sh(&remote, &["log", "-1", "--format=%s", "main"]).trim(), "two, reworded");
+}

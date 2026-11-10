@@ -350,6 +350,8 @@ enum Risky {
     DeleteBranch(String, bool),
     /// A tag, and whether to delete it from `origin` too.
     DeleteTag(String, bool),
+    /// `git push --force-with-lease` of the current branch.
+    ForcePush,
 }
 
 struct Notice {
@@ -1152,6 +1154,7 @@ impl Collate {
         match self.risky.take() {
             Some(Risky::ResetHard(id)) => self.act_bg("Resetting…", move |r| r.reset("hard", &id).map(|_| format!("Reset to {} and threw the changes away", abbrev(&id)))),
             Some(Risky::DropStash(name)) => self.act_bg("Dropping the stash…", move |r| r.stash_do("drop", &name).map(|_| format!("Dropped {name}"))),
+            Some(Risky::ForcePush) => self.act_bg("Force pushing…", |r| r.force_push().map(|_| "Force pushed".to_owned())),
             Some(Risky::DeleteTag(name, remote)) => self.act_bg("Deleting the tag…", move |r| {
                 r.delete_tag(&name, remote).map(|_| if remote { format!("Deleted {name} here and from origin") } else { format!("Deleted {name}") })
             }),
@@ -1425,6 +1428,7 @@ impl Collate {
             .item(PopupItem::new("fetch", "Fetch").enabled(idle))
             .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
             .item(PopupItem::new("push", count("Push", ahead)).enabled(idle))
+            .item(PopupItem::new("force-push", "Force Push…").enabled(idle && self.ahead_behind.is_some()))
             .separator()
             .submenu_enabled("Switch To", switch, idle)
             .item(PopupItem::new("new-branch", "New Branch…").enabled(idle))
@@ -1448,6 +1452,7 @@ impl Collate {
                 "fetch" => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
                 "pull" => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
                 "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
+                "force-push" => s.risky = Some(Risky::ForcePush),
                 "switch" => s.act_bg("Switching…", move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
                 "merge" => s.act_bg("Merging…", move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
                 "rebase" => s.act_bg("Rebasing…", move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
@@ -3077,6 +3082,11 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let (title, what, button) = match r {
             Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
             Risky::DropStash(name) => (format!("Drop {name}?"), "Its changes are deleted. There's no backup.".to_owned(), "Drop Stash"),
+            Risky::ForcePush => (
+                format!("Force push {}?", s.branch),
+                "The remote branch is replaced with this one, its commits that aren't here dropped. It fails if someone pushed since your last fetch.".to_owned(),
+                "Force Push",
+            ),
             Risky::DeleteTag(name, false) => (format!("Delete {name}?"), "Only here: a pushed tag stays on origin.".to_owned(), "Delete Tag"),
             Risky::DeleteTag(name, true) => (format!("Delete {name} here and from origin?"), "Anyone who fetched it keeps it until they delete it too.".to_owned(), "Delete Tag"),
             Risky::DeleteBranch(name, true) => (format!("Delete {name}?"), format!("Its commits are all in {} already, so nothing is lost.", s.branch), "Delete Branch"),
