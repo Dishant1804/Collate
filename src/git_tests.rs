@@ -593,3 +593,18 @@ fn a_stopped_merge_or_rebase_is_seen_and_aborts() {
     assert!(done.is_ok() || r.resume(Operation::Rebase, "skip").is_ok(), "{done:?}");
     assert_eq!(r.operation(), None);
 }
+
+#[test]
+fn merging_a_branch_brings_its_commits_or_stops_on_conflicts() {
+    let (dir, r) = repo("merge", &[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    sh(&dir, &["switch", "-qc", "other"]);
+    write(&dir, "b.txt", "two, changed\n");
+    sh(&dir, &["commit", "-qam", "theirs"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    r.merge("other").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "two, changed\n");
+    let (_, r) = diverged("merge-conflict");
+    let e = r.merge("other").unwrap_err();
+    assert!(e.contains("stopped on conflicts"), "{e}");
+    assert_eq!(r.operation(), Some(crate::git::Operation::Merge));
+}

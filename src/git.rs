@@ -857,6 +857,21 @@ impl Repo {
     }
 
     /// Applies commit `id`'s change on top of HEAD as a new commit.
+    /// Merge `branch` into the current one. Stopped on conflicts, the error says so; the
+    /// app then shows the merge waiting.
+    pub fn merge(&self, branch: &str) -> Result<String, String> {
+        self.stopped(self.run(&["merge", "--no-edit", branch], None))
+    }
+
+    /// `result`, unless git stopped for conflicts, which is the reader's next step rather than
+    /// a failure to report in git's words.
+    fn stopped(&self, result: Result<String, String>) -> Result<String, String> {
+        match (result, self.operation()) {
+            (Err(_), Some(op)) => Err(format!("The {} stopped on conflicts: settle them, then continue", op.noun())),
+            (r, _) => r,
+        }
+    }
+
     pub fn cherry_pick(&self, id: &str) -> Result<String, String> {
         self.run(&["cherry-pick", id], None)
     }

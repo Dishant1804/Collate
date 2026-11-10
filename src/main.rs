@@ -1368,6 +1368,12 @@ impl Collate {
                 .item(PopupItem::new(format!("drop:{}", st.name), "Drop…"));
             stash_menu = stash_menu.submenu(format!("{} - {}", st.name, st.message), one);
         }
+        // Any other branch can be merged in.
+        let mut merges = PopupMenu::new();
+        for b in self.branches.iter().filter(|b| **b != self.branch && b.strip_prefix("origin/") != Some(self.branch.as_str())).take(40) {
+            merges = merges.item(PopupItem::new(format!("merge:{b}"), b.clone()));
+        }
+        let detached = self.branch.is_empty() || self.branch == "HEAD";
         let mut bases = PopupMenu::new();
         for b in self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(30) {
             bases = bases.item(PopupItem::new(format!("base:{b}"), b.clone()).checked(*b == base));
@@ -1379,6 +1385,7 @@ impl Collate {
             .separator()
             .submenu_enabled("Switch To", switch, idle)
             .item(PopupItem::new("new-branch", "New Branch…").enabled(idle))
+            .submenu_enabled(format!("Merge Into {}", self.branch), merges, idle && !detached && self.operation.is_none())
             .separator()
             .item(PopupItem::new("stash", "Stash All Changes…").enabled(idle && self.total > 0))
             .submenu_enabled(format!("Stashes ({})", stashes.len()), stash_menu, !stashes.is_empty())
@@ -1395,6 +1402,7 @@ impl Collate {
                 "pull" => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
                 "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
                 "switch" => s.act_bg("Switching…", move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
+                "merge" => s.act_bg("Merging…", move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
                 "new-branch" => s.ask(Ask::Branch(None)),
                 "compare" => s.start_compare(),
                 "stash" => s.ask(Ask::Stash),
