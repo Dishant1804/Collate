@@ -182,6 +182,8 @@ pub struct DiffState {
     copy_side: Side,
     hovered: Vec<(Side, String)>,
     highlighter: Highlighter,
+    /// Which languages the highlighter colours: the rest skip it and draw plain.
+    colours: Rc<dyn Fn(&str) -> bool>,
     style: Style,
     search: Option<super::Finder>,
     search_rev: u64,
@@ -251,6 +253,7 @@ impl DiffState {
             copy_side: Side::New,
             hovered: Vec::new(),
             highlighter: Highlighter::builtin(),
+            colours: Rc::new(rune_kit::syntax::known),
             style: Style::default(),
             search: None,
             search_rev: 0,
@@ -447,8 +450,11 @@ impl DiffState {
         None
     }
 
-    pub fn set_highlighter(&mut self, h: Highlighter) {
+    /// Colour code with `h`, in the languages `colours` says it knows; of those, the built-in
+    /// scanners' own languages get the scanners, whatever `h` is.
+    pub fn set_highlighter(&mut self, h: Highlighter, colours: impl Fn(&str) -> bool + 'static) {
         self.highlighter = h;
+        self.colours = Rc::new(colours);
         self.chunks.borrow_mut().clear();
         self.rev += 1;
     }
@@ -892,10 +898,7 @@ impl DiffState {
 
     /// Colour-only highlights of line `n` of `side` of file `f`, relative to the line.
     pub(crate) fn highlights(&self, f: usize, side: Side, n: u32) -> Vec<(std::ops::Range<usize>, rune_kit::syntax::Paint)> {
-        let lang = self.files[f].language();
-        if self.highlighter.is_builtin() && !lang.is_some_and(rune_kit::syntax::known) {
-            return Vec::new();
-        }
+        let Some(lang) = self.files[f].language().filter(|l| (self.colours)(l)) else { return Vec::new() };
         let c = n.saturating_sub(1) / CHUNK;
         let key = (f as u32, side, c);
         let chunk = self.chunks.borrow().get(&key).cloned();
@@ -910,7 +913,11 @@ impl DiffState {
             starts.push(text.len() as u32);
             // The built-in scanners skip the highlighter's own cache: this one already keeps
             // the blocks, and that one holds a copy of each block's text besides.
-            let hl = if self.highlighter.is_builtin() { rune_kit::syntax::builtin(lang, &text).into() } else { self.highlighter.highlight(lang, &text) };
+            let hl = if self.highlighter.is_builtin() || rune_kit::syntax::known(lang) {
+                rune_kit::syntax::builtin(Some(lang), &text).into()
+            } else {
+                self.highlighter.highlight(Some(lang), &text)
+            };
             let chunk = Rc::new(Chunk { starts, hl });
             let mut cache = self.chunks.borrow_mut();
             if cache.len() > CHUNKS_KEPT {
@@ -996,8 +1003,10 @@ impl DiffState {
             if self.ui[f].collapsed {
                 continue;
             }
-            if file.hunks.is_empty() {
+            if file.hunks.is_empty() || file.images.is_some() {
                 rows.push(Row::Note(fu));
+            }
+            if file.hunks.is_empty() {
                 continue;
             }
             for gap in 0..=file.hunks.len() {

@@ -128,8 +128,9 @@ pub struct FileDiff {
     pub new_mode: Option<String>,
     /// The patch says the file is binary, so it has no lines.
     pub binary: bool,
-    /// For a changed image (PNG or JPEG on a side): each side's bytes and their hash, drawn
-    /// in place of the "binary" note. Set by the app.
+    /// For a changed image (PNG, JPEG, PDF or SVG on a side): each side's bytes to draw and
+    /// the hash of what was read, drawn in place of the "binary" note, or above an SVG's lines.
+    /// Set by the app.
     pub images: Option<[Option<ImageSide>; 2]>,
     /// Shared, not copied, between the watcher's cache and the view: built once, then only
     /// read.
@@ -266,10 +267,14 @@ impl FileDiff {
     /// The highlighter language for the path's extension (or name, for a `Makefile`), as
     /// written: `"rs"`, `"tsx"`.
     pub fn language(&self) -> Option<&str> {
+        // Files whose name says the language, whatever their extension.
+        const NAMED: [&str; 11] =
+            ["Makefile", "makefile", "GNUmakefile", "Dockerfile", "dockerfile", "Containerfile", "CMakeLists.txt", "Gemfile", "Rakefile", "Justfile", "justfile"];
         let name = self.path().rsplit('/').next()?;
         match name.rsplit_once('.') {
+            _ if NAMED.contains(&name) => Some(name),
             Some((stem, ext)) if !stem.is_empty() => Some(ext),
-            _ => Some(name).filter(|n| matches!(*n, "Makefile" | "Dockerfile")),
+            _ => None,
         }
     }
 

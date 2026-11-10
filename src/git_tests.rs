@@ -559,3 +559,117 @@ fn conflicts_settle_by_side_by_block_or_both() {
     assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "theirs\n");
     assert!(!snapshot(&r, Scope::Uncommitted)[0].conflicted, "staged, so resolved");
 }
+
+/// A repository whose `main` and `other` change the same line, so merging either way conflicts.
+fn diverged(name: &str) -> (PathBuf, Repo) {
+    let (dir, r) = repo(name, &[("a.txt", "one\n")]);
+    sh(&dir, &["switch", "-qc", "other"]);
+    write(&dir, "a.txt", "theirs\n");
+    sh(&dir, &["commit", "-qam", "theirs"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    write(&dir, "a.txt", "ours\n");
+    sh(&dir, &["commit", "-qam", "ours"]);
+    (dir, r)
+}
+
+#[test]
+fn a_stopped_merge_or_rebase_is_seen_and_aborts() {
+    use crate::git::Operation;
+    let (dir, r) = diverged("operation");
+    assert_eq!(r.operation(), None);
+    assert!(Command::new("git").arg("-C").arg(&dir).args(["merge", "other"]).output().unwrap().status.code() != Some(0));
+    assert_eq!(r.operation(), Some(Operation::Merge));
+    let raw = r.status_raw().unwrap();
+    assert_eq!(r.snapshot(Scope::Uncommitted, &raw, None).unwrap().operation, Some(Operation::Merge));
+    r.resume(Operation::Merge, "abort").unwrap();
+    assert_eq!(r.operation(), None);
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "ours\n", "abort puts the file back");
+    assert!(Command::new("git").arg("-C").arg(&dir).args(["rebase", "other"]).output().unwrap().status.code() != Some(0));
+    assert_eq!(r.operation(), Some(Operation::Rebase));
+    // Settled in favour of theirs and staged, the rebase continues without an editor.
+    write(&dir, "a.txt", "theirs\n");
+    sh(&dir, &["add", "a.txt"]);
+    let done = r.resume(Operation::Rebase, "continue");
+    assert!(done.is_ok() || r.resume(Operation::Rebase, "skip").is_ok(), "{done:?}");
+    assert_eq!(r.operation(), None);
+}
+
+#[test]
+fn merging_a_branch_brings_its_commits_or_stops_on_conflicts() {
+    let (dir, r) = repo("merge", &[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    sh(&dir, &["switch", "-qc", "other"]);
+    write(&dir, "b.txt", "two, changed\n");
+    sh(&dir, &["commit", "-qam", "theirs"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    r.merge("other").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "two, changed\n");
+    let (_, r) = diverged("merge-conflict");
+    let e = r.merge("other").unwrap_err();
+    assert!(e.contains("stopped on conflicts"), "{e}");
+    assert_eq!(r.operation(), Some(crate::git::Operation::Merge));
+}
+
+#[test]
+fn rebasing_replays_the_branch_on_its_new_base() {
+    let (dir, r) = repo("rebase", &[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    sh(&dir, &["switch", "-qc", "feature"]);
+    write(&dir, "b.txt", "two, mine\n");
+    sh(&dir, &["commit", "-qam", "mine"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    write(&dir, "a.txt", "one, upstream\n");
+    sh(&dir, &["commit", "-qam", "upstream"]);
+    sh(&dir, &["switch", "-q", "feature"]);
+    r.rebase("main").unwrap();
+    assert_eq!(sh(&dir, &["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["mine", "upstream", "init"]);
+    let (_, r) = diverged("rebase-conflict");
+    assert!(r.rebase("other").unwrap_err().contains("stopped on conflicts"));
+    assert_eq!(r.operation(), Some(crate::git::Operation::Rebase));
+}
+
+#[test]
+fn branches_rename_and_delete_saying_whether_anything_is_lost() {
+    let (dir, r) = repo("branches", &[("a.txt", "one\n")]);
+    sh(&dir, &["branch", "merged"]);
+    sh(&dir, &["switch", "-qc", "ahead"]);
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "ahead"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    assert!(r.merged("merged") && !r.merged("ahead"));
+    r.rename_branch("ahead", "renamed").unwrap();
+    assert!(r.branches().contains(&"renamed".to_owned()) && !r.branches().contains(&"ahead".to_owned()));
+    r.delete_branch("renamed").unwrap();
+    r.delete_branch("merged").unwrap();
+    assert_eq!(r.branches(), ["main"]);
+}
+
+#[test]
+fn tags_are_made_listed_and_deleted() {
+    let (dir, r) = repo("tags", &[("a.txt", "one\n")]);
+    r.tag("v1", "HEAD", "").unwrap();
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "two"]);
+    r.tag("v2", "HEAD", "Second release").unwrap();
+    assert_eq!(sh(&dir, &["cat-file", "-t", "v2"]).trim(), "tag", "a message makes it annotated");
+    assert!(r.tags().contains(&"v1".to_owned()) && r.tags().contains(&"v2".to_owned()));
+    r.delete_tag("v1", false).unwrap();
+    assert_eq!(r.tags(), ["v2"]);
+}
+
+#[test]
+fn force_push_replaces_a_rewritten_branch_unless_the_remote_moved() {
+    let (remote, _) = repo("force-remote", &[("a.txt", "one\n")]);
+    sh(&remote, &["config", "receive.denyCurrentBranch", "ignore"]);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("collate-force-clone-{}-{nanos}", std::process::id()));
+    sh(&std::env::temp_dir(), &["clone", "-q", remote.to_str().unwrap(), dir.to_str().unwrap()]);
+    sh(&dir, &["config", "user.email", "t@t"]);
+    sh(&dir, &["config", "user.name", "t"]);
+    let r = Repo::open(&dir).unwrap();
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "two"]);
+    r.push().unwrap();
+    sh(&dir, &["commit", "-q", "--amend", "-m", "two, reworded"]);
+    assert!(r.push().is_err(), "a plain push refuses a rewritten branch");
+    r.force_push().unwrap();
+    assert_eq!(sh(&remote, &["log", "-1", "--format=%s", "main"]).trim(), "two, reworded");
+}

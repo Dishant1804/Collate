@@ -10,11 +10,14 @@
 mod avatars;
 mod diff;
 mod git;
+mod github;
+mod grammars;
 mod graph;
 mod map;
 mod map_view;
 mod nav;
 mod patch;
+mod pulls;
 mod search;
 mod settings;
 mod terminal;
@@ -23,7 +26,8 @@ mod git_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
@@ -84,7 +88,10 @@ fn relevant(path: &std::path::Path, root: &std::path::Path) -> bool {
     let Ok(rel) = path.strip_prefix(root) else { return true };
     let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy());
     match parts.next().as_deref() {
-        Some(".git") => matches!(parts.next().as_deref(), Some("index" | "HEAD" | "refs" | "packed-refs" | "MERGE_HEAD")),
+        Some(".git") => matches!(
+            parts.next().as_deref(),
+            Some("index" | "HEAD" | "refs" | "packed-refs" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge" | "rebase-apply")
+        ),
         _ => true,
     }
 }
@@ -318,6 +325,10 @@ enum Ask {
     Stash,
     /// A comment on a line, or a new text for comment `n`.
     Comment(diff::Anchor, Option<usize>),
+    /// A new name for a branch.
+    Rename(String),
+    /// A tag at a commit (HEAD when `None`).
+    Tag(Option<String>),
 }
 
 /// A note the reader left on a line. Comments stay on this Mac, per project.
@@ -335,6 +346,12 @@ enum Risky {
     /// `git reset --hard` to a commit.
     ResetHard(String),
     DropStash(String),
+    /// A local branch, and whether its commits are all in HEAD.
+    DeleteBranch(String, bool),
+    /// A tag, and whether to delete it from `origin` too.
+    DeleteTag(String, bool),
+    /// `git push --force-with-lease` of the current branch.
+    ForcePush,
 }
 
 struct Notice {
@@ -446,10 +463,16 @@ struct Collate {
     has_project: bool,
     /// The settings panel's section.
     settings_tab: usize,
+    /// Downloaded grammars: loaded, being prepared, or failed.
+    languages: grammars::Languages,
+    /// The Pull Requests place and the pull request under review.
+    pulls: pulls::PullsState,
     /// The next commit rewrites the last one.
     amend: bool,
     /// Commits ahead of and behind the upstream.
     ahead_behind: Option<(usize, usize)>,
+    /// A merge, rebase, cherry-pick or revert waiting for its conflicts.
+    operation: Option<git::Operation>,
     /// A slow repository change (fetch, push, switch) running in the background, as it's named.
     busy: Option<String>,
     /// The name asked for, and what for.
@@ -560,6 +583,8 @@ fn init() -> Collate {
         picking: false,
         has_project: current_repo().is_some(),
         settings_tab: 0,
+        languages: grammars::Languages::new(grammars::root().as_deref()),
+        pulls: pulls::PullsState::default(),
         commit_ids: Vec::new(),
         graph_commits: Vec::new(),
         graph_rows: Vec::new(),
@@ -577,6 +602,7 @@ fn init() -> Collate {
         commit_body: String::new(),
         amend: false,
         ahead_behind: None,
+        operation: None,
         busy: None,
         prompt: None,
         prompt_text: TextEdit::new(""),
@@ -601,6 +627,11 @@ fn init() -> Collate {
 
 impl Collate {
     fn set_scope(&mut self, scope: Scope) {
+        // Any view of the changes leaves the pull request list, and any but History its pull request.
+        self.pulls.open = false;
+        if scope != Scope::History {
+            self.close_pull();
+        }
         if self.scope != scope {
             self.scope = scope;
             self.loaded = false;
@@ -655,6 +686,7 @@ impl Collate {
         self.info.clear();
         self.viewed = load_viewed();
         self.comments = load_comments();
+        self.pulls = pulls::PullsState::default();
         self.place_comments();
         self.stale.clear();
         self.seen.clear();
@@ -850,6 +882,7 @@ impl Collate {
     /// Back from a commit's diff to the commit list, showing the commit it was on.
     fn close_commit_diff(&mut self, tx: &mut Tx) {
         self.history_diff = false;
+        self.close_pull();
         if let Some(c) = &self.commit {
             tx.scroll_into_view(format!("graph-{c}"));
         }
@@ -939,6 +972,8 @@ impl Collate {
     /// Show commit `id`'s diff against its parent (or a range, `a..b`), from any view.
     fn open_commit(&mut self, id: &str) {
         self.compared = None;
+        self.pulls.pr = None;
+        self.pulls.open = false;
         self.map.open = false;
         self.set_scope(Scope::History);
         self.set_commit(id);
@@ -954,11 +989,22 @@ impl Collate {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
             Ask::Branch(at) => self.act_bg("Creating the branch…", move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
+            Ask::Tag(_) if name.is_empty() => {}
+            Ask::Tag(at) => {
+                // `v1.2 First stable release`: the name, then an optional message.
+                let (tag, message) = name.split_once(' ').map_or((name.clone(), String::new()), |(t, m)| (t.to_owned(), m.trim().to_owned()));
+                let at = at.unwrap_or_else(|| "HEAD".to_owned());
+                self.act_bg("Tagging…", move |r| r.tag(&tag, &at, &message).map(|_| format!("Tagged {} as {tag}", abbrev(&at))));
+            }
+            Ask::Rename(from) if name.is_empty() || name == from => {}
+            Ask::Rename(from) => self.act_bg("Renaming…", move |r| r.rename_branch(&from, &name).map(|_| format!("Renamed {from} to {name}"))),
             Ask::Comment(_, Some(n)) if name.is_empty() => self.delete_comment(n),
             Ask::Comment(..) if name.is_empty() => {}
             Ask::Comment(at, edit) => {
                 let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                let c = Comment { at, body: name, time };
+                // A suggestion is the line as it should read, in the block GitHub offers to apply.
+                let body = if std::mem::take(&mut self.pulls.suggest) { format!("```suggestion\n{name}\n```") } else { name };
+                let c = Comment { at, body, time };
                 match edit.filter(|&n| n < self.comments.len()) {
                     Some(n) => self.comments[n] = c,
                     None => self.comments.push(c),
@@ -1051,6 +1097,7 @@ impl Collate {
 
     fn ask(&mut self, what: Ask) {
         self.prompt = Some(what);
+        self.pulls.suggest = false;
         self.prompt_text = TextEdit::new("");
     }
 
@@ -1087,9 +1134,13 @@ impl Collate {
         self.place_comments();
     }
 
+    /// Put the reader's comments, then the open pull request's line threads, under their lines.
     fn place_comments(&mut self) {
-        let anchors: Vec<diff::Anchor> = self.comments.iter().map(|c| c.at.clone()).collect();
-        self.comments_shown = self.diff.set_comments(&anchors);
+        let mut anchors: Vec<diff::Anchor> = self.comments.iter().map(|c| c.at.clone()).collect();
+        anchors.extend(self.pulls.anchors());
+        let mut shown = self.diff.set_comments(&anchors);
+        shown.truncate(self.comments.len());
+        self.comments_shown = shown;
         self.comments_version += 1;
     }
 
@@ -1106,6 +1157,11 @@ impl Collate {
         match self.risky.take() {
             Some(Risky::ResetHard(id)) => self.act_bg("Resetting…", move |r| r.reset("hard", &id).map(|_| format!("Reset to {} and threw the changes away", abbrev(&id)))),
             Some(Risky::DropStash(name)) => self.act_bg("Dropping the stash…", move |r| r.stash_do("drop", &name).map(|_| format!("Dropped {name}"))),
+            Some(Risky::ForcePush) => self.act_bg("Force pushing…", |r| r.force_push().map(|_| "Force pushed".to_owned())),
+            Some(Risky::DeleteTag(name, remote)) => self.act_bg("Deleting the tag…", move |r| {
+                r.delete_tag(&name, remote).map(|_| if remote { format!("Deleted {name} here and from origin") } else { format!("Deleted {name}") })
+            }),
+            Some(Risky::DeleteBranch(name, _)) => self.act_bg("Deleting the branch…", move |r| r.delete_branch(&name).map(|_| format!("Deleted {name}"))),
             None => {}
         }
     }
@@ -1122,6 +1178,7 @@ impl Collate {
         let menu = PopupMenu::new()
             .item(PopupItem::new("copy", "Copy Hash"))
             .item(PopupItem::new("branch", "New Branch Here…"))
+            .item(PopupItem::new("tag", "Tag This Commit…"))
             .separator()
             .item(PopupItem::new("pick", format!("Cherry-Pick onto {on}")).enabled(!is_head))
             .item(PopupItem::new("revert", "Revert Commit"))
@@ -1136,6 +1193,7 @@ impl Collate {
                     s.say("Copied the commit hash", false);
                 }
                 Some("branch") => s.ask(Ask::Branch(Some(id))),
+                Some("tag") => s.ask(Ask::Tag(Some(id))),
                 Some("pick") => s.act_bg("Cherry-picking…", move |r| r.cherry_pick(&id).map(|_| format!("Cherry-picked {short_id}"))),
                 Some("revert") => s.act_bg("Reverting…", move |r| r.revert(&id).map(|_| format!("Reverted {short_id}"))),
                 Some("reset-soft") => s.act_bg("Resetting…", move |r| r.reset("soft", &id).map(|_| format!("Reset to {short_id}; its later changes are staged"))),
@@ -1329,6 +1387,17 @@ impl Collate {
             }
             switch = switch.item(PopupItem::new(format!("switch:{b}"), b.clone()));
         }
+        let tags = repo.as_deref().map(Repo::tags).unwrap_or_default();
+        let mut tag_menu = PopupMenu::new().item(PopupItem::new("new-tag", "New Tag at HEAD…").enabled(idle)).separator();
+        for t in tags.iter().take(30) {
+            let one = PopupMenu::new()
+                .item(PopupItem::new(format!("show-tag:{t}"), "Show Commit"))
+                .item(PopupItem::new(format!("push-tag:{t}"), "Push to origin").enabled(idle))
+                .separator()
+                .item(PopupItem::new(format!("delete-tag:{t}"), "Delete…").enabled(idle))
+                .item(PopupItem::new(format!("delete-remote-tag:{t}"), "Delete Here and from origin…").enabled(idle));
+            tag_menu = tag_menu.submenu(t.clone(), one);
+        }
         let mut stash_menu = PopupMenu::new();
         for st in &stashes {
             let one = PopupMenu::new()
@@ -1339,6 +1408,21 @@ impl Collate {
                 .item(PopupItem::new(format!("drop:{}", st.name), "Drop…"));
             stash_menu = stash_menu.submenu(format!("{} - {}", st.name, st.message), one);
         }
+        // Any other branch can be merged in.
+        let (mut merges, mut rebases) = (PopupMenu::new(), PopupMenu::new());
+        for b in self.branches.iter().filter(|b| **b != self.branch).take(40) {
+            // Its own upstream can be rebased onto (to take what others pushed), not merged in.
+            if b.strip_prefix("origin/") != Some(self.branch.as_str()) {
+                merges = merges.item(PopupItem::new(format!("merge:{b}"), b.clone()));
+            }
+            rebases = rebases.item(PopupItem::new(format!("rebase:{b}"), b.clone()));
+        }
+        let detached = self.branch.is_empty() || self.branch == "HEAD";
+        // Local branches other than this one can be deleted.
+        let mut deletes = PopupMenu::new();
+        for b in self.branches.iter().filter(|b| **b != self.branch && !b.starts_with("origin/")).take(40) {
+            deletes = deletes.item(PopupItem::new(format!("delete:{b}"), b.clone()));
+        }
         let mut bases = PopupMenu::new();
         for b in self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(30) {
             bases = bases.item(PopupItem::new(format!("base:{b}"), b.clone()).checked(*b == base));
@@ -1347,12 +1431,18 @@ impl Collate {
             .item(PopupItem::new("fetch", "Fetch").enabled(idle))
             .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
             .item(PopupItem::new("push", count("Push", ahead)).enabled(idle))
+            .item(PopupItem::new("force-push", "Force Push…").enabled(idle && self.ahead_behind.is_some()))
             .separator()
             .submenu_enabled("Switch To", switch, idle)
             .item(PopupItem::new("new-branch", "New Branch…").enabled(idle))
+            .item(PopupItem::new("rename", format!("Rename {}…", self.branch)).enabled(idle && !detached))
+            .submenu_enabled("Delete Branch", deletes, idle)
+            .submenu_enabled(format!("Merge Into {}", self.branch), merges, idle && !detached && self.operation.is_none())
+            .submenu_enabled(format!("Rebase {} Onto", self.branch), rebases, idle && !detached && self.operation.is_none() && self.total == 0)
             .separator()
             .item(PopupItem::new("stash", "Stash All Changes…").enabled(idle && self.total > 0))
             .submenu_enabled(format!("Stashes ({})", stashes.len()), stash_menu, !stashes.is_empty())
+            .submenu(format!("Tags ({})", tags.len()), tag_menu)
             .separator()
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
             .submenu("Compare Against", bases)
@@ -1365,10 +1455,31 @@ impl Collate {
                 "fetch" => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
                 "pull" => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
                 "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
+                "force-push" => s.risky = Some(Risky::ForcePush),
                 "switch" => s.act_bg("Switching…", move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
+                "merge" => s.act_bg("Merging…", move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
+                "rebase" => s.act_bg("Rebasing…", move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
                 "new-branch" => s.ask(Ask::Branch(None)),
+                "rename" => {
+                    let from = s.branch.clone();
+                    s.ask(Ask::Rename(from.clone()));
+                    s.prompt_text = TextEdit::new(&from);
+                }
+                "delete" => {
+                    let merged = current_repo().is_some_and(|r| r.merged(&arg));
+                    s.risky = Some(Risky::DeleteBranch(arg, merged));
+                }
                 "compare" => s.start_compare(),
                 "stash" => s.ask(Ask::Stash),
+                "new-tag" => s.ask(Ask::Tag(None)),
+                "show-tag" => {
+                    if let Some(id) = current_repo().and_then(|r| r.resolve(&arg).ok()) {
+                        s.open_commit(&id);
+                    }
+                }
+                "push-tag" => s.act_bg("Pushing the tag…", move |r| r.push_tag(&arg).map(|_| format!("Pushed {arg}"))),
+                "delete-tag" => s.risky = Some(Risky::DeleteTag(arg, false)),
+                "delete-remote-tag" => s.risky = Some(Risky::DeleteTag(arg, true)),
                 "show" => s.open_commit(&arg),
                 "apply" => s.act_bg("Applying the stash…", move |r| r.stash_do("apply", &arg).map(|_| format!("Applied {arg}"))),
                 "pop" => s.act_bg("Applying the stash…", move |r| r.stash_do("pop", &arg).map(|_| format!("Applied and dropped {arg}"))),
@@ -1607,15 +1718,105 @@ impl Collate {
         self.diff.set_style(s.style());
         self.diff.set_mode(s.layout);
         self.diff.set_wrap(s.wrap);
-        if was.is_none_or(|w| w.syntax != s.syntax) {
-            self.diff.set_highlighter(if s.syntax { Highlighter::builtin() } else { Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off") });
-        }
+        let recolour = was.is_none_or(|w| w.syntax != s.syntax);
+        let fetch = was.is_some_and(|w| (!w.syntax && s.syntax) || (!w.download_languages && s.download_languages));
         REFRESH_EVERY.store(if s.auto_refresh { s.refresh_ms } else { 0 }, Ordering::Relaxed);
         *OPTS.lock().unwrap() = self.opts();
         if let Some(w) = was
             && (w.context != s.context || w.hide_low_signal != s.hide_low_signal || w.ignore_whitespace != s.ignore_whitespace || w.show_moved != s.show_moved)
         {
             self.reload();
+        }
+        if recolour {
+            self.set_colours();
+        }
+        if fetch {
+            self.want_languages();
+        }
+    }
+
+    /// Colour the diff with the built-in scanners and the grammars loaded so far, or not at
+    /// all with syntax highlighting off.
+    fn set_colours(&mut self) {
+        if !self.settings.syntax {
+            self.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"), |_| false);
+            return;
+        }
+        if self.languages.loaded.is_empty() {
+            self.diff.set_highlighter(Highlighter::builtin(), rune_kit::syntax::known);
+            return;
+        }
+        let loaded = Rc::new(self.languages.loaded.clone());
+        let mut ids: Vec<&str> = loaded.keys().copied().collect();
+        ids.sort_unstable();
+        let mine = loaded.clone();
+        // Keyed by the grammars it holds, so a newly loaded one doesn't reuse plain results.
+        let h = Highlighter::new(move |lang: Option<&str>, code: &str| match lang.and_then(grammars::for_language).and_then(|g| mine.get(g.id)) {
+            Some(c) => grammars::colour(c, code),
+            None => Vec::new(),
+        })
+        .key(ids);
+        self.diff.set_highlighter(h, move |lang| rune_kit::syntax::known(lang) || grammars::for_language(lang).is_some_and(|g| loaded.contains_key(g.id)));
+    }
+
+    /// Load the grammars the diff's files need, installing missing ones if the reader lets
+    /// Collate download them. One that failed waits until it's asked for in the settings.
+    fn want_languages(&mut self) {
+        if !self.settings.syntax {
+            return;
+        }
+        let mut wanted: Vec<&'static grammars::Grammar> = Vec::new();
+        for g in self.diff.files().iter().filter_map(|f| f.language().and_then(grammars::for_language)) {
+            if !wanted.iter().any(|w| w.id == g.id) {
+                wanted.push(g);
+            }
+        }
+        for g in wanted {
+            let l = &self.languages;
+            if l.loaded.contains_key(g.id) || l.working.contains(&g.id) || l.failed.contains_key(g.id) {
+                continue;
+            }
+            if self.settings.download_languages || l.status(g) == grammars::Status::Installed {
+                self.prepare_language(g);
+            }
+        }
+    }
+
+    /// Install `g` if it's missing or outdated, then load it, off the UI thread.
+    fn prepare_language(&mut self, g: &'static grammars::Grammar) {
+        let (Some(root), Some(app)) = (grammars::root(), HANDLE.get().cloned()) else { return };
+        self.languages.failed.remove(g.id);
+        self.languages.working.push(g.id);
+        std::thread::spawn(move || {
+            let result = grammars::prepare(&root, g).map(Arc::new);
+            app.update(move |s, _| s.language_ready(g, result));
+        });
+    }
+
+    fn language_ready(&mut self, g: &'static grammars::Grammar, result: Result<Arc<grammars::Config>, String>) {
+        self.languages.working.retain(|id| *id != g.id);
+        self.languages.rescan(grammars::root().as_deref());
+        match result {
+            Ok(c) => {
+                self.languages.loaded.insert(g.id, c);
+                self.set_colours();
+            }
+            Err(e) => {
+                self.say(format!("No colours for {}: {e}", g.title), true);
+                self.languages.failed.insert(g.id, e);
+            }
+        }
+    }
+
+    fn remove_language(&mut self, g: &'static grammars::Grammar) {
+        let Some(root) = grammars::root() else { return };
+        if let Err(e) = grammars::remove(&root, g) {
+            self.say(format!("Couldn't remove {}: {e}", g.title), true);
+        }
+        self.languages.failed.remove(g.id);
+        self.languages.rescan(Some(&root));
+        if self.languages.loaded.remove(g.id).is_some() {
+            self.set_colours();
         }
     }
 
@@ -1693,6 +1894,7 @@ impl Collate {
         self.unstaged = snap.unstaged;
         self.total = snap.total;
         self.ahead_behind = snap.ahead_behind;
+        self.operation = snap.operation;
         let shows_uncommitted = self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED);
         if self.scope == Scope::History && (self.total > 0) != shows_uncommitted {
             self.load_history();
@@ -1751,6 +1953,11 @@ impl Collate {
         }
         self.images = images;
         self.diff.set_files_folded(files, &folded);
+        self.want_languages();
+        // Opened before the window could read it (a scene, a switch of project).
+        if self.pulls.open && self.pulls.list.is_none() {
+            self.load_pulls();
+        }
         self.place_comments();
         self.build_lists(&changes);
         // The map's sizes and imports follow the working tree.
@@ -2164,7 +2371,16 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
                     _ => "",
                 }
             }
-            FileDiff::between_opts(old_path, new_path, t(&c.old), t(&c.new), context, ignore_whitespace)
+            let mut f = FileDiff::between_opts(old_path, new_path, t(&c.old), t(&c.new), context, ignore_whitespace);
+            // An SVG is text to review and a picture to look at: draw both sides above its lines.
+            if c.path.to_ascii_lowercase().ends_with(".svg") {
+                let side = |b: &Option<Blob>| match b {
+                    Some(Blob::Text(t)) => Some((hash_bytes(t.as_bytes()), t.as_bytes().into())),
+                    _ => None,
+                };
+                f.images = Some([side(&c.old), side(&c.new)]);
+            }
+            f
         }
         _ => {
             // Binary or too large on either side: let the patch parser make a binary entry,
@@ -2181,11 +2397,9 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
             patch.push_str(&format!("Binary files {a} and {b} differ\n"));
             let mut f = parse(&patch).into_iter().next().unwrap_or_else(|| FileDiff::between(old_path, new_path, "", ""));
             let image = |b: &Option<Blob>| match b {
-                Some(Blob::Image(bytes)) => {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    std::hash::Hash::hash(&bytes[..], &mut h);
-                    Some((std::hash::Hasher::finish(&h), bytes.clone()))
-                }
+                // Keyed by the PDF's own bytes, so the same PDF is the same picture.
+                Some(Blob::Image(bytes)) if bytes.starts_with(b"%PDF-") => Some((hash_bytes(bytes), pdf_page(bytes).map_or_else(|_| bytes.clone(), Into::into))),
+                Some(Blob::Image(bytes)) => Some((hash_bytes(bytes), bytes.clone())),
                 _ => None,
             };
             let sides = [image(&c.old), image(&c.new)];
@@ -2198,6 +2412,32 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
             f
         }
     }
+}
+
+fn hash_bytes(b: &[u8]) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(b, &mut h);
+    std::hash::Hasher::finish(&h)
+}
+
+/// A PDF's first page as a JPEG, by macOS's `sips`, at 72 points per inch: about 80 ms a page, on
+/// the watcher thread. JPEG rather than PNG because it has no transparency: the page comes out
+/// white, not the diff's background. On failure the PDF's own bytes stay, and the view says it
+/// can't decode them.
+fn pdf_page(pdf: &[u8]) -> Result<Vec<u8>, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let base = std::env::temp_dir().join(format!("collate-pdf-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let (src, out) = (base.with_extension("pdf"), base.with_extension("jpg"));
+    let result = std::fs::write(&src, pdf).map_err(|e| e.to_string()).and_then(|()| {
+        let o = std::process::Command::new("sips").args(["-s", "format", "jpeg", "-s", "formatOptions", "90"]).arg(&src).arg("--out").arg(&out).output().map_err(|e| format!("can't run sips: {e}"))?;
+        if !o.status.success() {
+            return Err(String::from_utf8_lossy(&o.stderr).trim().to_owned());
+        }
+        std::fs::read(&out).map_err(|e| e.to_string())
+    });
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    result
 }
 
 fn tree(changes: &[Change], files: &[FileDiff], viewed: &HashMap<String, u64>, keep: fn(&Change) -> bool) -> TreeModel<FileNode<Stat>> {
@@ -2627,6 +2867,11 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         }
     } else { body };
     let body = if s.has_project && s.map.open { map_view::map_view(s, k) } else { body };
+    let body = if s.has_project && s.pulls.open { pulls::pulls_view(s, k) } else { body };
+    let body = match operation_bar(s, k) {
+        Some(bar) => col().key("with-operation").w_full().grow(1.0).min_h(0.0).child(bar).child(body),
+        None => body,
+    };
     let body = match status_bar(s, k) {
         Some(bar) => col().key("body").w_full().grow(1.0).min_h(0.0).child(body).child(bar),
         None => body,
@@ -2761,6 +3006,13 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
+            Ask::Tag(None) => ("New tag", "Made at HEAD, here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
+            Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
+            Ask::Rename(_) => ("Rename branch", "Only here: a pushed branch keeps its old name on the remote.", "Rename", "Branch name"),
+            // In a pull request, a comment goes with the next review, if GitHub takes it on that line.
+            Ask::Comment(at, None) if s.pulls.pr.as_ref().is_some_and(|p| !p.commentable(&at.path, at.side == diff::Side::Old, at.line)) => ("Comment",
+                "GitHub only takes comments within three lines of a change, so this one stays on this Mac.", "Comment", "Write a comment"),
+            Ask::Comment(_, None) if s.pulls.pr.is_some() => ("Comment", "Goes to GitHub with your next review. Until then it stays on this Mac.", "Comment", "Write a comment"),
             Ask::Comment(_, None) => ("Comment", "Comments stay on this Mac. Copy them as Markdown from the summary to share them.", "Comment", "Write a comment"),
             Ask::Comment(_, Some(_)) => ("Edit comment", "An empty comment is deleted.", "Save", "Write a comment"),
         };
@@ -2772,12 +3024,21 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k)
             .key("prompt-field")
             .w_full();
-        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None));
-        let buttons = row()
-            .key("prompt-buttons")
-            .w_full()
-            .gap(8.0)
-            .justify_end()
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Rename(_) | Ask::Tag(_));
+        let mut buttons = row().key("prompt-buttons").w_full().gap(8.0).justify_end();
+        // On a pull request's line: suggest what it should say instead, starting from what it says.
+        if let Ask::Comment(at, None) = ask
+            && s.pulls.pr.is_some()
+            && !s.pulls.suggest
+        {
+            let line = at.text.clone();
+            buttons = buttons.child(Button::new("Suggest a Change").variant(ButtonVariant::Ghost).help("Write the line as it should read; the author can apply it")
+                .on_press(move |s: &mut Collate| {
+                    s.pulls.suggest = true;
+                    s.prompt_text = TextEdit::new(&line);
+                }).build(k).key("prompt-suggest")).child(row().grow(1.0));
+        }
+        let buttons = buttons
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.prompt = None).build(k))
             .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(empty).on_press(|s: &mut Collate| s.answer_prompt()).build(k).key("prompt-ok"));
         Dialog::new("prompt", title)
@@ -2788,6 +3049,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .child(col().key("prompt-body").w_full().gap(12.0).child(field).child(buttons))
             .build(k, layer);
     }
+
+    pulls::compose_dialog(s, k, layer);
 
     if let Some((from, to)) = &s.compare {
         let end = |key: &'static str, label: &str, value: &str, to: bool| {
@@ -2831,6 +3094,19 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let (title, what, button) = match r {
             Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
             Risky::DropStash(name) => (format!("Drop {name}?"), "Its changes are deleted. There's no backup.".to_owned(), "Drop Stash"),
+            Risky::ForcePush => (
+                format!("Force push {}?", s.branch),
+                "The remote branch is replaced with this one, its commits that aren't here dropped. It fails if someone pushed since your last fetch.".to_owned(),
+                "Force Push",
+            ),
+            Risky::DeleteTag(name, false) => (format!("Delete {name}?"), "Only here: a pushed tag stays on origin.".to_owned(), "Delete Tag"),
+            Risky::DeleteTag(name, true) => (format!("Delete {name} here and from origin?"), "Anyone who fetched it keeps it until they delete it too.".to_owned(), "Delete Tag"),
+            Risky::DeleteBranch(name, true) => (format!("Delete {name}?"), format!("Its commits are all in {} already, so nothing is lost.", s.branch), "Delete Branch"),
+            Risky::DeleteBranch(name, false) => (
+                format!("Delete {name}?"),
+                format!("It has commits that aren't in {}. Once it's deleted they're only in git's reflog, for a while.", s.branch),
+                "Delete Branch",
+            ),
         };
         let buttons = row()
             .key("risky-buttons")
@@ -3010,8 +3286,11 @@ const NAV_W: f32 = 24.0 * 2.0 + 2.0;
 /// isn't committed; Review is what is.
 fn views_sidebar(s: &Collate, k: &Kit) -> El {
     let place = |key: &str, label: &str, scope: Scope, badge: Option<usize>, detail: Option<String>| {
-        let mut r = SidebarRow::new(label.to_owned()).selected(s.scope == scope && !s.map.open).on_select(move |s: &mut Collate, _: &mut Tx| {
+        let elsewhere = s.map.open || s.pulls.open || s.pulls.pr.is_some();
+        let mut r = SidebarRow::new(label.to_owned()).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| {
             s.map.open = false;
+            s.pulls.open = false;
+            s.close_pull();
             s.set_scope(scope);
         });
         if let Some(n) = badge.filter(|&n| n > 0) {
@@ -3029,8 +3308,19 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
     ]);
     let review = SidebarSection::new("Review").rows([
         place("view-history", "Git Graph", Scope::History, None, None),
+        // The repository's open pull requests, and the one being reviewed.
+        {
+            let mut r = SidebarRow::new("Pull Requests").selected(s.pulls.open || s.pulls.pr.is_some()).on_select(|s: &mut Collate, _: &mut Tx| s.open_pulls());
+            if s.pulls.asked() > 0 {
+                r = r.badge(s.pulls.asked().to_string());
+            }
+            r.build(k).key("view-pulls")
+        },
         // The whole repository, with this view's changes on it.
-        SidebarRow::new("Map").selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| s.open_map()).build(k).key("view-map"),
+        SidebarRow::new("Map").selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
+            s.pulls.open = false;
+            s.open_map();
+        }).build(k).key("view-map"),
     ]);
     let apart = col().key("sections-apart").w_full().h(12.0).a11y_hidden();
     // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
@@ -3174,7 +3464,9 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     // sits as far below what's above it (the filter, a hairline) as the next.
     let mut p = col().key("staging").w_full().h_full().pt(COLUMN_TOP);
     // History leads with the chosen commit; its files follow, as in Zed's commit view.
-    if s.scope == Scope::History
+    if let Some(card) = pulls::pr_card(s, k) {
+        p = p.child(card.mb(4.0));
+    } else if s.scope == Scope::History
         && let Some(card) = commit_card(s, k)
     {
         p = p.child(card.mb(4.0));
@@ -3364,7 +3656,8 @@ fn avatar(k: &Kit, s: &Collate, c: &graph::Commit, size: f32) -> El {
 
 /// A comment under its line: what it says, when, and the way to change or delete it.
 fn comment_row(s: &Collate, k: &Kit, n: usize) -> El {
-    let Some(c) = s.comments.get(n) else { return row() };
+    // Past the reader's own: the pull request's threads.
+    let Some(c) = s.comments.get(n) else { return pulls::thread_row(s, k, n - s.comments.len()) };
     let head = row().w_full().gap(8.0).items_center()
         .child(text("Comment".to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted))
         .child(text(day(c.time)).font(k.ty.text_small).color(k.c.text_faint).grow(1.0))
@@ -3769,6 +4062,32 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
 
 /// Feedback after an action, at the bottom of the diff: what happened, and Undo for a
 /// discard. It goes by itself after a few seconds.
+/// A merge, rebase, cherry-pick or revert waiting on the reader: what to do, and the ways on.
+fn operation_bar(s: &Collate, k: &Kit) -> Option<El> {
+    let op = s.operation?;
+    let conflicts = s.info.iter().filter(|i| i.conflicted).count();
+    let say = if conflicts > 0 {
+        format!("{} - {conflicts} file{} with conflicts. Settle and stage them, then continue.", op.doing(), if conflicts == 1 { "" } else { "s" })
+    } else {
+        format!("{} - the conflicts are settled. Stage what's left, then continue.", op.doing())
+    };
+    let idle = s.busy.is_none();
+    let step = move |how: &'static str, done: &'static str| {
+        move |s: &mut Collate| s.act_bg(&format!("{}…", how[..1].to_uppercase() + &how[1..]), move |r| r.resume(op, how).map(|_| format!("{done} the {}", op.noun())))
+    };
+    let mut r = row().key("operation").w_full().h(40.0).px(EDGE).gap(8.0).items_center().fill(k.alpha(k.c.warning.icon, 0.10))
+        .role("status").label(say.clone())
+        .child(text(say).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0).grow(1.0))
+        .child(Button::new("Abort").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
+            .help(format!("Stop the {} and put everything back as it was", op.noun())).on_press(step("abort", "Aborted")).build(k).key("op-abort"));
+    if op == git::Operation::Rebase {
+        r = r.child(Button::new("Skip Commit").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
+            .help("Leave out the commit the rebase stopped at").on_press(step("skip", "Skipped a commit of")).build(k).key("op-skip"));
+    }
+    Some(r.child(Button::new("Continue").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!idle || conflicts > 0)
+        .help("Commit the settled files and go on").on_press(step("continue", "Continued")).build(k).key("op-continue")))
+}
+
 fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
     let note = s.notice.as_ref()?;
     let color = if note.error { k.c.danger.icon } else { k.c.text_muted };
@@ -3977,6 +4296,48 @@ fn setting(k: &Kit, key: &str, title: &str, keys: &[&str], detail: &str, control
     row().key(key.to_owned()).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().items_center().child(control))
 }
 
+/// The Languages section: whether to download grammars, what's built in, and every grammar on
+/// offer with how it stands and what to do with it.
+fn languages_settings(s: &Collate, k: &Kit) -> Vec<El> {
+    let mut rows = vec![
+        setting(k, "download", "Download languages", &[], "Fetch a language's grammar from GitHub the first time a diff shows it; building it needs Xcode's command line tools", switch(k, "Download languages", s.settings.download_languages, |c, v| c.download_languages = v)),
+        setting(k, "built-in", "Built in", &[], grammars::BUILT_IN, row()),
+    ];
+    for g in grammars::CATALOGUE {
+        let status = s.languages.status(g);
+        let files = g.files.iter().map(|f| if f.contains('.') || f.chars().next().is_some_and(char::is_uppercase) { (*f).to_owned() } else { format!(".{f}") }).collect::<Vec<_>>().join(", ");
+        let mut name = row().gap(8.0).items_center().child(text(g.title.to_owned()).font(k.ty.ui_medium).color(k.c.text_base));
+        let state = match status {
+            grammars::Status::Installed if s.languages.loaded.contains_key(g.id) => "In use",
+            grammars::Status::Installed => "Installed",
+            grammars::Status::Outdated => "Update available",
+            _ => "",
+        };
+        if !state.is_empty() {
+            name = name.child(text(state.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint));
+        }
+        let mut words = col().grow(1.0).min_w(0.0).gap(4.0).child(name).child(text(files).font(k.ty.text_small).color(k.c.text_muted).truncate());
+        if let grammars::Status::Failed(e) = &status {
+            words = words.child(text(e.clone()).font(k.ty.text_small).color(k.c.danger.icon).wrap());
+        }
+        let (label, help) = match status {
+            grammars::Status::Available => ("Install", "Fetch and build this grammar"),
+            grammars::Status::Installed => ("Remove", "Delete the grammar; its files draw plain until it's installed again"),
+            grammars::Status::Outdated => ("Update", "Build the version this Collate expects"),
+            grammars::Status::Working => ("Installing…", ""),
+            grammars::Status::Failed(_) => ("Retry", "Try fetching and building it again"),
+        };
+        let installed = status == grammars::Status::Installed;
+        let mut button = Button::new(label).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(status == grammars::Status::Working);
+        if !help.is_empty() {
+            button = button.help(help);
+        }
+        let button = button.on_press(move |s: &mut Collate| if installed { s.remove_language(g) } else { s.prepare_language(g) }).build(k);
+        rows.push(row().key(format!("lang-{}", g.id)).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().child(button)));
+    }
+    rows
+}
+
 fn pick<T: Copy + PartialEq + 'static>(k: &Kit, labels: &[&str], values: &'static [T], current: T, set: fn(&mut Settings, T)) -> El {
     SegmentedControl::new(labels, values.iter().position(|v| *v == current))
         .fit()
@@ -4000,7 +4361,9 @@ fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
     Switch::new(on).standard().label(title.to_owned()).hide_label().on_toggle(move |s: &mut Collate| s.configure(|c| set(c, !on))).build(&kk)
 }
 
-const SETTINGS_TABS: [&str; 5] = ["Appearance", "Diff", "Review", "Projects", "Refresh"];
+const SETTINGS_TABS: [&str; 6] = ["Appearance", "Diff", "Languages", "Review", "Projects", "Refresh"];
+/// The Projects section, which has its own Add button.
+const PROJECTS_TAB: usize = 4;
 
 /// Settings as a floating panel over the review: sections down the left, the chosen one's
 /// settings on the right, on one surface. Esc, the close button or a click outside put it
@@ -4031,14 +4394,16 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             setting(k, "words", "Word highlights", &[], "Tint the words that changed within a line", switch(k, "Word highlights", st.word_diff, |c, v| c.word_diff = v)),
             setting(k, "syntax", "Syntax highlighting", &[], "", switch(k, "Syntax highlighting", st.syntax, |c, v| c.syntax = v)),
         ],
-        2 => vec![
+        2 => languages_settings(s, k),
+        3 => vec![
             setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "Pull Request Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
             setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
             setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
             setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
+            setting(k, "notify", "Review requests", &[], "A notification when someone asks for your review, checked every few minutes", switch(k, "Review requests", st.notify_reviews, |c, v| c.notify_reviews = v)),
             setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
         ],
-        3 => {
+        PROJECTS_TAB => {
             let labels = project_labels(&s.projects);
             let mut rows: Vec<El> = s
                 .projects
@@ -4096,7 +4461,7 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         }
     }
     let mut content = col().key("settings-content").w_full().px(24.0).pb(16.0);
-    if tab == 3 {
+    if tab == PROJECTS_TAB {
         let add = Button::new(ADD_PROJECT).variant(ButtonVariant::Outline).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.add_project()).build(k).key("settings-add");
         content = content.child(row().key("projects-head").w_full().pt(12.0).pb(4.0).justify_end().child(add));
     }
@@ -4568,6 +4933,7 @@ fn main() {
                     app.update_if(move |s, tx| s.terminals.event(id, event, tx));
                 }
             }));
+            pulls::watch_reviews();
             s.avatars.start(rune::ImageCache::new(waker), |email, bytes| {
                 if let Some(app) = HANDLE.get() {
                     app.update(move |s, _| s.avatars.landed(email, bytes));
@@ -4588,6 +4954,7 @@ fn main() {
             ("branch", |s: &mut Collate| s.set_scope(Scope::Branch)),
             ("history", |s: &mut Collate| s.set_scope(Scope::History)),
             ("map", |s: &mut Collate| s.open_map()),
+            ("pulls", |s: &mut Collate| s.pulls.open = true),
             ("history-diff", |s: &mut Collate| {
                 s.set_scope(Scope::History);
                 s.history_diff = true;
@@ -4706,7 +5073,7 @@ mod tests {
         state.settings.layout = if split { DiffMode::Split } else { DiffMode::Unified };
         state.apply_settings(None);
         if arm == "off" {
-            state.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"));
+            state.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"), |_| false);
         }
         state.diff.set_files(vec![FileDiff::between_with_context(Some("app.ts".into()), Some("app.ts".into()), &old, &new, 25)]);
         drop((old, new));
@@ -5849,6 +6216,75 @@ mod tests {
         assert!(file_diff(&added, 3, false).images.as_ref().is_some_and(|s| s[0].is_none()), "an added image has no before");
         let against_binary = Change { old: Some(Blob::Binary), ..c };
         assert!(file_diff(&against_binary, 3, false).images.is_none(), "an image against other bytes stays a note");
+    }
+
+    #[test]
+    fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
+        let mut rt = loaded();
+        let pull = |number: u32, author: &str, requested: &[&str]| github::Pull {
+            number, title: format!("Change {number}"), author: author.into(), head: format!("b{number}"), base: "main".into(), draft: false,
+            decision: "REVIEW_REQUIRED".into(), requested: requested.iter().map(|r| (*r).to_owned()).collect(), additions: 3, deletions: 1,
+            updated: "2026-11-10T09:00:00Z".into(), labels: vec![], checks: vec![], url: String::new(),
+        };
+        rt.update(move |s, _| {
+            s.pulls.list = Some(Ok(("me".into(), vec![pull(7, "ana", &["me"]), pull(8, "me", &[]), pull(9, "bo", &[])])));
+            s.pulls.open = true;
+        });
+        rt.frame(1.0 / 60.0);
+        for key in ["pulls", "group-Review Requested", "group-Yours", "group-Everyone Else", "pull-7", "pull-8", "pull-9"] {
+            assert!(rt.find(key).is_some(), "{key}");
+        }
+        assert_eq!(rt.state.pulls.asked(), 1, "the sidebar counts what asks for the reader");
+        rt.update(move |s, _| {
+            let detail = github::Detail {
+                pull: pull(7, "ana", &["me"]), body: "Why".into(), state: "OPEN".into(), mergeable: "MERGEABLE".into(), merge_state: "BLOCKED".into(),
+                head_oid: String::new(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![], commentable: vec![],
+            };
+            s.pulls.open = false;
+            s.pulls.pr = Some(detail);
+        });
+        rt.frame(1.0 / 60.0);
+        for key in ["pr-card", "pr-approve", "pr-changes", "pr-merge", "reviewer-me"] {
+            assert!(rt.find(key).is_some(), "{key}");
+        }
+        rt.update(|s, _| s.set_scope(Scope::Staged));
+        assert!(rt.state.pulls.pr.is_none(), "another view leaves the pull request");
+    }
+
+    #[test]
+    fn a_changed_svg_is_drawn_above_its_lines() {
+        let svg = |fill: &str| format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">\n<rect width=\"8\" height=\"8\" fill=\"{fill}\"/>\n</svg>\n");
+        let text = |t: String| Some(Blob::Text(t));
+        let c = Change { path: "logo.svg".into(), old_path: None, old: text(svg("red")), new: text(svg("blue")), hash: 1, staged: Staged::No, untracked: false, new_hash: 2, generated: false, reused: false, conflicted: false };
+        let f = file_diff(&c, 3, false);
+        let sides = f.images.as_ref().expect("an SVG has pictures");
+        assert!(sides[0].is_some() && sides[1].is_some());
+        assert!(!f.hunks.is_empty(), "and its lines");
+        let st = DiffState::new(vec![f]);
+        assert!(matches!(st.rows[..2], [diff::Row::File(0), diff::Row::Note(0)]), "the pictures come first");
+        assert!(st.rows.len() > 2);
+        let plain = Change { path: "notes.txt".into(), ..c };
+        assert!(file_diff(&plain, 3, false).images.is_none());
+    }
+
+    #[test]
+    fn a_changed_pdf_is_drawn_by_its_first_page() {
+        // A blank 100 × 50 page, with the cross-reference table readers need.
+        let objects = ["<</Type/Catalog/Pages 2 0 R>>", "<</Type/Pages/Kids[3 0 R]/Count 1>>", "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 50]>>"];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut xref = String::from("xref\n0 4\n0000000000 65535 f \n");
+        for (i, o) in objects.iter().enumerate() {
+            xref.push_str(&format!("{:010} 00000 n \n", pdf.len()));
+            pdf.push_str(&format!("{} 0 obj\n{o}\nendobj\n", i + 1));
+        }
+        let at = pdf.len();
+        pdf.push_str(&format!("{xref}trailer\n<</Size 4/Root 1 0 R>>\nstartxref\n{at}\n%%EOF\n"));
+        let pdf = pdf.into_bytes();
+        let c = Change { path: "doc.pdf".into(), old_path: None, old: None, new: Some(Blob::Image(pdf.clone().into())), hash: 1, staged: Staged::No, untracked: false, new_hash: 2, generated: false, reused: false, conflicted: false };
+        let f = file_diff(&c, 3, false);
+        let (hash, page) = f.images.as_ref().and_then(|s| s[1].clone()).expect("a PDF is a picture");
+        assert!(page.starts_with(&[0xFF, 0xD8, 0xFF]), "rendered to a JPEG");
+        assert_eq!(hash, hash_bytes(&pdf), "keyed by the PDF, not the rendering");
     }
 
     #[test]

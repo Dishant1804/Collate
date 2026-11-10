@@ -6,13 +6,26 @@ license = "MIT"
 description = "A fast, lightweight git diff viewer for macOS, built on Rune."
 
 [dependencies]
-rune = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96" }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96" }
+# Only what a macOS app uses: VoiceOver, the Metal renderer and SVG images (a changed SVG is
+# drawn). Rune's other defaults are Ogg audio, Linux's D-Bus and fonts for the web.
+rune = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96", default-features = false, features = ["accessibility", "metal-backend", "svg"] }
+# Markdown renders pull request comments and descriptions.
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96", features = ["markdown"] }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 # The diff search's regular expressions.
 regex = "1"
 # The terminal drawer: a PTY and a VT parser and grid, as Alacritty itself runs them.
 alacritty_terminal = { version = "0.26", default-features = false }
+# Syntax colours for languages the built-in scanners don't know: grammars are fetched and
+# compiled on demand (src/grammars.rs), so only the parser runtime ships in the app.
+tree-sitter = "0.27"
+tree-sitter-highlight = "0.27"
+# The type a compiled grammar's entry point is wrapped in to become a language.
+tree-sitter-language = "0.1"
+# Reads the GitHub CLI's JSON for pull requests (src/github.rs); Rune already builds it.
+serde_json = "1"
+# Opens a compiled grammar.
+libloading = "0.8"
 
 [profile.release]
 lto = "thin"
