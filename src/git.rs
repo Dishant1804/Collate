@@ -832,20 +832,28 @@ impl Repo {
         self.run(&["pull", "--ff-only", "-q"], None)
     }
 
-    /// Pushes the branch to its upstream; a branch without one goes to `origin` under its own
-    /// name and tracks it from then on.
     /// Push over the remote branch after a rebase or amend, but only if it's still where this
     /// clone last saw it: someone else's push in between makes it fail rather than vanish.
     pub fn force_push(&self) -> Result<String, String> {
         self.run(&["push", "-q", "--force-with-lease"], None)
     }
 
+    /// Pushes the branch to its upstream; a branch without one goes to `origin` under its own
+    /// name and tracks it from then on.
     pub fn push(&self) -> Result<String, String> {
         if self.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], None).is_ok() {
             self.run(&["push", "-q"], None)
         } else {
             self.run(&["push", "-q", "-u", "origin", "HEAD"], None)
         }
+    }
+
+    /// The upstream's name and the commit this branch left it at: from there to HEAD is what a
+    /// push sends, without undoing what others pushed since (as `@{u}..HEAD` as trees would).
+    pub fn unpushed(&self) -> Result<(String, String), String> {
+        let upstream = self.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], None).map_err(|_| "This branch has no upstream yet; push it once to track one.".to_owned())?;
+        let base = self.merge_base(&upstream)?;
+        Ok((upstream, base))
     }
 
     /// Switches to `branch`; a remote one (`origin/x`) checks out a local `x` that tracks it.
@@ -1199,6 +1207,43 @@ mod tests {
         assert_eq!((e[0].index, e[0].worktree), (b'.', b'M'));
         assert_eq!((e[1].index, e[1].worktree), (b'A', b'.'));
         assert!(e[2].untracked);
+    }
+
+    #[test]
+    fn unpushed_is_the_branch_since_it_left_its_upstream() {
+        let dir = std::env::temp_dir().join(format!("collate-unpushed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let commit = |file: &str| {
+            std::fs::write(dir.join(file), file).unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-qm", file]);
+        };
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["config", "commit.gpgsign", "false"]] {
+            git(args);
+        }
+        commit("base.txt");
+        let repo = Repo::open(&dir).unwrap();
+        assert!(repo.unpushed().is_err(), "no upstream yet");
+        // A local branch serves as the upstream; someone else's commit lands on it after ours left.
+        git(&["branch", "up"]);
+        git(&["branch", "-q", "--set-upstream-to=up"]);
+        let base = repo.resolve("HEAD").unwrap();
+        commit("mine.txt");
+        git(&["switch", "-q", "up"]);
+        commit("theirs.txt");
+        git(&["switch", "-q", "main"]);
+        let (upstream, from) = repo.unpushed().unwrap();
+        assert_eq!((upstream.as_str(), from.as_str()), ("up", base.as_str()));
+        let head = repo.resolve("HEAD").unwrap();
+        let snap = repo.snapshot(Scope::History, &repo.status_raw().unwrap(), Some(("", &format!("{from}..{head}")))).unwrap();
+        let paths: Vec<_> = snap.changes.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, ["mine.txt"], "only what a push sends, not their commit undone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

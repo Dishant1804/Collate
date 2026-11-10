@@ -958,6 +958,20 @@ impl Collate {
         });
     }
 
+    /// The commits a push would send, as one diff from where the branch left its upstream.
+    fn show_unpushed(&mut self) {
+        let Some(head) = self.head.clone() else { return };
+        let Some(r) = current_repo() else { return };
+        match r.unpushed() {
+            Ok((upstream, base)) => {
+                let on = if self.branch == "HEAD" { "HEAD".to_owned() } else { self.branch.clone() };
+                self.open_commit(&format!("{base}..{head}"));
+                self.compared = Some((upstream, on));
+            }
+            Err(e) => self.say(e, true),
+        }
+    }
+
     /// Picks one end of the compare (`to`, else `from`) from the refs.
     fn pick_ref(&mut self, to: bool, tx: &mut Tx) {
         let Some((from, until)) = &self.compare else { return };
@@ -1272,6 +1286,7 @@ impl Collate {
             .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
             .item(PopupItem::new("push", count("Push", ahead)).enabled(idle))
             .item(PopupItem::new("force-push", "Force Push…").enabled(idle && self.ahead_behind.is_some()))
+            .item(PopupItem::new("unpushed", if ahead == 0 { "Show Unpushed Commits".to_owned() } else { format!("Show {ahead} Unpushed Commit{}", if ahead == 1 { "" } else { "s" }) }).enabled(ahead > 0))
             .separator()
             .submenu_enabled("Switch To", switch, idle)
             .item(PopupItem::new("new-branch", "New Branch…").enabled(idle))
@@ -1310,6 +1325,7 @@ impl Collate {
                     s.risky = Some(Risky::DeleteBranch(arg, merged));
                 }
                 "compare" => s.start_compare(),
+                "unpushed" => s.show_unpushed(),
                 "stash" => s.ask(Ask::Stash),
                 "new-tag" => s.ask(Ask::Tag(None)),
                 "show-tag" => {

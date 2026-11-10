@@ -732,6 +732,22 @@ fn the_branch_menu_previews_the_pull_request() {
 }
 
 #[test]
+fn the_branch_menu_offers_the_unpushed_commits_when_there_are_some() {
+    let mut rt = loaded();
+    let item = |rt: &mut Runtime<Collate>| {
+        click(rt, "branch");
+        let menu = rt.popup_menu().expect("the branch menu opened");
+        let item = menu.find("unpushed").map(|i| (i.title().to_owned(), i.is_enabled())).expect("the unpushed item");
+        rt.resolve_popup(None).unwrap();
+        item
+    };
+    rt.update(|s, _| s.ahead_behind = Some((0, 2)));
+    assert_eq!(item(&mut rt), ("Show Unpushed Commits".to_owned(), false), "nothing to push, nothing to show");
+    rt.update(|s, _| s.ahead_behind = Some((3, 0)));
+    assert_eq!(item(&mut rt), ("Show 3 Unpushed Commits".to_owned(), true));
+}
+
+#[test]
 fn the_three_columns_start_on_one_line() {
     let rt = loaded();
     let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
