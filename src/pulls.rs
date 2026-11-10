@@ -116,6 +116,14 @@ impl PullsState {
             .collect()
     }
 
+    /// The signed-in login, once the list is read.
+    pub fn me(&self) -> Option<&str> {
+        match &self.list {
+            Some(Ok((me, _))) => Some(me),
+            _ => None,
+        }
+    }
+
     /// Pull requests asking the reader for a review.
     pub fn asked(&self) -> usize {
         match &self.list {
@@ -318,6 +326,63 @@ impl Collate {
         });
     }
 
+    /// Whether the diff shows the open pull request's whole change, the one GitHub's line
+    /// comments are numbered against.
+    pub fn pr_whole(&self) -> bool {
+        self.pulls.pr.as_ref().is_some_and(|d| self.commit.as_deref() == Some(d.range().as_str()))
+    }
+
+    /// Shows part of the open pull request: `all` of it, what changed `since` the reader's last
+    /// review, or one commit by its id.
+    pub fn show_pr_part(&mut self, part: &str) {
+        let Some(d) = &self.pulls.pr else { return };
+        let (range, compared) = match part {
+            "all" => (d.range(), (d.pull.base.clone(), d.pull.head.clone())),
+            "since" => {
+                let Some(at) = self.pulls.me().and_then(|me| d.last_reviewed(me)) else { return };
+                // A force-push can leave the reviewed commit out of what was fetched.
+                if current_repo().is_some_and(|r| r.resolve(at).is_err()) {
+                    let at = crate::abbrev(at);
+                    self.say(format!("Your last review was on {at}, which this pull request no longer has: its branch was rewritten since."), true);
+                    return;
+                }
+                (format!("{at}..{}", d.head_oid), (format!("your review ({})", crate::abbrev(at)), d.pull.head.clone()))
+            }
+            id => {
+                let Some((_, subject)) = d.commits.iter().find(|(c, _)| c == id) else { return };
+                (format!("{id}^..{id}"), (format!("{}^", crate::abbrev(id)), subject.clone()))
+            }
+        };
+        // Opening a range leaves the pull request; this is still it.
+        let pr = self.pulls.pr.take();
+        self.open_commit(&range);
+        self.compared = Some(compared);
+        self.pulls.pr = pr;
+        self.place_comments();
+    }
+
+    /// Picks which part of the open pull request the diff shows.
+    pub fn pr_part_menu(&mut self, tx: &mut Tx) {
+        let Some(d) = &self.pulls.pr else { return };
+        let mut menu = PopupMenu::new().item(PopupItem::new("all", "All Changes").checked(self.pr_whole()));
+        if let Some(at) = self.pulls.me().and_then(|me| d.last_reviewed(me)) {
+            let since = format!("{at}..{}", d.head_oid);
+            menu = menu.item(PopupItem::new("since", "Changes Since Your Last Review").checked(self.commit.as_deref() == Some(since.as_str())));
+        }
+        if !d.commits.is_empty() {
+            menu = menu.separator();
+        }
+        for (i, (id, subject)) in d.commits.iter().enumerate() {
+            let shown = self.commit.as_deref() == Some(format!("{id}^..{id}").as_str());
+            menu = menu.item(PopupItem::new(id.clone(), format!("{} of {} - {subject}", i + 1, d.commits.len())).checked(shown));
+        }
+        tx.popup_menu(menu, "pr-part", |s: &mut Collate, picked, _| {
+            if let Some(p) = picked {
+                s.show_pr_part(p);
+            }
+        });
+    }
+
     /// Leave the pull request: its threads go from the diff.
     pub fn close_pull(&mut self) {
         if self.pulls.pr.take().is_some() {
@@ -365,6 +430,10 @@ impl Collate {
     /// review sends them.
     pub fn pending(&self) -> Vec<(usize, Draft)> {
         let Some(pr) = &self.pulls.pr else { return Vec::new() };
+        // Lines of one commit, or of the change since a review, aren't the lines GitHub numbers.
+        if !self.pr_whole() {
+            return Vec::new();
+        }
         self.comments
             .iter()
             .enumerate()
@@ -730,7 +799,8 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
         }
         let held = s.held();
         if held > 0 {
-            card = card.child(text(format!("{held} comment{} outside GitHub's diff stay on this Mac", if held == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.warning.icon).wrap().w_full());
+            let why = if s.pr_whole() { "outside GitHub's diff" } else { "on part of the pull request" };
+            card = card.child(text(format!("{held} comment{} {why} stay on this Mac", if held == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.warning.icon).wrap().w_full());
         }
         let merge = Button::new("Merge…").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!can_merge || s.busy.is_some())
             .help("Squash, merge or rebase into the base").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.merge_menu(tx)).build(k).key("pr-merge");
@@ -918,6 +988,7 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         _ => what,
     };
     let what = match c {
+        Compose::Review(_) if held > 0 && !s.pr_whole() => format!("{what} {held} on part of the pull request stay on this Mac; show all its changes to send them."),
         Compose::Review(_) if held > 0 => format!("{what} {held} outside GitHub's diff stay on this Mac."),
         _ => what,
     };

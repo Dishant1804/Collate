@@ -137,6 +137,12 @@ pub struct Detail {
     /// (path, left side, first line, last line). Lines past them (context Collate shows more of)
     /// can't be commented on. Filled by [`Gh::open`].
     pub commentable: Vec<Hunk>,
+    /// Where the pull request's branch left its base: the diff is from here to `head_oid`.
+    pub merge_base: String,
+    /// Its commits, oldest first, as (id, subject).
+    pub commits: Vec<(String, String)>,
+    /// Each review's author and the commit it was on, oldest first.
+    pub reviewed: Vec<(String, String)>,
 }
 
 /// A hunk of GitHub's diff: path, base side (`true`) or head, first line, last line.
@@ -146,6 +152,17 @@ impl Detail {
     /// Whether GitHub accepts a comment on `line` of `path`'s base (`left`) or head side.
     pub fn commentable(&self, path: &str, left: bool, line: u32) -> bool {
         self.commentable.iter().any(|(p, l, a, b)| p == path && *l == left && (*a..=*b).contains(&line))
+    }
+
+    /// The commit `me` last reviewed, unless it's the head: then nothing is new since.
+    pub fn last_reviewed(&self, me: &str) -> Option<&str> {
+        let (_, at) = self.reviewed.iter().rev().find(|(who, at)| who == me && !at.is_empty())?;
+        (*at != self.head_oid).then_some(at.as_str())
+    }
+
+    /// The whole change, as the pull request's diff on GitHub shows it.
+    pub fn range(&self) -> String {
+        format!("{}..{}", self.merge_base, self.head_oid)
     }
 }
 
@@ -283,7 +300,7 @@ impl Gh {
     /// the range to diff too. Its details, its threads and the fetch run at once: `known`, its
     /// entry in the list, names the repository and base to fetch, so the fetch needn't wait.
     pub fn open(&self, n: u32, known: Option<&Pull>) -> Result<(String, Detail), String> {
-        let fields = format!("{LIST_FIELDS},body,state,mergeable,mergeStateStatus,headRefOid,reviews,comments,assignees,latestReviews");
+        let fields = format!("{LIST_FIELDS},body,state,mergeable,mergeStateStatus,headRefOid,reviews,comments,assignees,latestReviews,commits");
         let joined = |e: &str| format!("{e} for #{n} stopped");
         std::thread::scope(|t| {
             let threads = t.spawn(|| self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={n}"), "-f", &format!("query={THREADS}")], None));
@@ -300,7 +317,8 @@ impl Gh {
                 None => self.fetch(n, &d.pull.url, &d.pull.base)?,
             };
             d.commentable = commentable;
-            d.head_oid = range.rsplit_once("..").map_or("", |(_, tip)| tip).to_owned();
+            let (base, tip) = range.split_once("..").unwrap_or_default();
+            (d.merge_base, d.head_oid) = (base.to_owned(), tip.to_owned());
             Ok((range, d))
         })
     }
@@ -603,6 +621,8 @@ fn detail(v: &Value, threads: &Value) -> Detail {
         state: s(r, "state"),
     }));
     conversation.sort_by(|a, b| a.time.cmp(&b.time));
+    let mut reviews: Vec<&Value> = v["reviews"].as_array().into_iter().flatten().collect();
+    reviews.sort_by_key(|r| s(r, "submittedAt"));
     let mut reviewers: Vec<(String, String)> = v["latestReviews"].as_array().into_iter().flatten().map(|r| (login(&r["author"]), s(r, "state"))).collect();
     for r in v["reviewRequests"].as_array().into_iter().flatten() {
         let who = r["login"].as_str().or(r["name"].as_str()).unwrap_or("").to_owned();
@@ -622,6 +642,9 @@ fn detail(v: &Value, threads: &Value) -> Detail {
         conversation,
         threads: threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array().into_iter().flatten().filter_map(thread).collect(),
         commentable: Vec::new(),
+        merge_base: String::new(),
+        commits: v["commits"].as_array().into_iter().flatten().map(|c| (s(c, "oid"), s(c, "messageHeadline"))).collect(),
+        reviewed: reviews.into_iter().map(|r| (login(&r["author"]), s(&r["commit"], "oid"))).collect(),
     }
 }
 
@@ -733,6 +756,27 @@ mod tests {
         assert_eq!(check("https://github.com/o/r/actions/runs/42766795004/job/129665059298").run_id(), Some(42766795004));
         assert_eq!(check("https://app.circleci.com/pipelines/x").run_id(), None);
         assert_eq!(check("").run_id(), None);
+    }
+
+    #[test]
+    fn the_last_review_names_its_commit_unless_nothing_came_since() {
+        let v = serde_json::json!({
+            "commits": [{"oid": "a1", "messageHeadline": "First"}, {"oid": "b2", "messageHeadline": "Second"}],
+            "reviews": [
+                {"author": {"login": "me"}, "state": "COMMENTED", "submittedAt": "2026-11-02T00:00:00Z", "commit": {"oid": "b2"}},
+                {"author": {"login": "me"}, "state": "APPROVED", "submittedAt": "2026-11-01T00:00:00Z", "commit": {"oid": "a1"}},
+                {"author": {"login": "bo"}, "state": "COMMENTED", "submittedAt": "2026-11-03T00:00:00Z", "commit": {"oid": "c3"}},
+            ],
+        });
+        let mut d = detail(&v, &serde_json::json!({}));
+        assert_eq!(d.commits, [("a1".to_owned(), "First".to_owned()), ("b2".to_owned(), "Second".to_owned())]);
+        d.head_oid = "c3".into();
+        assert_eq!(d.last_reviewed("me"), Some("b2"), "the latest of mine, by time, not by order");
+        assert_eq!(d.last_reviewed("ana"), None, "never reviewed");
+        d.head_oid = "b2".into();
+        assert_eq!(d.last_reviewed("me"), None, "nothing new since");
+        d.merge_base = "m0".into();
+        assert_eq!(d.range(), "m0..b2");
     }
 
     #[test]

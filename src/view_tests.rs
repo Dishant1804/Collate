@@ -1332,15 +1332,35 @@ fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
     rt.update(move |s, _| {
         let detail = github::Detail {
             pull: pull(7, "ana", &["me"]), body: "Why".into(), state: "OPEN".into(), mergeable: "MERGEABLE".into(), merge_state: "BLOCKED".into(),
-            head_oid: String::new(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![], commentable: vec![],
+            head_oid: "c3".into(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![], commentable: vec![],
+            merge_base: "m0".into(), commits: vec![("a1".into(), "First".into()), ("c3".into(), "Second".into())], reviewed: vec![("me".into(), "a1".into())],
         };
         s.pulls.open = false;
+        s.open_commit("m0..c3");
         s.pulls.pr = Some(detail);
+        // The test has no watcher to read the range: the loaded diff stays the one shown.
+        s.loaded = true;
     });
     rt.frame(1.0 / 60.0);
-    for key in ["pr-card", "pr-approve", "pr-changes", "pr-merge", "reviewer-me"] {
+    for key in ["pr-card", "pr-approve", "pr-changes", "pr-merge", "reviewer-me", "pr-part"] {
         assert!(rt.find(key).is_some(), "{key}");
     }
+    assert!(rt.state.pr_whole());
+    // The summary fades in with the diff; a press waits for it.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "pr-part");
+    let menu = rt.popup_menu().expect("the part menu opened");
+    let titles: Vec<String> = ["all", "since", "a1", "c3"].iter().map(|id| menu.find(id).map(|i| i.title().to_owned()).expect(id)).collect();
+    assert_eq!(titles, ["All Changes", "Changes Since Your Last Review", "1 of 2 - First", "2 of 2 - Second"]);
+    rt.resolve_popup(Some("c3")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.commit.as_deref(), Some("c3^..c3"), "one commit, against its parent");
+    assert!(rt.state.pulls.pr.is_some() && !rt.state.pr_whole(), "still the pull request, but not all of it");
+    assert!(rt.state.pending().is_empty(), "no line comment goes to GitHub from part of it");
+    rt.update(|s, _| s.show_pr_part("all"));
+    assert!(rt.state.pr_whole());
     rt.update(|s, _| s.set_scope(Scope::Staged));
     assert!(rt.state.pulls.pr.is_none(), "another view leaves the pull request");
 }

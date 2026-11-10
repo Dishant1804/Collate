@@ -2772,6 +2772,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Rename(_) => ("Rename branch", "Only here: a pushed branch keeps its old name on the remote.", "Rename", "Branch name"),
             // In a pull request, a comment goes with the next review, if GitHub takes it on that line.
+            Ask::Comment(_, None) if s.pulls.pr.is_some() && !s.pr_whole() => ("Comment",
+                "Lines of part of a pull request aren't the ones GitHub numbers, so this stays on this Mac.", "Comment", "Write a comment"),
             Ask::Comment(at, None) if s.pulls.pr.as_ref().is_some_and(|p| !p.commentable(&at.path, at.side == diff::Side::Old, at.line)) => ("Comment",
                 "GitHub only takes comments within three lines of a change, so this one stays on this Mac.", "Comment", "Write a comment"),
             Ask::Comment(_, None) if s.pulls.pr.is_some() => ("Comment", "Goes to GitHub with your next review. Until then it stays on this Mac.", "Comment", "Write a comment"),
@@ -3329,6 +3331,24 @@ fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
                 .build(k, layer);
             Some(row().key("compare").gap(8.0).items_center().child(text("Compare against").font(k.ty.text_small).color(k.c.text_muted)).child(base))
         }
+        // A pull request: all of it, what changed since the reader's review, or one commit.
+        Scope::History if s.pulls.pr.is_some() => {
+            let d = s.pulls.pr.as_ref()?;
+            let commit = s.commit.as_deref().unwrap_or("");
+            let label = if s.pr_whole() {
+                "All Changes".to_owned()
+            } else if let Some(i) = d.commits.iter().position(|(id, _)| commit == format!("{id}^..{id}")) {
+                format!("Commit {} of {}", i + 1, d.commits.len())
+            } else {
+                "Since Your Last Review".to_owned()
+            };
+            let chevron = k.glyph.chevron_down;
+            let pick = Button::new(label.clone()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+                .label_with(move |font, color| row().gap(4.0).items_center().child(text(label).font(font).color(color)).child(icon(chevron, 12.0).color(color)))
+                .help("All the changes, the changes since your last review, or one commit")
+                .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_part_menu(tx)).build(k).key("pr-part");
+            Some(row().key("compare").gap(6.0).items_center().child(text("Showing").font(k.ty.text_small).color(k.c.text_muted)).child(pick))
+        }
         Scope::History => {
             let at = s.commit.as_ref().and_then(|c| s.commit_ids.iter().position(|x| x == c));
             let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help("Older commit (<)").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).key("older");
@@ -3383,7 +3403,7 @@ fn file_size(n: usize) -> String {
 }
 
 /// A commit id as git abbreviates it.
-fn abbrev(id: &str) -> String {
+pub fn abbrev(id: &str) -> String {
     id.chars().take(7).collect()
 }
 
