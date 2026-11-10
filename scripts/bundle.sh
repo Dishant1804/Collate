@@ -19,9 +19,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/Collate"
 
 # The icon: the SVG rendered once at 1024, then every size macOS asks for.
-qlmanage -t -s 1024 -o "$work" assets/icon.svg >/dev/null 2>&1
-png=$work/icon.svg.png
-[[ -f $png ]] || { echo "bundle: couldn't render assets/icon.svg" >&2; exit 1; }
+png=$work/icon.png
+swift scripts/render-icon.swift assets/icon.svg "$png" || { echo "bundle: couldn't render assets/icon.svg" >&2; exit 1; }
 set=$work/Collate.iconset
 mkdir -p "$set"
 for size in 16 32 128 256 512; do
