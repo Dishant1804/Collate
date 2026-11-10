@@ -5670,6 +5670,74 @@ mod tests {
     }
 
 
+    /// How long each animation runs, Default against Reduced, on the headless clock at 120 Hz.
+    /// "Moved" is when the element watched lands within half a point (and 1% opacity) of where
+    /// it ends; "settled" is when the window stops asking for frames.
+    /// `cargo test --release bench_motion -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_motion() {
+        const DT: f64 = 1.0 / 120.0;
+        /// Steps until the window is idle; the times the watched element landed and the window settled.
+        fn timeline(rt: &mut Runtime<Collate>, watch: &str) -> (f64, f64) {
+            let mut seen = Vec::new();
+            let mut t = 0.0;
+            loop {
+                let busy = rt.frame(DT);
+                t += DT;
+                seen.push((t, rt.presented(watch)));
+                if !busy || t > 3.0 {
+                    break;
+                }
+            }
+            let last = seen.last().and_then(|s| s.1);
+            let near = |p: Option<([f32; 4], f32)>| match (p, last) {
+                (Some((r, o)), Some((e, eo))) => r.iter().zip(e).all(|(a, b)| (a - b).abs() <= 0.5) && (o - eo).abs() <= 0.01,
+                (a, b) => a.is_none() == b.is_none(),
+            };
+            let moved = seen.iter().rposition(|s| !near(s.1)).map_or(0.0, |i| seen[i].0 + DT);
+            (moved * 1000.0, t * 1000.0)
+        }
+        let key = |c: char, alt: bool| KeyEvent { key: Key::Command(c), mods: rune::Mods { cmd: true, alt, ..Default::default() } };
+        type Step = Box<dyn Fn(&mut Runtime<Collate>)>;
+        let steps: Vec<(&str, &str, Step)> = vec![
+            ("Sidebar hides", "summary", Box::new(|rt| rt.update(|s, _| s.sidebar.toggle()))),
+            ("Sidebar shows", "summary", Box::new(|rt| rt.update(|s, _| s.sidebar.toggle()))),
+            ("Staging panel hides", "summary", Box::new(move |rt| rt.key(key('0', true)))),
+            ("Staging panel shows", "summary", Box::new(move |rt| rt.key(key('0', true)))),
+            ("Settings open", "settings-nav", Box::new(move |rt| rt.key(key(',', false)))),
+            ("Settings tab", "settings-rows", Box::new(|rt| click_once(rt, "tab-diff"))),
+            ("Settings close", "settings-nav", Box::new(|rt| rt.key(KeyEvent { key: Key::Escape, mods: Default::default() }))),
+            ("Split layout", "summary", Box::new(|rt| rt.key(KeyEvent { key: Key::Text("s".into()), mods: Default::default() }))),
+            ("Unified layout", "summary", Box::new(|rt| rt.key(KeyEvent { key: Key::Text("s".into()), mods: Default::default() }))),
+        ];
+        fn click_once(rt: &mut Runtime<Collate>, key: &str) {
+            let (x, y) = rt.find(key).unwrap_or_else(|| panic!("{key} is on screen"));
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+        }
+        let mut rows = Vec::new();
+        for motion in [Motion::Default, Motion::Reduced] {
+            let mut rt = loaded();
+            rt.on_key = Some(on_key);
+            rt.update(move |s, _| s.settings.motion = motion);
+            // Lands whatever loading started.
+            timeline(&mut rt, "summary");
+            for (name, watch, step) in &steps {
+                step(&mut rt);
+                rows.push((*name, motion, timeline(&mut rt, watch)));
+            }
+        }
+        println!("{:<22}{:>16}{:>16}{:>16}{:>16}", "", "Default moved", "Reduced moved", "Default settled", "Reduced settled");
+        for (name, _, _) in &steps {
+            let of = |m: Motion| rows.iter().find(|r| r.0 == *name && r.1 == m).unwrap().2;
+            let (d, r) = (of(Motion::Default), of(Motion::Reduced));
+            // Nothing watched moves on a layout switch; only its settle time says anything.
+            let ms = |v: f64| if v > 0.0 { format!("{v:.0}ms") } else { "-".into() };
+            println!("{name:<22}{:>16}{:>16}{:>16}{:>16}", ms(d.0), ms(r.0), ms(d.1), ms(r.1));
+        }
+    }
+
     /// Refresh cost on a heavy review, by phase. `COLLATE_BENCH_REPO=<repo> cargo test --release
     /// bench_refresh -- --ignored --nocapture`; medians of 7 runs, in milliseconds.
     #[test]

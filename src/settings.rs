@@ -41,7 +41,7 @@ pub enum Motion {
 
 impl Motion {
     /// The window's animation clock rate: Reduced runs it faster, so each spring and fade
-    /// finishes sooner but keeps its shape.
+    /// finishes sooner but keeps its shape. Measured by `bench_motion`.
     pub fn speed(self) -> f32 {
         match self {
             Motion::Default => 1.0,
