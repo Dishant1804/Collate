@@ -1,0 +1,146 @@
+{
+  "brand": "Collate",
+  "gate": 7,
+  "brief": {
+    "product": "Native macOS git diff viewer in Rust and Rune",
+    "audience": "Developers reviewing local changes",
+    "action": "Inspect changes and select files, hunks, lines or words for a commit",
+    "surfaces": "macOS app icon, repository and future website",
+    "assets": "Dark graphite icon, red/green diff bars; existing sculpted C concept",
+    "meaning": "Collate: collect and arrange; compare critically",
+    "sources": [
+      "README.md",
+      "src/main.rs",
+      "src/settings.rs",
+      "assets/icon.svg",
+      "assets/collate-logo-concept.png"
+    ],
+    "reference": "User-supplied dark macOS Dock with crisp white symbols, saturated colour accents and restrained tile depth",
+    "latest_request": "User likes Split C and requests more variants, better sharpness, taste, shadows and finish."
+  },
+  "assumptions": [
+    "English brand; no physical signage",
+    "Primary surface is the macOS app; web lockup is secondary",
+    "No stated colour restrictions"
+  ],
+  "ideas": [
+    {
+      "name": "Selected C",
+      "sentence": "Separate one segment from a substantial C to picture selecting a word-sized change while keeping its context."
+    },
+    {
+      "name": "Aligned halves",
+      "sentence": "Two aligned open rails stand for before and after brought together in a single review."
+    },
+    {
+      "name": "Paired letters",
+      "sentence": "Align and join the two l stems in Collate to turn the name into two compared columns."
+    },
+    {
+      "name": "Chosen hunk",
+      "sentence": "Gather three offset code lines against one common edge, turning loose edits into a commit."
+    },
+    {
+      "name": "Split C",
+      "sentence": "Two aligned angular halves turn the before-and-after comparison into one C, with a visible seam between them."
+    }
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "tried": "Five concepts across four ideas, including the lettering-led option",
+      "wrong": "Selected C has a stray upper-right tooth and a slit too fine at 16px. Hunk reads E. Pages resembles a copy command. Joined ll can read U. Rails are clear but generic.",
+      "changed": "Remove the tooth, widen the separation, and increase the C weight for round two."
+    },
+    {
+      "round": 2,
+      "tried": "Heavier selected C in colour and monochrome",
+      "wrong": "An inner-corner sliver survives below the selected bar. The gap is still soft at 16px, and the mark needs more visual weight.",
+      "changed": "Cut through the entire inner corner; use 144-unit weight and 56-unit separation, and reduce small-icon corner rounding."
+    },
+    {
+      "round": 3,
+      "tried": "144-unit C, 56-unit gap, simplified small cap, light and reversed variants, lockup",
+      "wrong": "At 16px the separating gap is subpixel and softer than at 29px; the ll ligature loses clarity at small width.",
+      "changed": "Use the plainer cap for tiny icons, retain an unmodified readable wordmark, and set recommended lockup minimum to 120px. Accept that the C silhouette, rather than the selection metaphor, leads at 16px."
+    },
+    {
+      "round": 4,
+      "tried": "Angular split C, blue split C, angular selected C and diagonal comparison glyph",
+      "wrong": "The 88-unit rails look thin beside the Dock references. The diagonal glyph reads as fragments; the selected C retains too much of the rejected direction.",
+      "changed": "Choose the split C; thicken rails to 112 and increase seam to 64."
+    },
+    {
+      "round": 5,
+      "tried": "112-unit split C in white and blue/white",
+      "wrong": "The seam still partly closes at 16px. Two-tone halves overemphasize status colour.",
+      "changed": "Widen seam to 80 and prefer an entirely white mark. Keep a single-blue alternative."
+    },
+    {
+      "round": 6,
+      "tried": "Final 80-unit seam, monochrome figure, blue alternative and light/dark wordmarks",
+      "wrong": "The C is legible at 16px but its seam remains subtler there than at Dock sizes. The 80px lockup is too small for the name.",
+      "changed": "Use the standalone symbol for tiny sizes; set lockup minimum at 120px. Keep depth in the tile only, leaving a flat monochrome master."
+    },
+    {
+      "round": 7,
+      "tried": "Six finishes: Precision, Machined, Graphite, Cobalt, Glacier and Porcelain",
+      "wrong": "Deep extrusion creates heavy undersides. Broad shadows soften edges. Graphite has weak small-size contrast.",
+      "changed": "Reduce extrusion and shadow spread; compare two additional silhouette options, Compact and Blade."
+    },
+    {
+      "round": 8,
+      "tried": "Reduced-depth finishes plus Compact and Blade silhouettes",
+      "wrong": "Graphite still loses contrast. Blade’s long chamfer intersects the seam and makes a small tooth. Metal highlights are too thick.",
+      "changed": "Brighten Graphite, shorten Blade’s chamfer, reduce the highlight to three units, and add a flat pixel-aligned small-size version."
+    },
+    {
+      "round": 9,
+      "tried": "Eight refined variants and a pixel-aligned flat small-size mark",
+      "wrong": "Strong effects become indistinguishable at favicon size. Compact reads more like a bracket; Blade is more delicate.",
+      "changed": "Recommend Machined as the balanced finish, retain Compact as the geometric alternative, and provide a separate flat small-size treatment instead of relying on relief at 16px."
+    },
+    {
+      "round": 10,
+      "tried": "Apply the preferred Compact C to all four retained finishes",
+      "wrong": "Graphite, Porcelain and Cobalt had thinner, wider geometry than the preferred Compact.",
+      "changed": "Share Compact geometry: 128-unit rails, 80-unit seam, 130-unit chamfer, left 264, right 760, top 248. Preserve finish colours and lighting."
+    }
+  ],
+  "chosen": "Compact C geometry in Graphite, Compact, Porcelain and Cobalt",
+  "status": "Approved four-finish Compact C family; rejected artwork and stale reviews removed",
+  "checks": {
+    "page": "passed",
+    "visual": "Eight-variant review page inspected at 1280px and 400px in light and dark, all 20 screenshot slices. Interactive gallery previewed at 728px dark and 390px light with no console errors; selection behavior checked for all eight variants.",
+    "cargo_build": "passed",
+    "cargo_clippy": "passed with -D warnings",
+    "cargo_test": "90 passed, 3 ignored",
+    "unverified": [
+      "Trademark clearance",
+      "Audience recognition",
+      "Installed macOS Dock appearance"
+    ]
+  },
+  "shortlist": [
+    "03-graphite",
+    "07-compact",
+    "06-porcelain",
+    "04-cobalt"
+  ],
+  "discarded_variants": [
+    "01-precision",
+    "02-machined",
+    "05-glacier",
+    "08-blade"
+  ],
+  "cleanup": {
+    "retained_artwork_sha256": {
+      "03-graphite": "04ebe34ec99c8c7bef1773cf18c1f6bde5519e7459a5799bd9163f03718da721",
+      "07-compact": "e8796a382c224afb06605c0185e5129b37c24c7d55ee488ac0ed2c2d26a2142d",
+      "06-porcelain": "31dbccb289857d6d3ef3e966028594547efaa41e91f5297d0757b3a85bde0890",
+      "04-cobalt": "33e97455b54d1b8727964fe7f53b3bb4ddcffd9d4d0df6b959dbbfbe7ab58537"
+    },
+    "preview": "variants/preview.html",
+    "generator": "variants/draw.mjs"
+  }
+}

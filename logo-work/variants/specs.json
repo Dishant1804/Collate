@@ -1,0 +1,98 @@
+[
+  {
+    "id": "03-graphite",
+    "name": "Graphite",
+    "tile": [
+      "#272A30",
+      "#0A0B0E"
+    ],
+    "rim": [
+      "#61666F",
+      "#1D2027"
+    ],
+    "face": [
+      "#E8EDF5",
+      "#9DA9BC"
+    ],
+    "weight": 128,
+    "seam": 80,
+    "chamfer": 130,
+    "depth": 8,
+    "left": 264,
+    "right": 760,
+    "y": 248,
+    "description": "Compact\u2019s exact C in cool silver on near-black. A restrained metal finish with crisp highlights."
+  },
+  {
+    "id": "07-compact",
+    "name": "Compact",
+    "tile": [
+      "#2C3037",
+      "#101217"
+    ],
+    "rim": [
+      "#727985",
+      "#232731"
+    ],
+    "face": [
+      "#FFFFFF",
+      "#D6DDE8"
+    ],
+    "weight": 128,
+    "seam": 80,
+    "chamfer": 130,
+    "depth": 8,
+    "left": 264,
+    "right": 760,
+    "y": 248,
+    "description": "A narrower, heavier C with compact proportions and a strong silhouette."
+  },
+  {
+    "id": "06-porcelain",
+    "name": "Porcelain",
+    "tile": [
+      "#F7F9FC",
+      "#C5CCD6"
+    ],
+    "rim": [
+      "#FFFFFF",
+      "#7E8A9B"
+    ],
+    "face": [
+      "#353E4B",
+      "#101722"
+    ],
+    "weight": 128,
+    "seam": 80,
+    "chamfer": 130,
+    "depth": 6,
+    "left": 264,
+    "right": 760,
+    "y": 248,
+    "description": "Compact\u2019s exact C in dark metal on a light aluminium tile."
+  },
+  {
+    "id": "04-cobalt",
+    "name": "Cobalt",
+    "tile": [
+      "#3966E8",
+      "#13256B"
+    ],
+    "rim": [
+      "#93B5FF",
+      "#23397E"
+    ],
+    "face": [
+      "#FFFFFF",
+      "#D4E4FF"
+    ],
+    "weight": 128,
+    "seam": 80,
+    "chamfer": 130,
+    "depth": 10,
+    "left": 264,
+    "right": 760,
+    "y": 248,
+    "description": "Compact\u2019s exact C in white metal on deep cobalt."
+  }
+]
