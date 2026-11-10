@@ -12,6 +12,12 @@ A git diff viewer for macOS, in Rust, on the Rune UI framework. One binary crate
 Run all three checks before saying a change is done. Never run `cargo fmt`: the code is
 laid out by hand and `rustfmt.toml` disables the formatter.
 
+After a change to the app passes the checks, reinstall it so the installed app is the new
+build: quit the running one (`osascript -e 'quit app "Collate"'`; the installer refuses
+while it runs), run `scripts/install.sh`, which builds a release and replaces the old
+`Collate.app`, then reopen it (`open -a Collate`) so the reader doesn't have to. Say if the
+install failed; a `cargo build` alone doesn't update the app.
+
 ## Layout
 
 - `src/main.rs`: app state (`Collate`), views outside the diff, keys, the watcher thread, view tests.
