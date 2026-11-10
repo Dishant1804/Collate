@@ -697,7 +697,9 @@ impl<S: 'static> View<S> {
             inner = inner.child(count);
         }
         if let Some(h) = file.hunks.get(gap) {
-            inner = inner.child(text(h.header()).font(l.small).color(l.faint).single_line().min_w(0.0).shrink().key("header"));
+            // Shrunk to the room the hunk's actions leave, the function context ends in an
+            // ellipsis rather than running on under them.
+            inner = inner.child(text(h.header()).font(l.small).color(l.faint).single_line().truncate().min_w(0.0).shrink().key("header"));
             if let Some(actions) = &self.d.hunk {
                 inner = inner.child(row().key("space").grow(1.0)).child(actions(s, f, gap).key("actions").pr(EDGE - GHOST_PAD));
             }
