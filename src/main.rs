@@ -2815,6 +2815,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     }
 
     pulls::compose_dialog(s, k, layer);
+    pulls::rewrite_dialog(s, k, layer);
 
     if let Some((from, to)) = &s.compare {
         let end = |key: &'static str, label: &str, value: &str, to: bool| {

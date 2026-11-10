@@ -160,6 +160,11 @@ impl Detail {
         (*at != self.head_oid).then_some(at.as_str())
     }
 
+    /// Whether the commit `me` last reviewed is gone from the branch: it was rewritten since.
+    pub fn force_pushed(&self, me: &str) -> bool {
+        self.last_reviewed(me).is_some_and(|at| !self.commits.iter().any(|(c, _)| c == at))
+    }
+
     /// The whole change, as the pull request's diff on GitHub shows it.
     pub fn range(&self) -> String {
         format!("{}..{}", self.merge_base, self.head_oid)
@@ -329,16 +334,31 @@ impl Gh {
     fn fetch(&self, n: u32, url: &str, base: &str) -> Result<(String, Vec<Hunk>), String> {
         let repo = url.rsplit_once("/pull/").map(|(r, _)| r).ok_or_else(|| format!("#{n} has no GitHub address to fetch from"))?;
         let (head, base_ref) = (format!("refs/collate/pull/{n}/head"), format!("refs/collate/pull/{n}/base"));
-        let git = |args: &[&str]| -> Result<String, String> {
-            let out = Command::new("git").args(args).current_dir(&self.root).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("can't run git: {e}"))?;
-            if out.status.success() { Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
-        };
+        let git = |args: &[&str]| self.git(args);
         git(&["fetch", "--no-tags", "--quiet", repo, &format!("+refs/pull/{n}/head:{head}"), &format!("+refs/heads/{base}:{base_ref}")])
             .map_err(|e| format!("Couldn't fetch #{n}: {e}"))?;
         let mb = git(&["merge-base", &base_ref, &head]).map_err(|e| format!("#{n} has no common history with {base}: {e}"))?;
         let tip = git(&["rev-parse", &head])?;
         let patch = git(&["diff", "--unified=3", "--no-color", "--no-ext-diff", &mb, &tip])?;
         Ok((format!("{mb}..{tip}"), hunk_ranges(&patch)))
+    }
+
+    fn git(&self, args: &[&str]) -> Result<String, String> {
+        let out = Command::new("git").args(args).current_dir(&self.root).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("can't run git: {e}"))?;
+        if out.status.success() { Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
+    }
+
+    /// What a force-push changed since the reader reviewed commit `reviewed`: `git range-diff`
+    /// of the branch as it was then against the branch now, each from its own merge base, so a
+    /// rebase onto a newer base doesn't show the base's changes. GitHub keeps the old commit,
+    /// so it can be fetched by its id.
+    pub fn rewritten(&self, d: &Detail, reviewed: &str) -> Result<String, String> {
+        let n = d.pull.number;
+        let repo = d.pull.url.rsplit_once("/pull/").map(|(r, _)| r).ok_or_else(|| format!("#{n} has no GitHub address to fetch from"))?;
+        let old = format!("refs/collate/pull/{n}/reviewed");
+        self.git(&["fetch", "--no-tags", "--quiet", repo, &format!("+{reviewed}:{old}")]).map_err(|e| format!("Couldn't fetch the commit you reviewed: {e}"))?;
+        let old_base = self.git(&["merge-base", &old, &format!("refs/collate/pull/{n}/base")]).map_err(|e| format!("The commit you reviewed has no common history with {}: {e}", d.pull.base))?;
+        self.git(&["range-diff", "--no-color", &format!("{old_base}..{old}"), &d.range()])
     }
 
     /// Refuse when pull request `number`'s head is no longer `seen`, the commit the reader
@@ -777,6 +797,53 @@ mod tests {
         assert_eq!(d.last_reviewed("me"), None, "nothing new since");
         d.merge_base = "m0".into();
         assert_eq!(d.range(), "m0..b2");
+    }
+
+    #[test]
+    fn a_force_push_reads_as_a_range_diff_against_the_commit_reviewed() {
+        let tmp = std::env::temp_dir().join(format!("collate-rewrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let (origin, here) = (tmp.join("origin"), tmp.join("here"));
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        let commit = |file: &str, text: &str| {
+            std::fs::write(origin.join(file), text).unwrap();
+            git(&origin, &["add", "-A"]);
+            git(&origin, &["commit", "-qm", file]);
+            git(&origin, &["rev-parse", "HEAD"])
+        };
+        for dir in [&origin, &here] {
+            std::fs::create_dir_all(dir).unwrap();
+            git(dir, &["init", "-q", "-b", "main"]);
+            for (k, v) in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")] {
+                git(dir, &["config", k, v]);
+            }
+        }
+        // GitHub serves any commit by its id; a local repository does when asked to.
+        git(&origin, &["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        commit("base.txt", "base\n");
+        git(&origin, &["switch", "-qc", "feature"]);
+        let first = commit("a.txt", "one\n");
+        let lines: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        let reviewed = commit("b.txt", &lines);
+        // The second commit amended with a fix, and pushed over the one reviewed.
+        git(&origin, &["reset", "-q", "--hard", &first]);
+        commit("b.txt", &lines.replace("line 7\n", "line 7, fixed\n"));
+        git(&origin, &["update-ref", "refs/pull/1/head", "feature"]);
+        let gh = Gh::new(&here);
+        let url = format!("{}/pull/1", origin.display());
+        let (range, _) = gh.fetch(1, &url, "main").unwrap();
+        let mut d = detail(&serde_json::json!({"number": 1, "url": url, "baseRefName": "main"}), &serde_json::json!({}));
+        let (base, tip) = range.split_once("..").unwrap();
+        (d.merge_base, d.head_oid) = (base.to_owned(), tip.to_owned());
+        let out = gh.rewritten(&d, &reviewed).unwrap();
+        let heads: Vec<&str> = out.lines().filter(|l| !l.starts_with(' ')).map(|l| l.split_whitespace().nth(2).unwrap_or("")).collect();
+        assert_eq!(heads, ["=", "!"], "the first commit kept, the second changed:\n{out}");
+        assert!(out.contains("line 7, fixed"), "{out}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

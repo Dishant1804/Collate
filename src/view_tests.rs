@@ -1361,6 +1361,25 @@ fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
     assert!(rt.state.pending().is_empty(), "no line comment goes to GitHub from part of it");
     rt.update(|s, _| s.show_pr_part("all"));
     assert!(rt.state.pr_whole());
+    // Reviewed on a commit the branch no longer has: a force-push to look at, not a range.
+    rt.update(|s, _| {
+        s.pulls.pr.as_mut().unwrap().reviewed = vec![("me".into(), "gone".into())];
+        s.loaded = true;
+    });
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "pr-part");
+    let menu = rt.popup_menu().expect("the part menu opened");
+    assert!(menu.find("rewrite").is_some() && menu.find("since").is_none(), "the force-push, not a range from a missing commit");
+    rt.resolve_popup(None).unwrap();
+    rt.update(|s, _| s.pulls.rewrite = Some("1:  a1 = 1:  b1 First\n2:  a2 ! 2:  c3 Second\n    -    old\n    +    new\n".into()));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("rewrite-3").is_some(), "the dialog lists the range-diff");
+    click(&mut rt, "rewrite-done");
+    assert!(rt.state.pulls.rewrite.is_none());
     rt.update(|s, _| s.set_scope(Scope::Staged));
     assert!(rt.state.pulls.pr.is_none(), "another view leaves the pull request");
 }

@@ -73,6 +73,8 @@ pub struct PullsState {
     pub connect_try: u32,
     /// The list's groups folded to their titles, by title.
     pub folded: HashSet<&'static str>,
+    /// What a force-push changed since the reader's review, as `git range-diff` tells it.
+    pub rewrite: Option<String>,
 }
 
 impl Default for PullsState {
@@ -96,6 +98,7 @@ impl Default for PullsState {
             connect_try: 0,
             // Finished pull requests are there to look back on, not to act on.
             folded: HashSet::from(["Merged", "Closed"]),
+            rewrite: None,
         }
     }
 }
@@ -365,7 +368,10 @@ impl Collate {
     pub fn pr_part_menu(&mut self, tx: &mut Tx) {
         let Some(d) = &self.pulls.pr else { return };
         let mut menu = PopupMenu::new().item(PopupItem::new("all", "All Changes").checked(self.pr_whole()));
-        if let Some(at) = self.pulls.me().and_then(|me| d.last_reviewed(me)) {
+        let me = self.pulls.me().unwrap_or("");
+        if d.force_pushed(me) {
+            menu = menu.item(PopupItem::new("rewrite", "What the Force-Push Changed…"));
+        } else if let Some(at) = d.last_reviewed(me) {
             let since = format!("{at}..{}", d.head_oid);
             menu = menu.item(PopupItem::new("since", "Changes Since Your Last Review").checked(self.commit.as_deref() == Some(since.as_str())));
         }
@@ -376,10 +382,25 @@ impl Collate {
             let shown = self.commit.as_deref() == Some(format!("{id}^..{id}").as_str());
             menu = menu.item(PopupItem::new(id.clone(), format!("{} of {} - {subject}", i + 1, d.commits.len())).checked(shown));
         }
-        tx.popup_menu(menu, "pr-part", |s: &mut Collate, picked, _| {
-            if let Some(p) = picked {
-                s.show_pr_part(p);
-            }
+        tx.popup_menu(menu, "pr-part", |s: &mut Collate, picked, _| match picked {
+            Some("rewrite") => s.read_force_push(),
+            Some(p) => s.show_pr_part(p),
+            None => {}
+        });
+    }
+
+    /// Reads what a force-push changed since the reader's last review, off the UI thread.
+    fn read_force_push(&mut self) {
+        let (Some(gh), Some(app), Some(d)) = (gh(), HANDLE.get().cloned(), self.pulls.pr.clone()) else { return };
+        let Some(at) = self.pulls.me().and_then(|me| d.last_reviewed(me)).map(str::to_owned) else { return };
+        self.say("Reading what the force-push changed…", false);
+        std::thread::spawn(move || {
+            let got = gh.rewritten(&d, &at);
+            app.update(move |s, _| match got {
+                Ok(out) if out.trim().is_empty() => s.say("The force-push changed no commits", false),
+                Ok(out) => s.pulls.rewrite = Some(out),
+                Err(e) => s.github_failed(e),
+            });
         });
     }
 
@@ -1028,9 +1049,91 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         .child(body.child(buttons)).build(k, layer);
 }
 
+/// A line of `git range-diff`: a pair of commits and whether the second kept the first's
+/// change, or a line of how a changed one differs (by its outer `+` or `-`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rd {
+    Same,
+    Changed,
+    Dropped,
+    Added,
+    Plus,
+    Minus,
+    Context,
+}
+
+pub fn range_diff_lines(out: &str) -> Vec<(Rd, &str)> {
+    out.lines()
+        .map(|l| {
+            let kind = match l.strip_prefix("    ") {
+                Some(inner) if inner.starts_with('+') => Rd::Plus,
+                Some(inner) if inner.starts_with('-') => Rd::Minus,
+                Some(_) => Rd::Context,
+                // `1:  a1b2c3d ! 1:  d4e5f6a Subject`: the third word says what happened.
+                None => match l.split_whitespace().nth(2) {
+                    Some("=") => Rd::Same,
+                    Some("!") => Rd::Changed,
+                    Some("<") => Rd::Dropped,
+                    Some(">") => Rd::Added,
+                    _ => Rd::Context,
+                },
+            };
+            (kind, l)
+        })
+        .collect()
+}
+
+/// How many commits a range-diff kept, changed, dropped and added, in words.
+fn range_diff_summary(lines: &[(Rd, &str)]) -> String {
+    let n = |k: Rd| lines.iter().filter(|(x, _)| *x == k).count();
+    let parts: Vec<String> = [(Rd::Same, "unchanged"), (Rd::Changed, "changed"), (Rd::Dropped, "dropped"), (Rd::Added, "added")]
+        .iter()
+        .filter(|(k, _)| n(*k) > 0)
+        .map(|(k, what)| format!("{} {what}", n(*k)))
+        .collect();
+    format!("Since your review: {}.", parts.join(", "))
+}
+
+/// What a force-push changed since the reader's review: each commit then against now, and
+/// how a changed one's change differs.
+pub fn rewrite_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let Some(out) = &s.pulls.rewrite else { return };
+    // A long rewrite would be thousands of elements; past this it's read in a terminal.
+    const MAX: usize = 1500;
+    let lines = range_diff_lines(out);
+    let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
+    let mut list = col().key("rewrite-lines").w_full();
+    for (i, (kind, l)) in lines.iter().take(MAX).enumerate() {
+        let color = match kind {
+            Rd::Same => k.c.text_faint,
+            Rd::Changed => k.c.text_base,
+            Rd::Dropped | Rd::Minus => k.c.danger.fg,
+            Rd::Added | Rd::Plus => k.c.success.fg,
+            Rd::Context => k.c.text_muted,
+        };
+        list = list.child(text((*l).to_owned()).key(format!("rewrite-{i}")).font(mono).color(color).truncate().min_w(0.0));
+    }
+    let mut body = col().key("rewrite-body").w_full().gap(8.0).child(col().w_full().max_h(480.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(list));
+    if lines.len() > MAX {
+        body = body.child(text(format!("The first {MAX} of {} lines.", lines.len())).font(k.ty.text_small).color(k.c.text_muted));
+    }
+    body = body.child(row().w_full().child(row().grow(1.0))
+        .child(Button::new("Done").variant(ButtonVariant::Contrast).on_press(|s: &mut Collate| s.pulls.rewrite = None).build(k).key("rewrite-done")));
+    Dialog::new("rewrite", "What the force-push changed").open(true).width(760.0).fit().description(range_diff_summary(&lines))
+        .on_close(|s: &mut Collate| s.pulls.rewrite = None).child(body).build(k, layer);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::preview;
+    use super::{Rd, preview, range_diff_lines, range_diff_summary};
+
+    #[test]
+    fn a_range_diff_reads_as_kept_changed_dropped_and_added_commits() {
+        let out = "1:  a1b2c3d = 1:  d4e5f6a First\n2:  1111111 ! 2:  2222222 Second\n    @@ src/a.rs\n     fn a() {\n    -    old();\n    +    new();\n3:  3333333 < -:  ------- Dropped\n-:  ------- > 3:  4444444 Added\n";
+        let kinds: Vec<Rd> = range_diff_lines(out).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(kinds, [Rd::Same, Rd::Changed, Rd::Context, Rd::Context, Rd::Minus, Rd::Plus, Rd::Dropped, Rd::Added]);
+        assert_eq!(range_diff_summary(&range_diff_lines(out)), "Since your review: 1 unchanged, 1 changed, 1 dropped, 1 added.");
+    }
 
     #[test]
     fn only_new_review_requests_notify_and_never_the_first_time() {
