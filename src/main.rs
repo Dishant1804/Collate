@@ -611,8 +611,11 @@ fn init() -> Collate {
 
 impl Collate {
     fn set_scope(&mut self, scope: Scope) {
-        // Any view of the changes leaves the pull request list.
+        // Any view of the changes leaves the pull request list, and any but History its pull request.
         self.pulls.open = false;
+        if scope != Scope::History {
+            self.close_pull();
+        }
         if self.scope != scope {
             self.scope = scope;
             self.loaded = false;
@@ -863,6 +866,7 @@ impl Collate {
     /// Back from a commit's diff to the commit list, showing the commit it was on.
     fn close_commit_diff(&mut self, tx: &mut Tx) {
         self.history_diff = false;
+        self.close_pull();
         if let Some(c) = &self.commit {
             tx.scroll_into_view(format!("graph-{c}"));
         }
@@ -3154,6 +3158,7 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
         let mut r = SidebarRow::new(label.to_owned()).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| {
             s.map.open = false;
             s.pulls.open = false;
+            s.close_pull();
             s.set_scope(scope);
         });
         if let Some(n) = badge.filter(|&n| n > 0) {
@@ -3327,7 +3332,9 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     // sits as far below what's above it (the filter, a hairline) as the next.
     let mut p = col().key("staging").w_full().h_full().pt(COLUMN_TOP);
     // History leads with the chosen commit; its files follow, as in Zed's commit view.
-    if s.scope == Scope::History
+    if let Some(card) = pulls::pr_card(s, k) {
+        p = p.child(card.mb(4.0));
+    } else if s.scope == Scope::History
         && let Some(card) = commit_card(s, k)
     {
         p = p.child(card.mb(4.0));

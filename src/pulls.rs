@@ -17,6 +17,8 @@ pub struct PullsState {
     pub loading: bool,
     /// The pull request being reviewed.
     pub pr: Option<Detail>,
+    /// The pull request being fetched to open.
+    pub fetching: Option<u32>,
 }
 
 impl Default for PullsState {
@@ -26,6 +28,7 @@ impl Default for PullsState {
             list: None,
             loading: false,
             pr: None,
+            fetching: None,
         }
     }
 }
@@ -66,6 +69,38 @@ impl Collate {
                 s.pulls.list = Some(got);
             });
         });
+    }
+
+    /// Fetch pull request `n` and show its diff, details and threads.
+    pub fn open_pull(&mut self, n: u32) {
+        let (Some(gh), Some(app)) = (gh(), HANDLE.get().cloned()) else { return };
+        if self.pulls.fetching.is_some() {
+            return;
+        }
+        self.pulls.fetching = Some(n);
+        std::thread::spawn(move || {
+            let got = gh.detail(n).and_then(|d| Ok((gh.fetch(&d)?, d)));
+            app.update(move |s, _| {
+                s.pulls.fetching = None;
+                match got {
+                    Ok((range, d)) => {
+                        s.pulls.open = false;
+                        s.open_commit(&range);
+                        s.compared = Some((d.pull.base.clone(), d.pull.head.clone()));
+                        s.pulls.pr = Some(d);
+                        s.place_comments();
+                    }
+                    Err(e) => s.say(e, true),
+                }
+            });
+        });
+    }
+
+    /// Leave the pull request: its threads go from the diff.
+    pub fn close_pull(&mut self) {
+        if self.pulls.pr.take().is_some() {
+            self.place_comments();
+        }
     }
 
 }
@@ -118,7 +153,7 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
                     .child(text(group.len().to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint)));
                 for p in group {
                     let n = p.number;
-                    let fetching = false;
+                    let fetching = s.pulls.fetching == Some(n);
                     let (verdict, tint) = decision(k, p);
                     let mut words = col().grow(1.0).min_w(0.0).gap(2.0)
                         .child(text(p.title.clone()).font(k.ty.ui_medium).color(k.c.text_base).truncate())
@@ -127,7 +162,8 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
                         words = words.child(text(p.labels.join(", ")).font(k.ty.text_small).color(k.c.text_faint).truncate());
                     }
                     list = list.child(row().key(format!("pull-{n}")).w_full().px(EDGE).py(8.0).gap(12.0).items_center()
-                        .role("listitem").label(format!("#{n} {}", p.title))
+                        .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("#{n} {}", p.title)).help("Review this pull request")
+                        .on_press(move |s: &mut Collate| s.open_pull(n))
                         .child(dot(k, github::overall(&p.checks)))
                         .child(words)
                         .child(text(if fetching { "Opening…" } else { verdict }.to_owned()).font(k.ty.text_xsmall_medium).color(tint))
@@ -139,5 +175,106 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
         }
     };
     col().key("pulls").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(body)
+}
+
+/// What stands between the pull request and merging, in words.
+fn readiness(pr: &Detail) -> (&'static str, bool) {
+    match (pr.state.as_str(), pr.mergeable.as_str(), pr.merge_state.as_str()) {
+        ("MERGED", ..) => ("Merged", false),
+        ("CLOSED", ..) => ("Closed", false),
+        (_, "CONFLICTING", _) | (_, _, "DIRTY") => ("Has conflicts with the base", false),
+        (_, _, "BEHIND") => ("Behind the base branch", true),
+        (_, _, "BLOCKED") => ("Blocked: needs approval or passing checks", false),
+        (_, _, "UNSTABLE") => ("Some checks failed", true),
+        (_, _, "DRAFT") => ("Draft: not ready to merge", false),
+        (_, _, "CLEAN" | "HAS_HOOKS") => ("Ready to merge", true),
+        _ => ("Checking mergeability…", false),
+    }
+}
+
+/// The open pull request at the top of the staging panel: what it is, where it stands, its
+/// checks, reviewers and conversation, and what can be done with it.
+pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
+    let pr = s.pulls.pr.as_ref()?;
+    let p = &pr.pull;
+    let open = pr.state == "OPEN";
+    let section = |key: &str, title: &str| text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint).key(key.to_owned()).pt(4.0);
+    let (ready, can_merge) = readiness(pr);
+    let mut card = col().key("pr-card").w_full().px(PANEL_INSET).pt(4.0).pb(10.0).gap(6.0)
+        .child(row().w_full().gap(4.0).items_start()
+            .child(text(p.title.clone()).font(k.ty.ui_medium).color(k.c.text_base).wrap().grow(1.0).min_w(0.0))
+            )
+        .child(text(format!("#{} by {} - {} → {}", p.number, p.author, p.head, p.base)).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full())
+        .child(row().key("pr-ready").w_full().gap(6.0).items_center()
+            .child(dot(k, Some(if can_merge { CheckState::Passed } else if open { CheckState::Pending } else { CheckState::Skipped })))
+            .child(text(ready.to_owned()).font(k.ty.text_small).color(k.c.text_base)));
+    if !p.checks.is_empty() {
+        let failed = p.checks.iter().filter(|c| c.state == CheckState::Failed).count();
+        let passed = p.checks.iter().filter(|c| c.state == CheckState::Passed).count();
+        card = card.child(section("pr-checks-title", &format!("Checks - {passed} passed{}", if failed > 0 { format!(", {failed} failed") } else { String::new() })));
+        let mut checks: Vec<&github::Check> = p.checks.iter().collect();
+        // Failures first: they're what needs looking at.
+        checks.sort_by_key(|c| match c.state {
+            CheckState::Failed => 0,
+            CheckState::Pending => 1,
+            CheckState::Passed => 2,
+            CheckState::Skipped => 3,
+        });
+        for (i, c) in checks.into_iter().enumerate() {
+            let url = c.url.clone();
+            let mut r = row().key(format!("check-{i}")).w_full().gap(6.0).items_center().child(dot(k, Some(c.state)))
+                .child(text(c.name.clone()).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0).grow(1.0));
+            if !url.is_empty() {
+                r = r.cursor(Cursor::Pointer).role("link").label(format!("Open {}", c.name)).on_press(move |_: &mut Collate| open_url(&url));
+            }
+            card = card.child(r);
+        }
+    }
+    if !pr.reviewers.is_empty() {
+        card = card.child(section("pr-reviewers-title", "Reviewers"));
+        for (who, state) in &pr.reviewers {
+            let (label, tint) = match state.as_str() {
+                "APPROVED" => ("Approved", k.c.success.icon),
+                "CHANGES_REQUESTED" => ("Changes requested", k.c.danger.icon),
+                "REQUESTED" => ("Asked", k.c.text_faint),
+                _ => ("Commented", k.c.text_muted),
+            };
+            card = card.child(row().key(format!("reviewer-{who}")).w_full().gap(6.0)
+                .child(text(who.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0))
+                .child(text(label.to_owned()).font(k.ty.text_small).color(tint)));
+        }
+    }
+    if !p.labels.is_empty() {
+        card = card.child(section("pr-labels-title", "Labels")).child(text(p.labels.join(", ")).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full());
+    }
+    if !pr.body.trim().is_empty() {
+        card = card.child(section("pr-body-title", "Description")).child(text(pr.body.trim().to_owned()).font(k.ty.text_small).color(k.c.text_base).wrap().w_full().max_lines(12));
+    }
+    let open_threads = pr.threads.iter().filter(|t| !t.resolved).count();
+    card = card.child(section("pr-talk-title", &format!("Conversation - {} comment{}, {open_threads} open thread{}",
+        pr.conversation.len(), if pr.conversation.len() == 1 { "" } else { "s" }, if open_threads == 1 { "" } else { "s" })));
+    for (i, post) in pr.conversation.iter().enumerate() {
+        card = card.child(post_view(k, &format!("post-{i}"), post));
+    }
+    // The panel's file list follows; a long conversation scrolls here rather than pushing it away.
+    Some(col().key("pr-scroll").w_full().max_h(440.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(card))
+}
+
+fn post_view(k: &Kit, key: &str, p: &github::Post) -> El {
+    let verdict = match p.state.as_str() {
+        "APPROVED" => " approved",
+        "CHANGES_REQUESTED" => " requested changes",
+        "COMMENTED" => " reviewed",
+        "DISMISSED" => "'s review was dismissed",
+        _ => "",
+    };
+    let mut c = col().key(key.to_owned()).w_full().gap(2.0)
+        .child(row().w_full().gap(6.0)
+            .child(text(format!("{}{verdict}", p.author)).font(k.ty.text_xsmall_medium).color(k.c.text_base))
+            .child(text(p.time.get(..10).unwrap_or("").to_owned()).font(k.ty.text_small).color(k.c.text_faint)));
+    if !p.body.trim().is_empty() {
+        c = c.child(text(p.body.trim().to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full().max_lines(8));
+    }
+    c
 }
 
