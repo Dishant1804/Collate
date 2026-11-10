@@ -110,7 +110,19 @@ pub struct Detail {
     /// Comments and reviews with a summary, oldest first.
     pub conversation: Vec<Post>,
     pub threads: Vec<Thread>,
+    /// Where GitHub takes line comments: its own diff's hunks, three lines of context each, as
+    /// (path, left side, first line, last line). Lines past them (context Collate shows more of)
+    /// can't be commented on. Filled by [`Gh::fetch`].
+    pub commentable: Vec<(String, bool, u32, u32)>,
 }
+
+impl Detail {
+    /// Whether GitHub accepts a comment on `line` of `path`'s base (`left`) or head side.
+    pub fn commentable(&self, path: &str, left: bool, line: u32) -> bool {
+        self.commentable.iter().any(|(p, l, a, b)| p == path && *l == left && (*a..=*b).contains(&line))
+    }
+}
+
 /// A comment of a review being submitted, on a line of the diff.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draft {
@@ -227,9 +239,9 @@ impl Gh {
         Ok(detail(&v, &threads))
     }
 
-    /// Fetch the pull request's head and base into `refs/collate/`; returns the range to diff,
-    /// `<merge base>..<head>`.
-    pub fn fetch(&self, d: &Detail) -> Result<String, String> {
+    /// Fetch the pull request's head and base into `refs/collate/`, and note which lines GitHub
+    /// takes comments on; returns the range to diff, `<merge base>..<head>`.
+    pub fn fetch(&self, d: &mut Detail) -> Result<String, String> {
         let url = self.run(&["repo", "view", "--json", "url", "--jq", ".url"], None)?.trim().to_owned();
         let n = d.pull.number;
         let (head, base) = (format!("refs/collate/pull/{n}/head"), format!("refs/collate/pull/{n}/base"));
@@ -241,6 +253,8 @@ impl Gh {
             .map_err(|e| format!("Couldn't fetch #{n}: {e}"))?;
         let mb = git(&["merge-base", &base, &head]).map_err(|e| format!("#{n} has no common history with {}: {e}", d.pull.base))?;
         let tip = git(&["rev-parse", &head])?;
+        let patch = git(&["diff", "--unified=3", "--no-color", "--no-ext-diff", &mb, &tip])?;
+        d.commentable = hunk_ranges(&patch);
         Ok(format!("{mb}..{tip}"))
     }
 
@@ -307,6 +321,33 @@ impl Gh {
         }
         Ok(self.run(&args, Some(body))?.lines().last().unwrap_or("").trim().to_owned())
     }
+}
+
+/// Each hunk's lines on both sides, by the file's path (the new one, or the old for a deletion).
+fn hunk_ranges(patch: &str) -> Vec<(String, bool, u32, u32)> {
+    let mut out = Vec::new();
+    let (mut old, mut path) = (String::new(), String::new());
+    for l in patch.lines() {
+        if let Some(p) = l.strip_prefix("--- ") {
+            old = p.strip_prefix("a/").unwrap_or(p).to_owned();
+        } else if let Some(p) = l.strip_prefix("+++ ") {
+            path = if p == "/dev/null" { old.clone() } else { p.strip_prefix("b/").unwrap_or(p).to_owned() };
+        } else if let Some(h) = l.strip_prefix("@@ -") {
+            // `@@ -a,b +c,d @@`: a count left out is 1.
+            let mut parts = h.split(' ');
+            let range = |r: Option<&str>| -> Option<(u32, u32)> {
+                let r = r?.trim_start_matches(['-', '+']);
+                let (a, n) = r.split_once(',').unwrap_or((r, "1"));
+                Some((a.parse().ok()?, n.parse().ok()?))
+            };
+            for (left, r) in [(true, range(parts.next())), (false, range(parts.next()))] {
+                if let Some((a, n)) = r.filter(|(_, n)| *n > 0) {
+                    out.push((path.clone(), left, a, a + n - 1));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Line threads, with the commented line's hunk to find the line's text.
@@ -396,6 +437,7 @@ fn detail(v: &Value, threads: &Value) -> Detail {
         assignees: v["assignees"].as_array().into_iter().flatten().map(login).collect(),
         conversation,
         threads: threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array().into_iter().flatten().filter_map(thread).collect(),
+        commentable: Vec::new(),
     }
 }
 
@@ -447,6 +489,16 @@ mod tests {
         assert_eq!(overall(&[]), None);
         let g = group(std::slice::from_ref(&p), "me");
         assert_eq!((g[0].1.len(), g[1].1.len(), g[2].1.len()), (1, 0, 0));
+    }
+
+    #[test]
+    fn comments_are_taken_only_inside_githubs_hunks() {
+        let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -10,7 +10,8 @@ fn a()\n x\n+y\n@@ -40 +41,0 @@\n-z\ndiff --git a/gone.rs b/gone.rs\n--- a/gone.rs\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n";
+        let mut d = detail(&serde_json::json!({}), &serde_json::json!({}));
+        d.commentable = hunk_ranges(patch);
+        assert!(d.commentable("a.rs", false, 10) && d.commentable("a.rs", false, 17) && !d.commentable("a.rs", false, 18));
+        assert!(d.commentable("a.rs", true, 16) && d.commentable("a.rs", true, 40) && !d.commentable("a.rs", true, 41));
+        assert!(d.commentable("gone.rs", true, 2) && !d.commentable("gone.rs", false, 1), "a deleted file is its old side");
     }
 
     #[test]

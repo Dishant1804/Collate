@@ -3,8 +3,10 @@
 //! checks, conversation and actions take the staging panel's top; its line threads sit under
 //! their lines with the reader's own comments, which a review sends as its line comments.
 
+use std::collections::HashSet;
+
 use rune::{Cursor, El, PopupItem, PopupMenu, TextEdit, Tx, col, row, text};
-use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton, IconButtonVariant, Kit, TextArea, TextInput};
+use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton, IconButtonVariant, Kit, Markdown, MarkdownStyle, TextArea, TextInput};
 
 use crate::github::{self, CheckState, Detail, Draft, Gh, Method, Pull, Verdict};
 use crate::{COLUMN_TOP, Collate, EDGE, GHOST_PAD, HANDLE, MORE_ICON, PANEL_INSET, REFRESH_ICON, current_repo, diff, message, open_url};
@@ -38,6 +40,8 @@ pub struct PullsState {
     pub draft: bool,
     /// Merging deletes the branch too.
     pub delete_branch: bool,
+    /// Long comments shown whole, by their key.
+    pub expanded: HashSet<String>,
 }
 
 impl Default for PullsState {
@@ -53,6 +57,7 @@ impl Default for PullsState {
             title: TextEdit::new(""),
             draft: false,
             delete_branch: true,
+            expanded: HashSet::new(),
         }
     }
 }
@@ -118,7 +123,7 @@ impl Collate {
         }
         self.pulls.fetching = Some(n);
         std::thread::spawn(move || {
-            let got = gh.detail(n).and_then(|d| Ok((gh.fetch(&d)?, d)));
+            let got = gh.detail(n).and_then(|mut d| Ok((gh.fetch(&mut d)?, d)));
             app.update(move |s, _| {
                 s.pulls.fetching = None;
                 match got {
@@ -180,19 +185,24 @@ impl Collate {
         crate::refresh();
     }
 
-    /// The reader's comments on lines of the open pull request's diff: a review sends them.
+    /// The reader's comments on lines of the open pull request's diff that GitHub takes: a
+    /// review sends them.
     pub fn pending(&self) -> Vec<(usize, Draft)> {
-        if self.pulls.pr.is_none() {
-            return Vec::new();
-        }
+        let Some(pr) = &self.pulls.pr else { return Vec::new() };
         self.comments
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.comments_shown.get(*i).copied().unwrap_or(false))
+            .filter(|(i, c)| self.comments_shown.get(*i).copied().unwrap_or(false) && pr.commentable(&c.at.path, c.at.side == diff::Side::Old, c.at.line))
             .map(|(i, c)| (i, Draft { path: c.at.path.clone(), line: c.at.line, left: c.at.side == diff::Side::Old, body: c.body.clone() }))
             .collect()
     }
 
+    /// The reader's comments in the diff that GitHub wouldn't take (outside its hunks): they
+    /// stay on this Mac rather than failing the whole review.
+    pub fn held(&self) -> usize {
+        let shown = self.comments_shown.iter().filter(|&&on| on).count();
+        if self.pulls.pr.is_none() { 0 } else { shown - self.pending().len() }
+    }
 
     pub fn start_compose(&mut self, c: Compose) {
         self.pulls.compose = Some(c);
@@ -408,6 +418,10 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
         if pending > 0 {
             card = card.child(text(format!("{pending} line comment{} go with your review", if pending == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.text_muted));
         }
+        let held = s.held();
+        if held > 0 {
+            card = card.child(text(format!("{held} comment{} outside GitHub's diff stay on this Mac", if held == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.warning.icon).wrap().w_full());
+        }
         let merge = Button::new("Merge…").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!can_merge || s.busy.is_some())
             .help("Squash, merge or rebase into the base").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.merge_menu(tx)).build(k).key("pr-merge");
         let delete = Checkbox::new(s.pulls.delete_branch).label("Delete branch").on_toggle(|s: &mut Collate| s.pulls.delete_branch ^= true).build(k).key("pr-delete-branch");
@@ -453,13 +467,13 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
         card = card.child(section("pr-labels-title", "Labels")).child(text(p.labels.join(", ")).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full());
     }
     if !pr.body.trim().is_empty() {
-        card = card.child(section("pr-body-title", "Description")).child(text(pr.body.trim().to_owned()).font(k.ty.text_small).color(k.c.text_base).wrap().w_full().max_lines(12));
+        card = card.child(section("pr-body-title", "Description")).child(body_view(s, k, "pr-body", &pr.body));
     }
     let open_threads = pr.threads.iter().filter(|t| !t.resolved).count();
     card = card.child(section("pr-talk-title", &format!("Conversation - {} comment{}, {open_threads} open thread{}",
         pr.conversation.len(), if pr.conversation.len() == 1 { "" } else { "s" }, if open_threads == 1 { "" } else { "s" })));
     for (i, post) in pr.conversation.iter().enumerate() {
-        card = card.child(post_view(k, &format!("post-{i}"), post));
+        card = card.child(post_view(s, k, &format!("post-{i}"), post));
     }
     if open {
         card = card.child(row().w_full().child(Button::new("Add a Comment").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
@@ -469,7 +483,40 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
     Some(col().key("pr-scroll").w_full().max_h(440.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(card))
 }
 
-fn post_view(k: &Kit, key: &str, p: &github::Post) -> El {
+/// The part of a long comment shown before "Show all": up to its first `<details>` (where bots
+/// fold their extras) or about 600 characters, cut at a line end. `None` when it's short.
+fn preview(body: &str) -> Option<&str> {
+    const SHORT: usize = 600;
+    let cut = body.find("<details>").unwrap_or(body.len());
+    if cut >= body.len() && body.len() <= SHORT {
+        return None;
+    }
+    let mut end = cut.min(SHORT);
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let end = body[..end].rfind('\n').filter(|&n| n > 0).unwrap_or(end);
+    Some(&body[..end])
+}
+
+/// A comment's body as GitHub renders it: Markdown, with HTML (comments, images, folds) left
+/// out, and a long one folded to its start until asked.
+fn body_view(s: &Collate, k: &Kit, key: &str, body: &str) -> El {
+    let body = body.trim();
+    let open = s.pulls.expanded.contains(key);
+    let short = if open { None } else { preview(body) };
+    let style = MarkdownStyle::from_kit(k).body_font(k.ty.text_small);
+    let md = Markdown::new(short.unwrap_or(body)).style(style).on_link(|_: &mut Collate, url: &str| open_url(url)).build(k).key(format!("{key}-md")).w_full();
+    let mut c = col().key(key.to_owned()).w_full().gap(2.0).child(md);
+    if short.is_some() || (open && preview(body).is_some()) {
+        let key = key.to_owned();
+        c = c.child(row().w_full().child(Button::new(if open { "Show Less" } else { "Show All" }).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+            .on_press(move |s: &mut Collate| if !s.pulls.expanded.remove(&key) { s.pulls.expanded.insert(key.clone()); }).build(k).key("more").ml(-GHOST_PAD)));
+    }
+    c
+}
+
+fn post_view(s: &Collate, k: &Kit, key: &str, p: &github::Post) -> El {
     let verdict = match p.state.as_str() {
         "APPROVED" => " approved",
         "CHANGES_REQUESTED" => " requested changes",
@@ -482,7 +529,7 @@ fn post_view(k: &Kit, key: &str, p: &github::Post) -> El {
             .child(text(format!("{}{verdict}", p.author)).font(k.ty.text_xsmall_medium).color(k.c.text_base))
             .child(text(p.time.get(..10).unwrap_or("").to_owned()).font(k.ty.text_small).color(k.c.text_faint)));
     if !p.body.trim().is_empty() {
-        c = c.child(text(p.body.trim().to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full().max_lines(8));
+        c = c.child(body_view(s, k, &format!("{key}-body"), &p.body));
     }
     c
 }
@@ -503,7 +550,7 @@ pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
     // A resolved thread shows only where it started.
     let shown = if th.resolved { 1 } else { th.comments.len() };
     for (i, c) in th.comments.iter().take(shown).enumerate() {
-        bubble = bubble.child(post_view(k, &format!("c{i}"), c));
+        bubble = bubble.child(post_view(s, k, &format!("t{t}-c{i}"), c));
     }
     row().w_full().pl(96.0).pr(EDGE).py(6.0).role("note").label(format!("Review thread by {}", th.comments.first().map_or("", |c| c.author.as_str()))).child(bubble)
 }
@@ -526,8 +573,13 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             "Describe the change (optional)",
         ),
     };
+    let held = s.held();
     let what = match c {
         Compose::Review(_) if pending > 0 => format!("{what} Your {pending} line comment{} go with it.", if pending == 1 { "" } else { "s" }),
+        _ => what,
+    };
+    let what = match c {
+        Compose::Review(_) if held > 0 => format!("{what} {held} outside GitHub's diff stay on this Mac."),
         _ => what,
     };
     let area = TextArea::new(&s.pulls.text).placeholder(placeholder.to_owned()).label(placeholder.to_owned()).rows(6).max_height(180.0)
@@ -558,3 +610,16 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         .child(body.child(buttons)).build(k, layer);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::preview;
+
+    #[test]
+    fn long_comments_fold_before_their_details_or_at_a_line_end() {
+        assert_eq!(preview("Looks good"), None);
+        assert_eq!(preview("Rename this.\n\n<details>\n<summary>Prompt</summary>\nlong\n</details>"), Some("Rename this.\n"));
+        let long = "word ".repeat(100) + "\n" + &"more ".repeat(100);
+        let cut = preview(&long).expect("folded");
+        assert!(cut.len() <= 600 && !cut.contains("more"));
+    }
+}

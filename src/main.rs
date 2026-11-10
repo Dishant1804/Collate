@@ -2913,6 +2913,10 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
+            // In a pull request, a comment goes with the next review, if GitHub takes it on that line.
+            Ask::Comment(at, None) if s.pulls.pr.as_ref().is_some_and(|p| !p.commentable(&at.path, at.side == diff::Side::Old, at.line)) => ("Comment",
+                "GitHub only takes comments within three lines of a change, so this one stays on this Mac.", "Comment", "Write a comment"),
+            Ask::Comment(_, None) if s.pulls.pr.is_some() => ("Comment", "Goes to GitHub with your next review. Until then it stays on this Mac.", "Comment", "Write a comment"),
             Ask::Comment(_, None) => ("Comment", "Comments stay on this Mac. Copy them as Markdown from the summary to share them.", "Comment", "Write a comment"),
             Ask::Comment(_, Some(_)) => ("Edit comment", "An empty comment is deleted.", "Save", "Write a comment"),
         };
@@ -6088,7 +6092,7 @@ mod tests {
         rt.update(move |s, _| {
             let detail = github::Detail {
                 pull: pull(7, "ana", &["me"]), body: "Why".into(), state: "OPEN".into(), mergeable: "MERGEABLE".into(), merge_state: "BLOCKED".into(),
-                head_oid: String::new(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![],
+                head_oid: String::new(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![], commentable: vec![],
             };
             s.pulls.open = false;
             s.pulls.pr = Some(detail);
