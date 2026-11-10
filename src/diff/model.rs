@@ -266,10 +266,14 @@ impl FileDiff {
     /// The highlighter language for the path's extension (or name, for a `Makefile`), as
     /// written: `"rs"`, `"tsx"`.
     pub fn language(&self) -> Option<&str> {
+        // Files whose name says the language, whatever their extension.
+        const NAMED: [&str; 11] =
+            ["Makefile", "makefile", "GNUmakefile", "Dockerfile", "dockerfile", "Containerfile", "CMakeLists.txt", "Gemfile", "Rakefile", "Justfile", "justfile"];
         let name = self.path().rsplit('/').next()?;
         match name.rsplit_once('.') {
+            _ if NAMED.contains(&name) => Some(name),
             Some((stem, ext)) if !stem.is_empty() => Some(ext),
-            _ => Some(name).filter(|n| matches!(*n, "Makefile" | "Dockerfile")),
+            _ => None,
         }
     }
 
