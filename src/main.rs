@@ -709,7 +709,11 @@ impl Collate {
         self.info.clear();
         self.viewed = load_viewed();
         self.comments = load_comments();
-        self.pulls = pulls::PullsState::default();
+        // The pull requests were the last project's, but the tab stays: a pull request being
+        // reviewed goes back to the new project's list. That shows as last read while it's read again.
+        let on_pulls = self.pulls.open || self.pulls.pr.is_some();
+        let folded = std::mem::take(&mut self.pulls.folded);
+        self.pulls = pulls::PullsState { open: on_pulls, folded, ..Default::default() };
         self.pulls.list = current_repo().and_then(|r| pulls::cached(&r.root)).map(Ok);
         self.load_pulls();
         self.place_comments();
@@ -6089,8 +6093,18 @@ mod tests {
         assert_eq!(rt.state.name, format!("collate-other-{}", std::process::id()));
         assert!(!rt.state.loaded && rt.state.diff.files().is_empty() && rt.state.viewed.is_empty(), "nothing carries over");
         assert_eq!(rt.state.projects[0], root, "the opened project goes first");
+        // The tab carries over: the same scope, and Pull Requests stays open.
+        rt.update(|s, _| {
+            s.set_scope(Scope::Unstaged);
+            s.open_pulls();
+        });
         let back = dir.clone();
         rt.update(move |s, tx| s.open_project(&back, tx));
+        assert!(rt.state.scope == Scope::Unstaged && rt.state.pulls.open, "the switch keeps the tab");
+        rt.update(|s, _| {
+            s.pulls.open = false;
+            s.set_scope(Scope::Uncommitted);
+        });
         assert_eq!(rt.state.projects.len().min(2), 2);
         assert_eq!(rt.state.projects[1], root, "and the other stays in the list");
         // The switcher: starring the other project lifts it to the top; the search narrows the list.
