@@ -974,10 +974,13 @@ impl Repo {
 
     /// Local and remote branches, local first, without `origin/HEAD`.
     pub fn branches(&self) -> Vec<String> {
-        let out = self.run(&["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"], None).unwrap_or_default();
-        // A remote's HEAD shows as `origin/HEAD`, or as the bare remote name in newer gits.
-        let remotes = self.run(&["remote"], None).unwrap_or_default();
-        out.lines().filter(|r| !r.is_empty() && !r.ends_with("/HEAD") && !remotes.lines().any(|m| m == *r)).map(str::to_owned).collect()
+        // Full names: a remote's HEAD is always `refs/remotes/<remote>/HEAD`, where its short
+        // name is the bare remote's in newer gits, which would take a `git remote` to tell apart.
+        let out = self.run(&["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes"], None).unwrap_or_default();
+        out.lines()
+            .filter_map(|r| r.strip_prefix("refs/heads/").or_else(|| r.strip_prefix("refs/remotes/").filter(|r| !r.ends_with("/HEAD"))))
+            .map(str::to_owned)
+            .collect()
     }
 
     /// The latest `n` commits of every branch, remote branch and tag (or of `branch` alone),
@@ -992,7 +995,12 @@ impl Repo {
             None => args.extend(["--branches", "--remotes", "--tags", "HEAD", "--"]),
         }
         let out = self.run(&args, None).unwrap_or_default();
-        (crate::graph::parse(&out), self.run(&["rev-parse", "-q", "--verify", "HEAD"], None).ok())
+        (crate::graph::parse(&out), self.head_id())
+    }
+
+    /// HEAD's commit, if it has one.
+    pub fn head_id(&self) -> Option<String> {
+        self.run(&["rev-parse", "-q", "--verify", "HEAD"], None).ok()
     }
 
     /// The web page of `origin` (or the first remote), from its fetch URL: `git@host:o/r.git`,
@@ -1007,12 +1015,11 @@ impl Repo {
     pub fn message(&self, id: &str) -> String {
         self.run(&["show", "-s", "--format=%B", id], None).unwrap_or_default()
     }
+}
 
-    /// The branch a review most likely compares against.
-    pub fn default_base(&self) -> Option<String> {
-        let all = self.branches();
-        ["origin/main", "origin/master", "main", "master", "origin/develop", "develop"].iter().find(|b| all.iter().any(|r| r == *b)).map(|b| (*b).to_owned())
-    }
+/// The branch of `all` (as [`Repo::branches`] reads them) a review most likely compares against.
+pub fn default_base(all: &[String]) -> Option<String> {
+    ["origin/main", "origin/master", "main", "master", "origin/develop", "develop"].iter().find(|b| all.iter().any(|r| r == *b)).map(|b| (*b).to_owned())
 }
 
 fn same(a: &Option<Blob>, b: &Option<Blob>) -> bool {

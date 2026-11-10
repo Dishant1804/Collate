@@ -543,7 +543,7 @@ fn init() -> Collate {
     let settings = Settings::load();
     let repo = current_repo();
     let branches = repo.as_deref().map(Repo::branches).unwrap_or_default();
-    let base = repo.as_deref().and_then(Repo::default_base);
+    let base = git::default_base(&branches);
     let mut s = Collate {
         name: repo.as_deref().map(Repo::name).unwrap_or_default(),
         branch: String::new(),
@@ -691,7 +691,7 @@ impl Collate {
         self.has_project = true;
         self.name = repo.name();
         self.branches = repo.branches();
-        self.base = repo.default_base();
+        self.base = git::default_base(&self.branches);
         tx.set_title(format!("{} — Collate", self.name));
         set_repo(Some(repo));
         watch_project_files(Some(root.clone()));
@@ -5016,9 +5016,9 @@ fn main() {
         remember_project(&mut projects, &load_paths("favorites"), r.root.clone());
     }
     let title: &'static str = Box::leak(repo.as_ref().map_or_else(|| "Collate".to_owned(), |r| format!("{} — Collate", r.name())).into_boxed_str());
-    let base = repo.as_ref().and_then(Repo::default_base);
+    let base = repo.as_ref().and_then(|r| git::default_base(&r.branches()));
     // History opens on the latest commit; the window's own state picks the same one.
-    let first_commit = repo.as_ref().and_then(|r| r.graph(1, None).1);
+    let first_commit = repo.as_ref().and_then(Repo::head_id);
     let root = repo.as_ref().map(|r| r.root.clone());
     set_repo(repo);
     let start = Settings::load().default_scope;

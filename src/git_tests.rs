@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::diff::FileDiff;
-use crate::git::{Blob, Change, Repo, Scope, Staged};
+use crate::git::{Blob, Change, Repo, Scope, Staged, default_base};
 use crate::patch;
 
 fn sh(dir: &Path, args: &[&str]) -> String {
@@ -231,7 +231,7 @@ fn a_base_that_moved_on_is_measured_from_where_the_branch_left_it() {
     let paths: Vec<&str> = snap.changes.iter().map(|c| c.path.as_str()).collect();
     assert_eq!(paths, ["a.txt"], "d.txt landed on main after the branch left; it isn't the branch's");
     assert!(r.branches().contains(&"main".to_owned()));
-    assert_eq!(r.default_base().as_deref(), Some("main"));
+    assert_eq!(default_base(&r.branches()).as_deref(), Some("main"));
 }
 
 /// A hunk replacing three lines with three others, and which lines of it are which.
