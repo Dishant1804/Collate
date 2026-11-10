@@ -28,11 +28,11 @@ use std::time::Duration;
 
 use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, IMAGE_H, LineKind, LineRef, Query, WordEdit, apply_edits, mark_moved, parse, word_edits};
 use git::{Blob, Change, Repo, Scope, Snapshot, Staged};
-use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
+use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PopupItem, PopupMenu, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::shell::{self, PaneState, Sidebar, SidebarRow, SidebarSection, SplitView, Toolbar};
 use rune_kit::syntax::Highlighter;
 use rune_kit::{
-    Checkbox, Button, ButtonVariant, ControlSize, Dialog, FileNode, FileTree, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, Switch, TextInput, Tree,
+    Checkbox, Button, ButtonVariant, ControlSize, Dialog, FileNode, FileTree, IconButton, IconButtonVariant, Kit, Placement, Popover, SegmentedControl, Select, Switch, TextInput, Tree,
     TreeItem, TreeModel,
 };
 use settings::{CONTEXT_LINES, Density, Editor, FOLD_LARGE, FONT_SIZES, REFRESH_MS, Settings, Theme};
@@ -418,7 +418,12 @@ struct Collate {
     words: Option<WordPick>,
     /// Projects the reader added, most recently opened first, and the switcher's state.
     projects: Vec<PathBuf>,
+    /// The starred projects, which the switcher lists first.
+    favorites: Vec<PathBuf>,
     project_open: bool,
+    project_search: TextEdit,
+    /// The switcher's keyboard pick: an index into `project_order`, or one past it for "Add".
+    project_pick: usize,
     /// The folder picker is up: the native dialog runs on its own thread.
     picking: bool,
     /// A project is open (the welcome screen shows until one is).
@@ -513,7 +518,10 @@ fn init() -> Collate {
         jump_pick: 0,
         words: None,
         projects: load_projects(),
+        favorites: load_paths("favorites"),
         project_open: false,
+        project_search: TextEdit::new(""),
+        project_pick: 0,
         picking: false,
         has_project: current_repo().is_some(),
         settings_tab: 0,
@@ -579,7 +587,7 @@ impl Collate {
     /// Opens the git repository containing `dir` in this window: the review starts over on
     /// it, and it goes to the top of the project list.
     fn open_project(&mut self, dir: &std::path::Path, tx: &mut Tx) {
-        self.project_open = false;
+        self.close_projects();
         let repo = match Repo::open(dir) {
             Ok(r) => r,
             Err(e) => {
@@ -598,7 +606,7 @@ impl Collate {
         tx.set_title(format!("{} — Collate", self.name));
         set_repo(Some(repo));
         watch_project_files(Some(root.clone()));
-        remember_project(&mut self.projects, root);
+        remember_project(&mut self.projects, &self.favorites, root);
         // Everything read from the last project goes.
         self.branch.clear();
         self.head = None;
@@ -643,7 +651,7 @@ impl Collate {
 
     /// Ask macOS for a folder (the standard Open dialog, off the UI thread) and open it.
     fn add_project(&mut self) {
-        self.project_open = false;
+        self.close_projects();
         let Some(app) = HANDLE.get().cloned() else { return };
         if std::mem::replace(&mut self.picking, true) {
             return;
@@ -670,8 +678,50 @@ impl Collate {
 
     fn forget_project(&mut self, i: usize) {
         if i < self.projects.len() {
-            self.projects.remove(i);
+            let p = self.projects.remove(i);
             save_projects(&self.projects);
+            if self.favorites.contains(&p) {
+                self.toggle_favorite(&p);
+            }
+        }
+    }
+
+    fn toggle_favorite(&mut self, p: &std::path::Path) {
+        match self.favorites.iter().position(|f| f == p) {
+            Some(i) => {
+                self.favorites.remove(i);
+            }
+            None => self.favorites.push(p.to_owned()),
+        }
+        save_paths("favorites", &self.favorites);
+    }
+
+    /// Opens or closes the project switcher; it opens on an empty search, the open project picked.
+    fn toggle_projects(&mut self) {
+        if self.project_open {
+            return self.close_projects();
+        }
+        self.project_open = true;
+        self.project_search.clear();
+        self.project_search.focused = true;
+        let order = project_order(&self.projects, &self.favorites, "");
+        self.project_pick = current_repo().and_then(|r| order.iter().position(|&i| self.projects[i] == r.root)).unwrap_or(0);
+    }
+
+    fn close_projects(&mut self) {
+        self.project_open = false;
+        self.project_search.focused = false;
+    }
+
+    /// Return in the switcher: opens the picked project, or the folder picker for "Add".
+    fn choose_project(&mut self, tx: &mut Tx) {
+        let order = project_order(&self.projects, &self.favorites, &self.project_search.text);
+        match order.get(self.project_pick) {
+            Some(&i) => {
+                let p = self.projects[i].clone();
+                self.open_project(&p, tx);
+            }
+            None => self.add_project(),
         }
     }
 
@@ -1854,34 +1904,65 @@ fn save_comments(comments: &[Comment]) -> Result<(), String> {
     std::fs::write(&path, comments_text(comments)).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// `~/Library/Application Support/Collate/projects`: one repository path per line, most
-/// recently opened first.
-fn projects_file() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Collate/projects"))
+/// `~/Library/Application Support/Collate/<name>`: one path per line. `projects` holds the
+/// repositories most recently opened first, `favorites` the starred ones.
+fn paths_file(name: &str) -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Collate").join(name))
 }
 
-fn load_projects() -> Vec<PathBuf> {
-    let text = projects_file().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+fn load_paths(name: &str) -> Vec<PathBuf> {
+    let text = paths_file(name).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     text.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).collect()
 }
 
-fn save_projects(projects: &[PathBuf]) {
-    // Tests open throwaway repositories; they leave the reader's list alone.
+fn save_paths(name: &str, paths: &[PathBuf]) {
+    // Tests open throwaway repositories; they leave the reader's lists alone.
     if cfg!(test) {
         return;
     }
-    let Some(path) = projects_file() else { return };
-    let text: String = projects.iter().map(|p| format!("{}\n", p.display())).collect();
-    // Losing the list isn't worth interrupting a review over; the next open tries again.
+    let Some(path) = paths_file(name) else { return };
+    let text: String = paths.iter().map(|p| format!("{}\n", p.display())).collect();
+    // Losing the list isn't worth interrupting a review over; the next change tries again.
     let _ = path.parent().map(std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text).ok());
 }
 
-/// Puts `root` first in the list (once), keeping it to the 30 most recent.
-fn remember_project(projects: &mut Vec<PathBuf>, root: PathBuf) {
+fn load_projects() -> Vec<PathBuf> {
+    load_paths("projects")
+}
+
+fn save_projects(projects: &[PathBuf]) {
+    save_paths("projects", projects);
+}
+
+/// Puts `root` first in the list (once), keeping the 30 most recent and every starred one.
+fn remember_project(projects: &mut Vec<PathBuf>, favorites: &[PathBuf], root: PathBuf) {
     projects.retain(|p| *p != root);
     projects.insert(0, root);
-    projects.truncate(30);
+    let mut n = 0;
+    projects.retain(|p| {
+        n += 1;
+        n <= 30 || favorites.contains(p)
+    });
     save_projects(projects);
+}
+
+/// The switcher's rows, as indices into `projects`: starred ones first, then the rest. An empty
+/// `query` keeps each group most recent first; otherwise only matches show, best first.
+fn project_order(projects: &[PathBuf], favorites: &[PathBuf], query: &str) -> Vec<usize> {
+    let query = query.trim();
+    let mut rows: Vec<(bool, i32, usize)> = projects
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            // The folder and its parent: the whole path would let nearly any letters match.
+            let tail: Vec<_> = p.iter().rev().take(2).map(|c| c.to_string_lossy()).collect();
+            let name = tail.iter().rev().cloned().collect::<Vec<_>>().join("/");
+            let score = if query.is_empty() { 0 } else { fuzzy(query, &name)? };
+            Some((!favorites.contains(p), -score, i))
+        })
+        .collect();
+    rows.sort();
+    rows.into_iter().map(|(_, _, i)| i).collect()
 }
 
 /// Menu labels for `projects`: each folder's name, with its parent folder's when two share a
@@ -2028,28 +2109,95 @@ fn view(s: &Collate, cx: &mut Cx<Collate>) -> El {
     rune_kit::root(base, layer)
 }
 
-/// The project menu: every added project, then "Add local project…".
+/// The project menu: a search, the added projects (starred ones first, each with its star),
+/// then "Add local project…".
 fn project_switcher(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
-    let mut options = project_labels(&s.projects);
-    let current = current_repo().and_then(|r| s.projects.iter().position(|p| *p == r.root)).map(|i| options[i].clone());
-    options.push(ADD_PROJECT.to_owned());
-    Select::new("project", &options)
-        .current(current.as_deref())
+    let labels = project_labels(&s.projects);
+    let current = current_repo().and_then(|r| s.projects.iter().position(|p| *p == r.root));
+    let trigger = Select::new::<&str>("project", &[])
+        .current(current.map(|i| labels[i].as_str()))
         .placeholder("Open a project")
         .label("Project")
-        .width(240.0)
         .open(s.project_open)
-        .on_toggle(|s: &mut Collate| s.project_open = !s.project_open)
-        .on_close(|s: &mut Collate| s.project_open = false)
-        .on_choose(|s: &mut Collate, v: &str, tx: &mut Tx| {
-            if v == ADD_PROJECT {
-                s.add_project();
-            } else if let Some(i) = project_labels(&s.projects).iter().position(|l| l == v) {
-                let p = s.projects[i].clone();
-                s.open_project(&p, tx);
+        .on_toggle(|s: &mut Collate| s.toggle_projects())
+        .trigger(k);
+    let popover = Popover::new("projects").trigger(trigger).label("Project").placement(Placement::BottomStart).padding(0.0).open(s.project_open)
+        .on_close(|s: &mut Collate| s.close_projects());
+    if !s.project_open {
+        return popover.build(k, layer);
+    }
+    let order = project_order(&s.projects, &s.favorites, &s.project_search.text);
+    let pick = s.project_pick.min(order.len());
+    let field = TextInput::new(&s.project_search)
+        .plain()
+        .leading_icon(k.glyph.search)
+        .height(36.0)
+        .width(None)
+        .placeholder("Search projects")
+        .label("Search projects")
+        .on_edit(|s: &mut Collate| &mut s.project_search)
+        .on_change(|s: &mut Collate, _| s.project_pick = 0)
+        .on_key(|s: &mut Collate, ev: &KeyEvent, tx: &mut Tx| {
+            let last = project_order(&s.projects, &s.favorites, &s.project_search.text).len();
+            match ev.key {
+                Key::Escape => s.close_projects(),
+                Key::Enter => s.choose_project(tx),
+                Key::Up => s.project_pick = s.project_pick.min(last).saturating_sub(1),
+                Key::Down => s.project_pick = (s.project_pick + 1).min(last),
+                _ => return false,
             }
+            if matches!(ev.key, Key::Up | Key::Down) {
+                tx.scroll_into_view(format!("project-option-{}", s.project_pick));
+            }
+            true
         })
-        .build(k, layer)
+        .build(k)
+        .key("project-search");
+    // One row's look: the picked one tinted, the rest on hover; hovering picks.
+    let option = |n: usize, label: String| {
+        row().key(format!("project-option-{n}")).w_full().h(28.0).pl(8.0).pr(4.0).gap(8.0).items_center().radius(k.radius.sm)
+            .fill(if n == pick { k.c.hover } else { k.alpha(k.c.hover, 0.0) })
+            .cursor(Cursor::Pointer).role("option").label(label)
+            .on_hover(move |s: &mut Collate| s.project_pick = n)
+    };
+    let mut rows = col().key("project-options").w_full().padding(4.0);
+    for (n, &i) in order.iter().enumerate() {
+        let path = s.projects[i].clone();
+        let starred = s.favorites.contains(&path);
+        let star = IconButton::new(if starred { &rune_kit::glyphs::STAR_FILLED } else { &rune_kit::glyphs::STAR })
+            .variant(IconButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .label(if starred { "Unstar" } else { "Star" })
+            .help(if starred { "Unstar: list it by when it was opened" } else { "Star: keep it at the top" })
+            .on_press({
+                let path = path.clone();
+                move |s: &mut Collate| s.toggle_favorite(&path)
+            })
+            .build(k)
+            .key(format!("project-star-{i}"));
+        let check = icon(k.glyph.check_small, 14.0).color(k.c.icon_base).opacity(if current == Some(i) { 1.0 } else { 0.0 }).a11y_hidden();
+        rows = rows.child(
+            option(n, labels[i].clone())
+                .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.open_project(&path, tx))
+                .child(text(labels[i].clone()).font(k.ty.ui).color(k.c.text_base).grow(1.0).shrink().truncate().a11y_hidden())
+                .child(check)
+                .child(star),
+        );
+    }
+    if order.is_empty() && !s.projects.is_empty() {
+        rows = rows.child(row().key("project-none").h(28.0).px(8.0).items_center().child(text("No project matches").font(k.ty.ui).color(k.c.text_faint)));
+    }
+    let add = option(order.len(), ADD_PROJECT.to_owned())
+        .on_press(|s: &mut Collate| s.add_project())
+        .child(text(ADD_PROJECT.to_owned()).font(k.ty.ui).color(k.c.text_base).a11y_hidden());
+    let hairline = |key: &str| el().key(key.to_owned()).w_full().h(1.0).fill(k.c.border_weak).a11y_hidden();
+    let body = col().key("projects-body").w(280.0).shrink().min_h(0.0)
+        .child(row().key("project-search-row").w_full().px(4.0).child(field))
+        .child(hairline("project-search-line"))
+        .child(col().key("project-list").w_full().max_h(320.0).shrink().min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows))
+        .child(hairline("project-add-line"))
+        .child(col().key("project-add").w_full().padding(4.0).child(add));
+    popover.child(body).build(k, layer)
 }
 
 /// What the window shows with no project open: the projects to pick from and a way to add one.
@@ -4194,7 +4342,7 @@ fn main() {
         None => projects.iter().find_map(|p| Repo::open(p).ok()),
     };
     if let Some(r) = &repo {
-        remember_project(&mut projects, r.root.clone());
+        remember_project(&mut projects, &load_paths("favorites"), r.root.clone());
     }
     let title: &'static str = Box::leak(repo.as_ref().map_or_else(|| "Collate".to_owned(), |r| format!("{} — Collate", r.name())).into_boxed_str());
     let base = repo.as_ref().and_then(Repo::default_base);
@@ -4898,12 +5046,25 @@ mod tests {
     #[test]
     fn recent_projects_keep_the_latest_first_once() {
         let mut list = vec![PathBuf::from("/a"), PathBuf::from("/b")];
-        remember_project(&mut list, PathBuf::from("/b"));
+        remember_project(&mut list, &[], PathBuf::from("/b"));
         assert_eq!(list, [PathBuf::from("/b"), PathBuf::from("/a")]);
-        remember_project(&mut list, PathBuf::from("/c"));
+        remember_project(&mut list, &[], PathBuf::from("/c"));
         assert_eq!(list[0], PathBuf::from("/c"));
         let labels = project_labels(&[PathBuf::from("/w/api"), PathBuf::from("/p/api"), PathBuf::from("/w/web")]);
         assert_eq!(labels, ["api - w", "api - p", "web"], "short, and distinct when names repeat");
+    }
+
+    #[test]
+    fn starred_projects_come_first_and_stay() {
+        let list: Vec<PathBuf> = ["/w/web", "/w/core", "/p/voiceprint", "/p/demo"].iter().map(PathBuf::from).collect();
+        let stars = [PathBuf::from("/p/demo")];
+        assert_eq!(project_order(&list, &stars, ""), [3, 0, 1, 2], "starred first, the rest most recent first");
+        assert_eq!(project_order(&list, &stars, "vp"), [2], "the search keeps only matches");
+        let mut many: Vec<PathBuf> = (0..30).map(|i| PathBuf::from(format!("/r{i}"))).collect();
+        let starred = [PathBuf::from("/r29")];
+        remember_project(&mut many, &starred, PathBuf::from("/new"));
+        assert_eq!(many.len(), 31, "the oldest goes, unless it's starred");
+        assert_eq!(many[30], PathBuf::from("/r29"));
     }
 
     #[test]
@@ -5143,6 +5304,23 @@ mod tests {
         rt.update(move |s, tx| s.open_project(&back, tx));
         assert_eq!(rt.state.projects.len().min(2), 2);
         assert_eq!(rt.state.projects[1], root, "and the other stays in the list");
+        // The switcher: starring the other project lifts it to the top; the search narrows the list.
+        click(&mut rt, "project-trigger");
+        assert!(rt.state.project_open && rt.find("project-search").is_some(), "the switcher opens on its search");
+        let other_i = rt.state.projects.iter().position(|p| *p == root).unwrap();
+        click(&mut rt, &format!("project-star-{other_i}"));
+        assert!(rt.state.project_open, "a star leaves the switcher open");
+        assert_eq!(rt.state.favorites, std::slice::from_ref(&root));
+        assert_eq!(project_order(&rt.state.projects, &rt.state.favorites, "")[0], other_i, "the starred project goes first");
+        let name = format!("collate-other-{}", std::process::id());
+        rt.update(move |s, _| s.project_search = TextEdit::new(&name));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("project-option-0").is_some() && rt.find("project-option-2").is_none(), "only the match and Add show");
+        rt.update(|s, _| s.project_search = TextEdit::new("zzzz"));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("project-none").is_some(), "no match says so");
+        rt.update(|s, _| s.close_projects());
+        rt.frame(1.0 / 60.0);
         rt.update(|s, tx| s.open_project(std::path::Path::new("/"), tx));
         assert!(rt.state.notice.as_ref().is_some_and(|n| n.error), "a folder outside git says so and changes nothing");
         assert_eq!(current_repo().unwrap().root.canonicalize().unwrap(), dir.canonicalize().unwrap());
