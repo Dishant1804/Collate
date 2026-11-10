@@ -158,9 +158,12 @@ impl<S: 'static> DiffView<S> {
         let scroll = col().key("scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false });
         let scroll = if wrap { scroll } else { scroll.scroll_xy() };
         let scroll = scroll.child(list).child(col().key(super::state::TAIL_KEY).w_full().h(tail).a11y_hidden());
-        let mut root = col().key(key).w_full().grow(1.0).min_h(0.0).fill(v.look.bg).child(scroll);
+        let mut root = col().key(key.clone()).w_full().grow(1.0).min_h(0.0).fill(v.look.bg).child(scroll);
         if let Some(f) = st.sticky() {
             root = root.child(v.file_header(s, st, f, true).key("sticky").absolute(0.0, 0.0).w_full());
+        }
+        if let Some(r) = rune::memo::layout(&format!("{key}/scroll")) {
+            root = root.child(v.overview(st, k, r[2], r[3]));
         }
         root
     }
@@ -352,7 +355,50 @@ struct View<S> {
     look: Look,
 }
 
+/// The overview's width at the right edge, and its marks' width inside it.
+const OVERVIEW_W: f32 = 10.0;
+const MARK_W: f32 = 4.0;
+
 impl<S: 'static> View<S> {
+    /// Where the changes are in the whole diff, as marks down the right edge beside the scroll
+    /// bar, green for added lines, red for removed and the accent for both; one scrolls there.
+    fn overview(&self, st: &DiffState, k: &Kit, w: f32, h: f32) -> El {
+        let mut ruler = col().key("overview").w(OVERVIEW_W).h(h).absolute(w - OVERVIEW_W, 0.0).a11y_hidden();
+        // Runs closer than a point or two draw as one mark: a long diff has thousands.
+        let mut marks: Vec<super::state::Mark> = Vec::new();
+        for m in &st.overview {
+            match marks.last_mut() {
+                Some(last) if m.top * h <= last.bottom * h + 2.0 => {
+                    last.bottom = m.bottom;
+                    last.adds |= m.adds;
+                    last.dels |= m.dels;
+                }
+                _ => marks.push(*m),
+            }
+        }
+        for (n, m) in marks.iter().enumerate() {
+            let color = match (m.adds, m.dels) {
+                (true, false) => k.c.success.fg,
+                (false, true) => k.c.danger.fg,
+                _ => k.c.text_accent,
+            };
+            let get_mut = self.d.get_mut.clone();
+            let row_at = m.row;
+            ruler = ruler.child(
+                row()
+                    .key(format!("m{n}"))
+                    .absolute((OVERVIEW_W - MARK_W) / 2.0, (m.top * h).floor())
+                    .w(MARK_W)
+                    .h(((m.bottom - m.top) * h).max(2.0))
+                    .radius(1.0)
+                    .fill(k.alpha(color, 0.8))
+                    .cursor(Cursor::Pointer)
+                    .on_press_tx(move |s: &mut S, tx: &mut Tx| get_mut(s).reveal_below_header(row_at, tx)),
+            );
+        }
+        ruler
+    }
+
     /// How wide unwrapped (unified) content is, so the list doesn't change width as rows are built.
     fn content_width(&self, st: &DiffState) -> f32 {
         let l = &self.look;
