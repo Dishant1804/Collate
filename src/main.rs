@@ -2822,7 +2822,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     // With the sidebar closed the toolbar starts just past its toggle, where back and forward
     // sit: it starts past them instead.
     let past_arrows = if s.sidebar.is_open() { 0.0 } else { NAV_W + 8.0 };
-    let leading = row().key("toolbar-leading").gap(10.0).items_center().min_w(0.0).ml(EDGE - 12.0 - 8.0 + past_arrows).child(project_switcher(s, k, layer)).child(branch);
+    let leading = row().key("toolbar-leading").gap(10.0).items_center().min_w(0.0).shrink().ml(EDGE - 12.0 - 8.0 + past_arrows).child(project_switcher(s, k, layer)).child(branch);
     let split = s.diff.mode() == DiffMode::Split;
     let modes = SegmentedControl::new(&["Unified", "Split"], Some(split as usize)).label("Diff layout").fit().on_pick(|s: &mut Collate, i, tx: &mut Tx| {
         tx.motion(rune::tok::motion::SNAPPY);
