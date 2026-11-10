@@ -31,6 +31,7 @@ install failed; a `cargo build` alone doesn't update the app.
   `state.rs` (rows, folds, selection), `view.rs` (drawing).
 - `src/graph.rs`: commit graph. `src/map.rs`, `src/map_view.rs`: repository map.
 - `src/terminal.rs`: the terminal drawer (⌘J), shells on `alacritty_terminal`.
+- `src/update.rs`: checks GitHub for a newer release or commit and installs it over the app.
 - `src/settings.rs`, `src/avatars.rs`, `src/nav.rs`.
 
 Rune's source is the reference for its API: `~/.cargo/git/checkouts/rune-*/<rev>/crates/`

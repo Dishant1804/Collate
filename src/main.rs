@@ -21,6 +21,7 @@ mod pulls;
 mod search;
 mod settings;
 mod terminal;
+mod update;
 #[cfg(test)]
 mod git_tests;
 
@@ -42,7 +43,7 @@ use rune_kit::{
     TreeItem, TreeModel,
 };
 use search::fuzzy;
-use settings::{CONTEXT_LINES, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
+use settings::{CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
 
 /// The open project; `None` before one is chosen. Swapped when the reader switches project.
 static REPO: std::sync::RwLock<Option<std::sync::Arc<Repo>>> = std::sync::RwLock::new(None);
@@ -467,6 +468,8 @@ struct Collate {
     languages: grammars::Languages,
     /// The Pull Requests place and the pull request under review.
     pulls: pulls::PullsState,
+    /// Whether a newer Collate was looked for, found or installed.
+    update: update::Status,
     /// The next commit rewrites the last one.
     amend: bool,
     /// Commits ahead of and behind the upstream.
@@ -585,6 +588,7 @@ fn init() -> Collate {
         settings_tab: 0,
         languages: grammars::Languages::new(grammars::root().as_deref()),
         pulls: pulls::PullsState::default(),
+        update: update::Status::default(),
         commit_ids: Vec::new(),
         graph_commits: Vec::new(),
         graph_rows: Vec::new(),
@@ -1720,6 +1724,7 @@ impl Collate {
         self.diff.set_wrap(s.wrap);
         let recolour = was.is_none_or(|w| w.syntax != s.syntax);
         let fetch = was.is_some_and(|w| (!w.syntax && s.syntax) || (!w.download_languages && s.download_languages));
+        let look = was.is_some_and(|w| s.check_updates && (!w.check_updates || w.update_from != s.update_from));
         REFRESH_EVERY.store(if s.auto_refresh { s.refresh_ms } else { 0 }, Ordering::Relaxed);
         *OPTS.lock().unwrap() = self.opts();
         if let Some(w) = was
@@ -1732,6 +1737,13 @@ impl Collate {
         }
         if fetch {
             self.want_languages();
+        }
+        // Look again at once when checking is turned on or the source changes.
+        if look {
+            if !self.update.busy() {
+                self.update = update::Status::Idle;
+            }
+            self.check_update();
         }
     }
 
@@ -4338,6 +4350,43 @@ fn languages_settings(s: &Collate, k: &Kit) -> Vec<El> {
     rows
 }
 
+/// The Updates section: the running version and how it stands, then how updates come.
+fn update_settings(s: &Collate, k: &Kit) -> Vec<El> {
+    use update::Status;
+    static CHANNELS: [Channel; 2] = [Channel::Release, Channel::Source];
+    let st = &s.settings;
+    let in_app = update::app_bundle().is_some();
+    let (state, error) = match &s.update {
+        Status::Idle => (String::new(), false),
+        Status::Checking => ("Checking…".to_owned(), false),
+        Status::Current => ("Up to date".to_owned(), false),
+        Status::Available(u) if in_app => (format!("{} is available", u.label()), false),
+        Status::Available(u) => (format!("{} is available; run the installed app to update", u.label()), false),
+        Status::Installing(u) if matches!(u, update::Update::Source { .. }) => (format!("Building {}…", u.label()), false),
+        Status::Installing(u) => (format!("Installing {}…", u.label()), false),
+        Status::Ready(u) => (format!("{} is installed; restart to use it", u.label()), false),
+        Status::Failed(e) => (e.clone(), true),
+    };
+    let mut words = col().grow(1.0).min_w(0.0).gap(4.0).child(text(update::running()).font(k.ty.ui_medium).color(k.c.text_base));
+    if !state.is_empty() {
+        words = words.child(text(state).font(k.ty.text_small).color(if error { k.c.danger.icon } else { k.c.text_muted }).wrap());
+    }
+    let button = match &s.update {
+        Status::Ready(_) => Button::new("Restart").variant(ButtonVariant::Outline).help("Quit and open the new version").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.restart(tx)),
+        Status::Available(_) if in_app => Button::new("Install").variant(ButtonVariant::Outline).on_press(|s: &mut Collate| s.install_update()),
+        _ => Button::new("Check Now").variant(ButtonVariant::Ghost).disabled(s.update.busy()).on_press(|s: &mut Collate| {
+            s.update = update::Status::Idle;
+            s.check_update();
+        }),
+    };
+    vec![
+        row().key("version").w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().child(button.control_size(ControlSize::Small).build(k))),
+        setting(k, "check", "Check for updates", &[], "Look for a new version when Collate opens and every few hours", switch(k, "Check for updates", st.check_updates, |c, v| c.check_updates = v)),
+        setting(k, "auto-update", "Install automatically", &[], "Install a new version in the background; it opens when Collate next starts", switch(k, "Install automatically", st.auto_update, |c, v| c.auto_update = v)),
+        setting(k, "from", "Update from", &[], "Latest source builds the newest commit on main, which needs Rust", pick(k, &["Releases", "Latest source"], &CHANNELS, st.update_from, |c, v| c.update_from = v)),
+    ]
+}
+
 fn pick<T: Copy + PartialEq + 'static>(k: &Kit, labels: &[&str], values: &'static [T], current: T, set: fn(&mut Settings, T)) -> El {
     SegmentedControl::new(labels, values.iter().position(|v| *v == current))
         .fit()
@@ -4361,7 +4410,7 @@ fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
     Switch::new(on).standard().label(title.to_owned()).hide_label().on_toggle(move |s: &mut Collate| s.configure(|c| set(c, !on))).build(&kk)
 }
 
-const SETTINGS_TABS: [&str; 6] = ["Appearance", "Diff", "Languages", "Review", "Projects", "Refresh"];
+const SETTINGS_TABS: [&str; 7] = ["Appearance", "Diff", "Languages", "Review", "Projects", "Refresh", "Updates"];
 /// The Projects section, which has its own Add button.
 const PROJECTS_TAB: usize = 4;
 
@@ -4425,10 +4474,11 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             }
             rows
         }
-        _ => vec![
+        5 => vec![
             setting(k, "auto", "Watch for changes", &[], "Reread when files change on disk", switch(k, "Watch for changes", st.auto_refresh, |c, v| c.auto_refresh = v)),
             setting(k, "every", "Check every", &[], "Only when file events aren't available", pick(k, &["0.5 s", "1 s", "2 s", "5 s"], &REFRESH_MS, st.refresh_ms, |c, v| c.refresh_ms = v)),
         ],
+        _ => update_settings(s, k),
     };
     let hairline = |key: String| col().key(key).w_full().h(1.0).fill(k.c.border_weak).a11y_hidden();
     // Left: the sections, on the panel's own surface, the chosen one a quiet step brighter.
@@ -4934,6 +4984,7 @@ fn main() {
                 }
             }));
             pulls::watch_reviews();
+            update::watch();
             s.avatars.start(rune::ImageCache::new(waker), |email, bytes| {
                 if let Some(app) = HANDLE.get() {
                     app.update(move |s, _| s.avatars.landed(email, bytes));
@@ -4947,6 +4998,11 @@ fn main() {
             ("settings-diff", |s: &mut Collate| {
                 s.screen = Screen::Settings;
                 s.settings_tab = 1;
+            }),
+            ("settings-updates", |s: &mut Collate| {
+                s.screen = Screen::Settings;
+                s.settings_tab = SETTINGS_TABS.len() - 1;
+                s.update = update::Status::Ready(update::Update::Release { version: "1.2.0".into(), zip: String::new(), sums: String::new(), name: String::new() });
             }),
             ("help", |s: &mut Collate| s.show_help = true),
             ("staged", |s: &mut Collate| s.set_scope(Scope::Staged)),
