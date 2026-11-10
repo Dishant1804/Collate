@@ -5061,6 +5061,20 @@ fn main() {
             ("history", |s: &mut Collate| s.set_scope(Scope::History)),
             ("map", |s: &mut Collate| s.open_map()),
             ("pulls", |s: &mut Collate| s.pulls.open = true),
+            // One pull request in each state, the finished groups opened.
+            ("pulls-list", |s: &mut Collate| {
+                let pull = |number: u32, author: &str, state: github::PrState, draft: bool, ci: Option<github::CheckState>| github::Pull {
+                    number, title: format!("Change {number}"), author: author.into(), head: format!("branch-{number}"), base: "main".into(), state, draft,
+                    decision: "REVIEW_REQUIRED".into(), requested: vec![], additions: 120, deletions: 8, updated: "2026-11-10T09:00:00Z".into(),
+                    labels: vec![], checks: vec![], ci, url: String::new(),
+                };
+                use github::{CheckState::*, PrState::*};
+                let list = vec![pull(8, "me", Open, false, Some(Passed)), pull(9, "ana", Open, true, Some(Pending)), pull(10, "bo", Open, false, Some(Failed)),
+                    pull(6, "ana", Merged, false, None), pull(5, "bo", Closed, false, None)];
+                s.pulls.open = true;
+                s.pulls.list = Some(Ok(("me".into(), list)));
+                s.pulls.folded.clear();
+            }),
             ("pulls-connect", |s: &mut Collate| {
                 s.pulls.open = true;
                 s.pulls.list = Some(Err(github::SIGNED_OUT.into()));
