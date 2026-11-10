@@ -8,8 +8,10 @@ use std::collections::HashSet;
 use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton, IconButtonVariant, Kit, Markdown, MarkdownStyle, TextArea, TextInput};
 
-use crate::github::{self, CheckState, Detail, Draft, Gh, Method, Pull, Verdict};
-use crate::{COLUMN_TOP, Collate, EDGE, GHOST_PAD, HANDLE, MORE_ICON, PANEL_INSET, REFRESH_ICON, current_repo, diff, message, open_url};
+use rune_kit::syntax::{Syntax, SyntaxTheme};
+
+use crate::github::{self, CheckState, Detail, Draft, Gh, Method, PrState, Pull, Verdict};
+use crate::{COLUMN_TOP, Collate, EDGE, GHOST_PAD, HANDLE, MERGE_ICON, MORE_ICON, PANEL_INSET, PULLS_ICON, PULL_CLOSED_ICON, PULL_DRAFT_ICON, REFRESH_ICON, current_repo, diff, message, open_url};
 
 /// What's being written in the compose dialog.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -525,8 +527,20 @@ fn dot(k: &Kit, s: Option<CheckState>) -> El {
     row().w(8.0).h(8.0).radius(4.0).fill(check_color(k, s)).a11y_hidden()
 }
 
+/// The pull request's state as GitHub marks it: its icon, colour and name.
+fn state_mark(k: &Kit, p: &Pull) -> (&'static Icon, rune::Color, &'static str) {
+    match p.state {
+        PrState::Open if p.draft => (&PULL_DRAFT_ICON, k.c.icon_faint, "Draft"),
+        PrState::Open => (&PULLS_ICON, k.c.success.icon, "Open"),
+        // The kit has no violet of its own; the syntax colours' keyword violet follows the theme.
+        PrState::Merged => (&MERGE_ICON, SyntaxTheme::from_kit(k).color(Syntax::Keyword), "Merged"),
+        PrState::Closed => (&PULL_CLOSED_ICON, k.c.danger.icon, "Closed"),
+    }
+}
+
 fn decision(k: &Kit, p: &Pull) -> (&'static str, rune::Color) {
     match p.decision.as_str() {
+        _ if p.state != PrState::Open => ("", k.c.text_muted),
         _ if p.draft => ("Draft", k.c.text_faint),
         "APPROVED" => ("Approved", k.c.success.icon),
         "CHANGES_REQUESTED" => ("Changes requested", k.c.danger.icon),
@@ -591,17 +605,22 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
                     let n = p.number;
                     let fetching = s.pulls.fetching == Some(n);
                     let (verdict, tint) = decision(k, p);
+                    let (mark, hue, state) = state_mark(k, p);
                     let mut words = col().grow(1.0).min_w(0.0).gap(2.0)
                         .child(text(p.title.clone()).font(k.ty.ui_medium).color(k.c.text_base).truncate())
                         .child(text(format!("#{n} - {} - {} → {} - {}", p.author, p.head, p.base, p.updated.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).truncate());
                     if !p.labels.is_empty() {
                         words = words.child(text(p.labels.join(", ")).font(k.ty.text_small).color(k.c.text_faint).truncate());
                     }
-                    list = list.child(row().key(format!("pull-{n}")).w_full().px(EDGE).py(8.0).gap(12.0).items_center()
-                        .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("#{n} {}", p.title)).help("Review this pull request")
+                    let mut line = row().key(format!("pull-{n}")).w_full().px(EDGE).py(8.0).gap(12.0).items_center()
+                        .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("#{n} {}", p.title)).description(state).help("Review this pull request")
                         .on_press(move |s: &mut Collate| s.open_pull(n))
-                        .child(dot(k, github::overall(&p.checks)))
-                        .child(words)
+                        .child(icon(mark, 16.0).color(hue).a11y_hidden())
+                        .child(words);
+                    if p.ci.is_some() {
+                        line = line.child(dot(k, p.ci));
+                    }
+                    list = list.child(line
                         .child(text(if fetching { "Opening…" } else { verdict }.to_owned()).font(k.ty.text_xsmall_medium).color(tint))
                         .child(text(format!("+{}", p.additions)).font(mono).color(k.c.success.fg))
                         .child(text(format!("−{}", p.deletions)).font(mono).color(k.c.danger.fg)));

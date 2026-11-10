@@ -277,6 +277,9 @@ lucide!(UNSTAGED_ICON, "collate-circle-dashed", r#"<path d="M10.1 2.182a10 10 0 
 lucide!(STAGED_ICON, "collate-circle-check", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
 lucide!(GRAPH_ICON, "collate-git-graph", r#"<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>"#);
 lucide!(PULLS_ICON, "collate-git-pull-request", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/>"#);
+// A pull request's state in the list, as GitHub marks it (open is PULLS_ICON, merged MERGE_ICON).
+lucide!(PULL_DRAFT_ICON, "collate-git-pull-request-draft", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M18 6V5"/><path d="M18 11v-1"/><path d="M6 9v12"/>"#);
+lucide!(PULL_CLOSED_ICON, "collate-git-pull-request-closed", r#"<circle cx="6" cy="6" r="3"/><path d="M6 9v12"/><path d="m21 3-6 6"/><path d="m21 9-6-6"/><path d="M18 11.5V15"/><circle cx="18" cy="18" r="3"/>"#);
 lucide!(MAP_ICON, "collate-layout-dashboard", r#"<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>"#);
 // Beside a link that leaves the app, as a browser would open it.
 lucide!(EXTERNAL_ICON, "collate-external-link", r#"<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>"#);
