@@ -315,6 +315,17 @@ impl Gh {
         self.run(&args, None).map(|_| ())
     }
 
+    /// Bring the base branch's new commits into the pull request's branch, on GitHub: a merge
+    /// commit, or the branch rebased onto the base.
+    pub fn update_branch(&self, number: u32, rebase: bool) -> Result<(), String> {
+        let n = number.to_string();
+        let mut args = vec!["pr", "update-branch", n.as_str()];
+        if rebase {
+            args.push("--rebase");
+        }
+        self.run(&args, None).map(|_| ())
+    }
+
     /// Run the failed jobs of these workflow runs again.
     pub fn rerun_failed(&self, runs: &[u64]) -> Result<(), String> {
         for id in runs {

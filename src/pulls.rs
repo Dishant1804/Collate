@@ -301,6 +301,12 @@ impl Collate {
         }
     }
 
+    /// Bring the base's new commits into the open pull request's branch: merged, or rebased.
+    fn update_branch(&mut self, rebase: bool) {
+        let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
+        self.pr_act("Updating the branch…", move |gh| gh.update_branch(n, rebase).map(|_| format!("Updated #{n} with its base")), |_| {});
+    }
+
     pub fn toggle_thread(&mut self, t: usize) {
         let Some(th) = self.pulls.pr.as_ref().and_then(|p| p.threads.get(t)) else { return };
         let (id, resolve) = (th.id.clone(), !th.resolved);
@@ -332,6 +338,9 @@ impl Collate {
             .item(PopupItem::new("reviewers", "Reviewers…").enabled(open))
             .item(PopupItem::new("labels", "Labels…").enabled(open))
             .separator()
+            .item(PopupItem::new("update", "Update Branch with Base").enabled(open))
+            .item(PopupItem::new("update-rebase", "Update Branch by Rebasing").enabled(open))
+            .separator()
             .item(PopupItem::new("ready", if draft { "Ready for Review" } else { "Convert to Draft" }).enabled(open))
             .item(PopupItem::new("state", if open { "Close Pull Request" } else { "Reopen Pull Request" }));
         tx.popup_menu(menu, "pr-more", move |s: &mut Collate, picked, _| match picked {
@@ -341,6 +350,8 @@ impl Collate {
             Some("edit") => s.start_compose(Compose::Edit),
             Some("reviewers") => s.start_compose(Compose::Reviewers),
             Some("labels") => s.start_compose(Compose::Labels),
+            Some("update") => s.update_branch(false),
+            Some("update-rebase") => s.update_branch(true),
             Some("ready") if draft => s.pr_act("Marking ready…", move |gh| gh.set(n, &["ready"]).map(|_| format!("#{n} is ready for review")), |_| {}),
             Some("ready") => s.pr_act("Converting…", move |gh| gh.set(n, &["ready", "--undo"]).map(|_| format!("#{n} is a draft")), |_| {}),
             Some("state") if open => s.pr_act("Closing…", move |gh| gh.set(n, &["close"]).map(|_| format!("Closed #{n}")), |_| {}),
@@ -472,9 +483,17 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
             .child(text(p.title.clone()).font(k.ty.ui_medium).color(k.c.text_base).wrap().grow(1.0).min_w(0.0))
             .child(more.mr(-4.0)))
         .child(text(format!("#{} by {} - {} → {}", p.number, p.author, p.head, p.base)).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full())
-        .child(row().key("pr-ready").w_full().gap(6.0).items_center()
-            .child(dot(k, Some(if can_merge { CheckState::Passed } else if open { CheckState::Pending } else { CheckState::Skipped })))
-            .child(text(ready.to_owned()).font(k.ty.text_small).color(k.c.text_base)));
+        .child({
+            let mut r = row().key("pr-ready").w_full().gap(6.0).items_center()
+                .child(dot(k, Some(if can_merge { CheckState::Passed } else if open { CheckState::Pending } else { CheckState::Skipped })))
+                .child(text(ready.to_owned()).font(k.ty.text_small).color(k.c.text_base).grow(1.0));
+            // Behind its base: the one-click fix GitHub offers, a merge of the base into it.
+            if open && pr.merge_state == "BEHIND" {
+                r = r.child(Button::new("Update Branch").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(s.busy.is_some())
+                    .help("Merge the base's new commits into this branch, on GitHub").on_press(|s: &mut Collate| s.update_branch(false)).build(k).key("pr-update").mr(-GHOST_PAD));
+            }
+            r
+        });
     if open {
         let pending = s.pending().len();
         let verdict = |key: &str, label: &str, v: Verdict| Button::new(label.to_owned()).variant(ButtonVariant::Outline).control_size(ControlSize::Small)
