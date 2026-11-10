@@ -1182,7 +1182,7 @@ impl Collate {
         }
     }
 
-    /// The current view's name, for the window's title.
+    /// The current view's name, for messages that say where something isn't.
     fn scope_title(&self) -> String {
         match self.scope {
             Scope::Uncommitted => "All Changes".into(),
@@ -2405,13 +2405,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     // With the sidebar closed the toolbar starts just past its toggle, where back and forward
     // sit: it starts past them instead.
     let past_arrows = if s.sidebar.is_open() { 0.0 } else { NAV_W + 8.0 };
-    let mut leading = row().key("toolbar-leading").gap(10.0).items_center().min_w(0.0).ml(EDGE - 12.0 - 8.0 + past_arrows).child(project_switcher(s, k, layer)).child(branch);
-    // Long branch names truncate 16 points before the centred title rather than run under it.
-    let title_x = rune::memo::layout_with("title", |r| (r[0] * 2.0).round() / 2.0);
-    let lead_x = rune::memo::layout_with("toolbar-leading", |r| (r[0] * 2.0).round() / 2.0);
-    if let (Some(t), Some(l)) = (title_x, lead_x) {
-        leading = leading.max_w((t - l - 16.0).max(120.0));
-    }
+    let leading = row().key("toolbar-leading").gap(10.0).items_center().min_w(0.0).ml(EDGE - 12.0 - 8.0 + past_arrows).child(project_switcher(s, k, layer)).child(branch);
     let split = s.diff.mode() == DiffMode::Split;
     let modes = SegmentedControl::new(&["Unified", "Split"], Some(split as usize)).label("Diff layout").fit().on_pick(|s: &mut Collate, i, tx: &mut Tx| {
         tx.motion(rune::tok::motion::SNAPPY);
@@ -2432,19 +2426,9 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.more_menu(tx))
         .build(k)
         .key("more");
-    let panel_w = if s.inspector.is_open() && !no_project { s.inspector.width() } else { 0.0 };
-    // The title's slot is the bar less 96 points each side.
-    let bar = rune::memo::layout_with("toolbar", |r| r[2]).unwrap_or(f32::MAX);
-    let title_offset = if bar - 192.0 - panel_w >= 140.0 { panel_w } else { 0.0 };
+    // No title: the sidebar already marks the view shown.
     let toolbar = Toolbar::new()
         .leading(leading)
-        // Centred over the diff it names, not over the diff and the staging panel together;
-        // over the whole bar when that leaves the title too little room.
-        .center(
-            row().w_full().pr(title_offset).center().child(
-                text(if no_project { "Collate".to_owned() } else if s.map.open { "Repository Map".to_owned() } else { s.scope_title() }).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate(),
-            ),
-        )
         .trailing(row().gap(6.0).items_center().child(modes.build(k)).child(panel).child(more));
 
     let n = s.diff.files().len();
