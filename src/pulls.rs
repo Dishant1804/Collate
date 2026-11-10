@@ -59,6 +59,8 @@ pub struct PullsState {
     pub expanded: HashSet<String>,
     /// Words the list is narrowed to.
     pub filter: TextEdit,
+    /// The comment being written suggests its text in place of the line's.
+    pub suggest: bool,
 }
 
 impl Default for PullsState {
@@ -76,6 +78,7 @@ impl Default for PullsState {
             delete_branch: true,
             expanded: HashSet::new(),
             filter: TextEdit::new(""),
+            suggest: false,
         }
     }
 }
@@ -305,6 +308,24 @@ impl Collate {
     fn update_branch(&mut self, rebase: bool) {
         let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
         self.pr_act("Updating the branch…", move |gh| gh.update_branch(n, rebase).map(|_| format!("Updated #{n} with its base")), |_| {});
+    }
+
+    /// Put thread `t`'s suggestion in place of the lines it's on, in the working tree: the
+    /// pull request's branch has to be the one checked out. The change is left to commit.
+    pub fn apply_suggestion(&mut self, t: usize) {
+        let (Some(pr), Some(repo)) = (self.pulls.pr.as_ref(), current_repo()) else { return };
+        let Some(th) = pr.threads.get(t) else { return };
+        let (Some(last), Some(with)) = (th.line, th.comments.iter().find_map(|c| github::suggestion(&c.body))) else { return };
+        let path = repo.root.join(&th.path);
+        let applied = std::fs::read_to_string(&path)
+            .map_err(|e| format!("{}: {e}", th.path))
+            .and_then(|text| github::replace_lines(&text, th.start.unwrap_or(last), last, &with).ok_or_else(|| format!("{} no longer has those lines", th.path)))
+            .and_then(|text| std::fs::write(&path, text).map_err(|e| format!("{}: {e}", th.path)));
+        match applied {
+            Ok(()) => self.say(format!("Applied the suggestion to {}; commit it from All Changes", th.path), false),
+            Err(e) => self.say(format!("Couldn't apply the suggestion: {e}"), true),
+        }
+        crate::refresh();
     }
 
     pub fn toggle_thread(&mut self, t: usize) {
@@ -643,8 +664,17 @@ pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
         .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.toggle_thread(t)).build(k).key("resolve");
     let reply = Button::new("Reply").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
         .on_press(move |s: &mut Collate| s.start_compose(Compose::Reply(t))).build(k).key("reply");
-    let head = row().w_full().gap(8.0).items_center()
-        .child(text(if th.resolved { "Resolved thread" } else { "Thread" }.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).grow(1.0))
+    let mut head = row().w_full().gap(8.0).items_center()
+        .child(text(if th.resolved { "Resolved thread" } else { "Thread" }.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).grow(1.0));
+    // A suggestion applies to the working tree, so only with the pull request's branch checked out.
+    let pr_branch = s.pulls.pr.as_ref().is_some_and(|p| p.pull.head == s.branch);
+    if !th.resolved && !th.left && th.line.is_some() && th.comments.iter().any(|c| github::suggestion(&c.body).is_some()) {
+        let apply = Button::new("Apply Suggestion").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!pr_branch)
+            .help(if pr_branch { "Put the suggested lines in the file, to commit" } else { "Check out the pull request's branch first, from the ⋯ menu" })
+            .on_press(move |s: &mut Collate| s.apply_suggestion(t)).build(k).key("apply");
+        head = head.child(apply);
+    }
+    let head = head
         .child(reply)
         .child(resolve.mr(-GHOST_PAD));
     let mut bubble = col().key("bubble").w_full().max_w(720.0).px(12.0).py(8.0).gap(8.0).radius(k.radius.md)

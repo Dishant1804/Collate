@@ -92,6 +92,8 @@ pub struct Thread {
     /// The line in the head (`RIGHT`) or base (`LEFT`) the thread is on now; `None` once a
     /// later push moved it out of the diff.
     pub line: Option<u32>,
+    /// The first line of a comment on several lines.
+    pub start: Option<u32>,
     pub left: bool,
     /// The commented line's text, from the comment's diff hunk, to find the line by.
     pub text: String,
@@ -402,7 +404,7 @@ fn hunk_ranges(patch: &str) -> Vec<(String, bool, u32, u32)> {
 }
 
 /// Line threads, with the commented line's hunk to find the line's text.
-const THREADS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine diffSide comments(first:50){nodes{databaseId author{login} body createdAt diffHunk}}}}}}}";
+const THREADS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated path line startLine originalLine diffSide comments(first:50){nodes{databaseId author{login} body createdAt diffHunk}}}}}}}";
 
 fn s(v: &Value, k: &str) -> String {
     v[k].as_str().unwrap_or("").to_owned()
@@ -503,12 +505,31 @@ fn thread(t: &Value) -> Option<Thread> {
         reply_to: first["databaseId"].as_u64().unwrap_or(0),
         path: s(t, "path"),
         line: t["line"].as_u64().map(|n| n as u32),
+        start: t["startLine"].as_u64().map(|n| n as u32),
         left,
         text,
         resolved: t["isResolved"].as_bool().unwrap_or(false),
         outdated: t["isOutdated"].as_bool().unwrap_or(false),
         comments: comments.iter().map(|c| Post { author: login(&c["author"]), body: s(c, "body"), time: s(c, "createdAt"), state: String::new() }).collect(),
     })
+}
+
+/// The lines a comment suggests in place of the ones it's on: its ```` ```suggestion ```` block.
+pub fn suggestion(body: &str) -> Option<String> {
+    let body = body.replace("\r\n", "\n");
+    let (_, rest) = body.split_once("```suggestion\n")?;
+    let end = rest.find("```")?;
+    Some(rest[..end].to_owned())
+}
+
+/// `text` with lines `first..=last` (from 1) replaced by `with` (its lines, each ending in a newline).
+pub fn replace_lines(text: &str, first: u32, last: u32, with: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let (a, b) = (first as usize, last as usize);
+    if a == 0 || b < a || b > lines.len() {
+        return None;
+    }
+    Some(lines[..a - 1].concat() + with + &lines[b..].concat())
 }
 
 /// The pull requests that want the reader's attention first: asked of them, then theirs, then the rest.
@@ -540,6 +561,15 @@ mod tests {
         assert_eq!(overall(&[]), None);
         let g = group(std::slice::from_ref(&p), "me");
         assert_eq!((g[0].1.len(), g[1].1.len(), g[2].1.len()), (1, 0, 0));
+    }
+
+    #[test]
+    fn a_suggestion_replaces_the_lines_it_is_on() {
+        assert_eq!(suggestion("Rename:\r\n```suggestion\r\nlet total = 1;\r\n```\r\nok?").as_deref(), Some("let total = 1;\n"));
+        assert_eq!(suggestion("Just a note"), None);
+        assert_eq!(replace_lines("a\nb\nc\n", 2, 2, "B\n").as_deref(), Some("a\nB\nc\n"));
+        assert_eq!(replace_lines("a\nb\nc\n", 1, 2, "").as_deref(), Some("c\n"), "an empty suggestion deletes the lines");
+        assert_eq!(replace_lines("a\n", 2, 2, "x\n"), None);
     }
 
     #[test]

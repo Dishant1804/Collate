@@ -1002,7 +1002,9 @@ impl Collate {
             Ask::Comment(..) if name.is_empty() => {}
             Ask::Comment(at, edit) => {
                 let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                let c = Comment { at, body: name, time };
+                // A suggestion is the line as it should read, in the block GitHub offers to apply.
+                let body = if std::mem::take(&mut self.pulls.suggest) { format!("```suggestion\n{name}\n```") } else { name };
+                let c = Comment { at, body, time };
                 match edit.filter(|&n| n < self.comments.len()) {
                     Some(n) => self.comments[n] = c,
                     None => self.comments.push(c),
@@ -1095,6 +1097,7 @@ impl Collate {
 
     fn ask(&mut self, what: Ask) {
         self.prompt = Some(what);
+        self.pulls.suggest = false;
         self.prompt_text = TextEdit::new("");
     }
 
@@ -3022,11 +3025,20 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .key("prompt-field")
             .w_full();
         let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Rename(_) | Ask::Tag(_));
-        let buttons = row()
-            .key("prompt-buttons")
-            .w_full()
-            .gap(8.0)
-            .justify_end()
+        let mut buttons = row().key("prompt-buttons").w_full().gap(8.0).justify_end();
+        // On a pull request's line: suggest what it should say instead, starting from what it says.
+        if let Ask::Comment(at, None) = ask
+            && s.pulls.pr.is_some()
+            && !s.pulls.suggest
+        {
+            let line = at.text.clone();
+            buttons = buttons.child(Button::new("Suggest a Change").variant(ButtonVariant::Ghost).help("Write the line as it should read; the author can apply it")
+                .on_press(move |s: &mut Collate| {
+                    s.pulls.suggest = true;
+                    s.prompt_text = TextEdit::new(&line);
+                }).build(k).key("prompt-suggest")).child(row().grow(1.0));
+        }
+        let buttons = buttons
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.prompt = None).build(k))
             .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(empty).on_press(|s: &mut Collate| s.answer_prompt()).build(k).key("prompt-ok"));
         Dialog::new("prompt", title)
