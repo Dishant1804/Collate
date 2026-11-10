@@ -625,3 +625,19 @@ fn rebasing_replays_the_branch_on_its_new_base() {
     assert!(r.rebase("other").unwrap_err().contains("stopped on conflicts"));
     assert_eq!(r.operation(), Some(crate::git::Operation::Rebase));
 }
+
+#[test]
+fn branches_rename_and_delete_saying_whether_anything_is_lost() {
+    let (dir, r) = repo("branches", &[("a.txt", "one\n")]);
+    sh(&dir, &["branch", "merged"]);
+    sh(&dir, &["switch", "-qc", "ahead"]);
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "ahead"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    assert!(r.merged("merged") && !r.merged("ahead"));
+    r.rename_branch("ahead", "renamed").unwrap();
+    assert!(r.branches().contains(&"renamed".to_owned()) && !r.branches().contains(&"ahead".to_owned()));
+    r.delete_branch("renamed").unwrap();
+    r.delete_branch("merged").unwrap();
+    assert_eq!(r.branches(), ["main"]);
+}

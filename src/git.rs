@@ -863,6 +863,20 @@ impl Repo {
         self.stopped(self.run(&["merge", "--no-edit", branch], None))
     }
 
+    pub fn rename_branch(&self, from: &str, to: &str) -> Result<String, String> {
+        self.run(&["branch", "-m", from, to], None)
+    }
+
+    /// Delete a local branch, merged or not: the app asks first, saying which.
+    pub fn delete_branch(&self, name: &str) -> Result<String, String> {
+        self.run(&["branch", "-D", name], None)
+    }
+
+    /// Whether every commit of `branch` is also in HEAD, so deleting it loses nothing.
+    pub fn merged(&self, branch: &str) -> bool {
+        self.run(&["merge-base", "--is-ancestor", branch, "HEAD"], None).is_ok()
+    }
+
     /// Replay the current branch's own commits on top of `onto`.
     pub fn rebase(&self, onto: &str) -> Result<String, String> {
         self.stopped(self.run(&["rebase", onto], None))

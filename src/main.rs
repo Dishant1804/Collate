@@ -325,6 +325,8 @@ enum Ask {
     Stash,
     /// A comment on a line, or a new text for comment `n`.
     Comment(diff::Anchor, Option<usize>),
+    /// A new name for a branch.
+    Rename(String),
 }
 
 /// A note the reader left on a line. Comments stay on this Mac, per project.
@@ -342,6 +344,8 @@ enum Risky {
     /// `git reset --hard` to a commit.
     ResetHard(String),
     DropStash(String),
+    /// A local branch, and whether its commits are all in HEAD.
+    DeleteBranch(String, bool),
 }
 
 struct Notice {
@@ -979,6 +983,8 @@ impl Collate {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
             Ask::Branch(at) => self.act_bg("Creating the branch…", move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
+            Ask::Rename(from) if name.is_empty() || name == from => {}
+            Ask::Rename(from) => self.act_bg("Renaming…", move |r| r.rename_branch(&from, &name).map(|_| format!("Renamed {from} to {name}"))),
             Ask::Comment(_, Some(n)) if name.is_empty() => self.delete_comment(n),
             Ask::Comment(..) if name.is_empty() => {}
             Ask::Comment(at, edit) => {
@@ -1135,6 +1141,7 @@ impl Collate {
         match self.risky.take() {
             Some(Risky::ResetHard(id)) => self.act_bg("Resetting…", move |r| r.reset("hard", &id).map(|_| format!("Reset to {} and threw the changes away", abbrev(&id)))),
             Some(Risky::DropStash(name)) => self.act_bg("Dropping the stash…", move |r| r.stash_do("drop", &name).map(|_| format!("Dropped {name}"))),
+            Some(Risky::DeleteBranch(name, _)) => self.act_bg("Deleting the branch…", move |r| r.delete_branch(&name).map(|_| format!("Deleted {name}"))),
             None => {}
         }
     }
@@ -1378,6 +1385,11 @@ impl Collate {
             rebases = rebases.item(PopupItem::new(format!("rebase:{b}"), b.clone()));
         }
         let detached = self.branch.is_empty() || self.branch == "HEAD";
+        // Local branches other than this one can be deleted.
+        let mut deletes = PopupMenu::new();
+        for b in self.branches.iter().filter(|b| **b != self.branch && !b.starts_with("origin/")).take(40) {
+            deletes = deletes.item(PopupItem::new(format!("delete:{b}"), b.clone()));
+        }
         let mut bases = PopupMenu::new();
         for b in self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(30) {
             bases = bases.item(PopupItem::new(format!("base:{b}"), b.clone()).checked(*b == base));
@@ -1389,6 +1401,8 @@ impl Collate {
             .separator()
             .submenu_enabled("Switch To", switch, idle)
             .item(PopupItem::new("new-branch", "New Branch…").enabled(idle))
+            .item(PopupItem::new("rename", format!("Rename {}…", self.branch)).enabled(idle && !detached))
+            .submenu_enabled("Delete Branch", deletes, idle)
             .submenu_enabled(format!("Merge Into {}", self.branch), merges, idle && !detached && self.operation.is_none())
             .submenu_enabled(format!("Rebase {} Onto", self.branch), rebases, idle && !detached && self.operation.is_none() && self.total == 0)
             .separator()
@@ -1410,6 +1424,15 @@ impl Collate {
                 "merge" => s.act_bg("Merging…", move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
                 "rebase" => s.act_bg("Rebasing…", move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
                 "new-branch" => s.ask(Ask::Branch(None)),
+                "rename" => {
+                    let from = s.branch.clone();
+                    s.ask(Ask::Rename(from.clone()));
+                    s.prompt_text = TextEdit::new(&from);
+                }
+                "delete" => {
+                    let merged = current_repo().is_some_and(|r| r.merged(&arg));
+                    s.risky = Some(Risky::DeleteBranch(arg, merged));
+                }
                 "compare" => s.start_compare(),
                 "stash" => s.ask(Ask::Stash),
                 "show" => s.open_commit(&arg),
@@ -2938,6 +2961,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
+            Ask::Rename(_) => ("Rename branch", "Only here: a pushed branch keeps its old name on the remote.", "Rename", "Branch name"),
             // In a pull request, a comment goes with the next review, if GitHub takes it on that line.
             Ask::Comment(at, None) if s.pulls.pr.as_ref().is_some_and(|p| !p.commentable(&at.path, at.side == diff::Side::Old, at.line)) => ("Comment",
                 "GitHub only takes comments within three lines of a change, so this one stays on this Mac.", "Comment", "Write a comment"),
@@ -2953,7 +2977,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k)
             .key("prompt-field")
             .w_full();
-        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None));
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Rename(_));
         let buttons = row()
             .key("prompt-buttons")
             .w_full()
@@ -3014,6 +3038,12 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let (title, what, button) = match r {
             Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
             Risky::DropStash(name) => (format!("Drop {name}?"), "Its changes are deleted. There's no backup.".to_owned(), "Drop Stash"),
+            Risky::DeleteBranch(name, true) => (format!("Delete {name}?"), format!("Its commits are all in {} already, so nothing is lost.", s.branch), "Delete Branch"),
+            Risky::DeleteBranch(name, false) => (
+                format!("Delete {name}?"),
+                format!("It has commits that aren't in {}. Once it's deleted they're only in git's reflog, for a while.", s.branch),
+                "Delete Branch",
+            ),
         };
         let buttons = row()
             .key("risky-buttons")
