@@ -2,6 +2,7 @@
 //! throwaway repository in the temp folder.
 
 use super::*;
+use crate::history_view::ref_labels;
 use crate::settings::Motion;
 use rune::{Env, Runtime};
 
