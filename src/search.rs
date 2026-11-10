@@ -160,6 +160,46 @@ mod tests {
         assert!(titles("  ").is_empty());
     }
 
+    /// One keystroke's search, typed a letter at a time, over 50,000 files and 20,000 commits:
+    /// the worst of seven runs per query, in milliseconds.
+    /// `cargo test --release bench_search -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_search() {
+        use std::time::Instant;
+        let words = ["fix", "add", "the", "render", "loop", "map", "search", "toolbar", "graph", "settings", "diff", "refresh"];
+        let mut nodes = vec![crate::map::Node { name: String::new(), path: String::new(), parent: None, children: vec![], lines: 0, dir: true }];
+        for i in 0..50_000 {
+            let path = format!("crates/{}/src/{}/{}_{i}.rs", words[i % 12], words[(i / 12) % 12], words[(i / 144) % 12]);
+            let name = path.rsplit('/').next().unwrap().to_owned();
+            nodes.push(crate::map::Node { name, path, parent: Some(0), children: vec![], lines: 10, dir: false });
+        }
+        let by_path = nodes.iter().enumerate().map(|(i, n)| (n.path.clone(), i)).collect();
+        let m = RepoMap { nodes, by_path, imports: vec![], imported_by: vec![], files: 50_000 };
+        let list: Vec<Commit> = (0..20_000).map(|i| {
+            let subject = format!("{} the {} {} in {}", words[i % 12], words[(i / 3) % 12], words[(i / 7) % 12], words[(i / 11) % 12]);
+            let refs: &[(&str, RefKind)] = if i % 500 == 0 { &[("feature/search", RefKind::Branch)] } else { &[] };
+            commit(&format!("{:040x}", i * 7919), &subject, ["Ada", "Grace", "Linus"][i % 3], refs)
+        }).collect();
+        let worst = |f: &dyn Fn(&str) -> usize, q: &str| {
+            let mut times: Vec<f64> = (0..7).map(|_| {
+                let t = Instant::now();
+                std::hint::black_box(f(q));
+                t.elapsed().as_secs_f64() * 1000.0
+            }).collect();
+            times.sort_by(f64::total_cmp);
+            times[6]
+        };
+        for (name, q) in [("files", "toolbar"), ("commits", "search"), ("commits by hash", "00001f0f")] {
+            let line: Vec<String> = (1..=q.len()).map(|n| {
+                let q = &q[..n];
+                let ms = if name == "files" { worst(&|q| files(&m, q).len(), q) } else { worst(&|q| commits(&list, q).len(), q) };
+                format!("{q}: {ms:.2}")
+            }).collect();
+            println!("{name:<16}{}", line.join("  "));
+        }
+    }
+
     #[test]
     fn results_stop_at_the_limit_best_first() {
         let list: Vec<Commit> = (0..500).map(|i| commit(&format!("{i:040x}"), &format!("change {i}"), "Ada", &[])).collect();
