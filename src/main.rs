@@ -1871,7 +1871,7 @@ impl Collate {
         }
     }
 
-    /// ⌘F: the toolbar's search takes the keys, its text selected so typing replaces it.
+    /// ⌘F or ⌘K: the toolbar's search takes the keys, its text selected so typing replaces it.
     fn focus_search(&mut self) {
         let place = self.searched();
         let q = self.query_mut(place);
@@ -2650,7 +2650,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("v", "Mark the file viewed"),
             ("c", "Comment on the selected line"),
             ("o", "Open the file in your editor"),
-            ("⌘F", "Search this view: the diff (⏎ next match, ⇧⏎ previous), the Map's files, History's commits and branches"),
+            ("⌘F  ⌘K", "Search this view: the diff (⏎ next match, ⇧⏎ previous), the Map's files, History's commits and branches"),
             ("⌘P", "Go to a file: type part of its path; add :line for a line"),
             ("⌘L", "Go to a line of the file in view"),
             ("n  N  ⌘G", "Next / previous search match"),
@@ -4201,7 +4201,9 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.add_project();
         return true;
     }
-    if ev.is_command('f') && s.has_project {
+    // ⌘K too, as in Slack and Linear; in a focused terminal it clears, as Terminal does, and
+    // the terminal takes it before this.
+    if (ev.is_command('f') || ev.is_command('k')) && s.has_project {
         s.focus_search();
         return true;
     }
@@ -5029,6 +5031,9 @@ mod tests {
         assert_eq!(rt.state.hit, Some(1), "Return steps on");
         key(&mut rt, Key::Escape, false);
         assert!(!rt.state.search.focused, "Escape gives the keys back");
+        key(&mut rt, Key::Command('k'), true);
+        assert!(rt.state.search.focused, "⌘K opens the search too");
+        key(&mut rt, Key::Escape, false);
         key(&mut rt, Key::Text("v".into()), false);
         assert_eq!(rt.state.search.text, "also chang", "and shortcuts are shortcuts again");
     }

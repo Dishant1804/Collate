@@ -68,7 +68,7 @@ Without a path, Collate opens the project you used last, or offers to add one.
 | `v` | Mark the file viewed |
 | `c` | Comment on the selected line |
 | `o` | Open the file in your editor |
-| `⌘F`, `n` `N` | Search this view (the diff, the Map's files, History's commits and branches), next / previous match |
+| `⌘F` or `⌘K`, `n` `N` | Search this view (the diff, the Map's files, History's commits and branches), next / previous match |
 | `⌥⌘C` `⌥⌘W` `⌥⌘R` | Search: match case, whole words, regular expression |
 | `⌘P` `⌘L` | Go to a file (`file:line` for a line), go to a line |
 | `m` | Jump to the other end of a move |
