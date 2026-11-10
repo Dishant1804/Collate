@@ -25,11 +25,12 @@ echo
 cat <<NOTES
 ## Install
 
-Download \`Collate-$version.dmg\`, open it and drag Collate to Applications. It runs on
-Apple silicon and Intel Macs, macOS 13 or later, and needs \`git\` on your \`PATH\`.
+The simplest way to install is to build it on your Mac: see the README's Install section.
 
-Collate is signed ad hoc, not by an Apple Developer ID, so macOS blocks the first launch
-of a downloaded copy. Clear the quarantine once:
+\`Collate-$version-macos-universal.zip\` holds the app, for Apple silicon and Intel Macs,
+macOS 13 or later; it needs \`git\` on your \`PATH\`. Unzip it and move Collate to
+Applications. Collate is signed ad hoc, not by an Apple Developer ID, so macOS blocks the
+first launch of a downloaded copy. Clear the quarantine once:
 
 \`\`\`sh
 xattr -dr com.apple.quarantine /Applications/Collate.app
