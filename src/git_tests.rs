@@ -641,3 +641,16 @@ fn branches_rename_and_delete_saying_whether_anything_is_lost() {
     r.delete_branch("merged").unwrap();
     assert_eq!(r.branches(), ["main"]);
 }
+
+#[test]
+fn tags_are_made_listed_and_deleted() {
+    let (dir, r) = repo("tags", &[("a.txt", "one\n")]);
+    r.tag("v1", "HEAD", "").unwrap();
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "two"]);
+    r.tag("v2", "HEAD", "Second release").unwrap();
+    assert_eq!(sh(&dir, &["cat-file", "-t", "v2"]).trim(), "tag", "a message makes it annotated");
+    assert!(r.tags().contains(&"v1".to_owned()) && r.tags().contains(&"v2".to_owned()));
+    r.delete_tag("v1", false).unwrap();
+    assert_eq!(r.tags(), ["v2"]);
+}

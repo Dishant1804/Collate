@@ -327,6 +327,8 @@ enum Ask {
     Comment(diff::Anchor, Option<usize>),
     /// A new name for a branch.
     Rename(String),
+    /// A tag at a commit (HEAD when `None`).
+    Tag(Option<String>),
 }
 
 /// A note the reader left on a line. Comments stay on this Mac, per project.
@@ -346,6 +348,8 @@ enum Risky {
     DropStash(String),
     /// A local branch, and whether its commits are all in HEAD.
     DeleteBranch(String, bool),
+    /// A tag, and whether to delete it from `origin` too.
+    DeleteTag(String, bool),
 }
 
 struct Notice {
@@ -983,6 +987,13 @@ impl Collate {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
             Ask::Branch(at) => self.act_bg("Creating the branch…", move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
+            Ask::Tag(_) if name.is_empty() => {}
+            Ask::Tag(at) => {
+                // `v1.2 First stable release`: the name, then an optional message.
+                let (tag, message) = name.split_once(' ').map_or((name.clone(), String::new()), |(t, m)| (t.to_owned(), m.trim().to_owned()));
+                let at = at.unwrap_or_else(|| "HEAD".to_owned());
+                self.act_bg("Tagging…", move |r| r.tag(&tag, &at, &message).map(|_| format!("Tagged {} as {tag}", abbrev(&at))));
+            }
             Ask::Rename(from) if name.is_empty() || name == from => {}
             Ask::Rename(from) => self.act_bg("Renaming…", move |r| r.rename_branch(&from, &name).map(|_| format!("Renamed {from} to {name}"))),
             Ask::Comment(_, Some(n)) if name.is_empty() => self.delete_comment(n),
@@ -1141,6 +1152,9 @@ impl Collate {
         match self.risky.take() {
             Some(Risky::ResetHard(id)) => self.act_bg("Resetting…", move |r| r.reset("hard", &id).map(|_| format!("Reset to {} and threw the changes away", abbrev(&id)))),
             Some(Risky::DropStash(name)) => self.act_bg("Dropping the stash…", move |r| r.stash_do("drop", &name).map(|_| format!("Dropped {name}"))),
+            Some(Risky::DeleteTag(name, remote)) => self.act_bg("Deleting the tag…", move |r| {
+                r.delete_tag(&name, remote).map(|_| if remote { format!("Deleted {name} here and from origin") } else { format!("Deleted {name}") })
+            }),
             Some(Risky::DeleteBranch(name, _)) => self.act_bg("Deleting the branch…", move |r| r.delete_branch(&name).map(|_| format!("Deleted {name}"))),
             None => {}
         }
@@ -1158,6 +1172,7 @@ impl Collate {
         let menu = PopupMenu::new()
             .item(PopupItem::new("copy", "Copy Hash"))
             .item(PopupItem::new("branch", "New Branch Here…"))
+            .item(PopupItem::new("tag", "Tag This Commit…"))
             .separator()
             .item(PopupItem::new("pick", format!("Cherry-Pick onto {on}")).enabled(!is_head))
             .item(PopupItem::new("revert", "Revert Commit"))
@@ -1172,6 +1187,7 @@ impl Collate {
                     s.say("Copied the commit hash", false);
                 }
                 Some("branch") => s.ask(Ask::Branch(Some(id))),
+                Some("tag") => s.ask(Ask::Tag(Some(id))),
                 Some("pick") => s.act_bg("Cherry-picking…", move |r| r.cherry_pick(&id).map(|_| format!("Cherry-picked {short_id}"))),
                 Some("revert") => s.act_bg("Reverting…", move |r| r.revert(&id).map(|_| format!("Reverted {short_id}"))),
                 Some("reset-soft") => s.act_bg("Resetting…", move |r| r.reset("soft", &id).map(|_| format!("Reset to {short_id}; its later changes are staged"))),
@@ -1365,6 +1381,17 @@ impl Collate {
             }
             switch = switch.item(PopupItem::new(format!("switch:{b}"), b.clone()));
         }
+        let tags = repo.as_deref().map(Repo::tags).unwrap_or_default();
+        let mut tag_menu = PopupMenu::new().item(PopupItem::new("new-tag", "New Tag at HEAD…").enabled(idle)).separator();
+        for t in tags.iter().take(30) {
+            let one = PopupMenu::new()
+                .item(PopupItem::new(format!("show-tag:{t}"), "Show Commit"))
+                .item(PopupItem::new(format!("push-tag:{t}"), "Push to origin").enabled(idle))
+                .separator()
+                .item(PopupItem::new(format!("delete-tag:{t}"), "Delete…").enabled(idle))
+                .item(PopupItem::new(format!("delete-remote-tag:{t}"), "Delete Here and from origin…").enabled(idle));
+            tag_menu = tag_menu.submenu(t.clone(), one);
+        }
         let mut stash_menu = PopupMenu::new();
         for st in &stashes {
             let one = PopupMenu::new()
@@ -1408,6 +1435,7 @@ impl Collate {
             .separator()
             .item(PopupItem::new("stash", "Stash All Changes…").enabled(idle && self.total > 0))
             .submenu_enabled(format!("Stashes ({})", stashes.len()), stash_menu, !stashes.is_empty())
+            .submenu(format!("Tags ({})", tags.len()), tag_menu)
             .separator()
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
             .submenu("Compare Against", bases)
@@ -1435,6 +1463,15 @@ impl Collate {
                 }
                 "compare" => s.start_compare(),
                 "stash" => s.ask(Ask::Stash),
+                "new-tag" => s.ask(Ask::Tag(None)),
+                "show-tag" => {
+                    if let Some(id) = current_repo().and_then(|r| r.resolve(&arg).ok()) {
+                        s.open_commit(&id);
+                    }
+                }
+                "push-tag" => s.act_bg("Pushing the tag…", move |r| r.push_tag(&arg).map(|_| format!("Pushed {arg}"))),
+                "delete-tag" => s.risky = Some(Risky::DeleteTag(arg, false)),
+                "delete-remote-tag" => s.risky = Some(Risky::DeleteTag(arg, true)),
                 "show" => s.open_commit(&arg),
                 "apply" => s.act_bg("Applying the stash…", move |r| r.stash_do("apply", &arg).map(|_| format!("Applied {arg}"))),
                 "pop" => s.act_bg("Applying the stash…", move |r| r.stash_do("pop", &arg).map(|_| format!("Applied and dropped {arg}"))),
@@ -2961,6 +2998,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
+            Ask::Tag(None) => ("New tag", "Made at HEAD, here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
+            Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Rename(_) => ("Rename branch", "Only here: a pushed branch keeps its old name on the remote.", "Rename", "Branch name"),
             // In a pull request, a comment goes with the next review, if GitHub takes it on that line.
             Ask::Comment(at, None) if s.pulls.pr.as_ref().is_some_and(|p| !p.commentable(&at.path, at.side == diff::Side::Old, at.line)) => ("Comment",
@@ -2977,7 +3016,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k)
             .key("prompt-field")
             .w_full();
-        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Rename(_));
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Rename(_) | Ask::Tag(_));
         let buttons = row()
             .key("prompt-buttons")
             .w_full()
@@ -3038,6 +3077,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let (title, what, button) = match r {
             Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
             Risky::DropStash(name) => (format!("Drop {name}?"), "Its changes are deleted. There's no backup.".to_owned(), "Drop Stash"),
+            Risky::DeleteTag(name, false) => (format!("Delete {name}?"), "Only here: a pushed tag stays on origin.".to_owned(), "Delete Tag"),
+            Risky::DeleteTag(name, true) => (format!("Delete {name} here and from origin?"), "Anyone who fetched it keeps it until they delete it too.".to_owned(), "Delete Tag"),
             Risky::DeleteBranch(name, true) => (format!("Delete {name}?"), format!("Its commits are all in {} already, so nothing is lost.", s.branch), "Delete Branch"),
             Risky::DeleteBranch(name, false) => (
                 format!("Delete {name}?"),

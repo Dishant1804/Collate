@@ -863,6 +863,28 @@ impl Repo {
         self.stopped(self.run(&["merge", "--no-edit", branch], None))
     }
 
+    /// Tags, newest first.
+    pub fn tags(&self) -> Vec<String> {
+        self.run(&["tag", "--sort=-creatordate"], None).unwrap_or_default().lines().map(str::to_owned).collect()
+    }
+
+    /// Tag commit `at`: annotated when there's a message, else a plain name.
+    pub fn tag(&self, name: &str, at: &str, message: &str) -> Result<String, String> {
+        if message.is_empty() { self.run(&["tag", name, at], None) } else { self.run(&["tag", "-a", name, "-m", message, at], None) }
+    }
+
+    pub fn push_tag(&self, name: &str) -> Result<String, String> {
+        self.run(&["push", "-q", "origin", &format!("refs/tags/{name}")], None)
+    }
+
+    /// Delete a tag here, or from `origin` too.
+    pub fn delete_tag(&self, name: &str, remote: bool) -> Result<String, String> {
+        if remote {
+            self.run(&["push", "-q", "origin", "--delete", &format!("refs/tags/{name}")], None)?;
+        }
+        self.run(&["tag", "-d", name], None)
+    }
+
     pub fn rename_branch(&self, from: &str, to: &str) -> Result<String, String> {
         self.run(&["branch", "-m", from, to], None)
     }
