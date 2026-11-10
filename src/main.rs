@@ -15,6 +15,7 @@ mod map;
 mod map_view;
 mod nav;
 mod patch;
+mod search;
 mod settings;
 mod terminal;
 #[cfg(test)]
@@ -36,6 +37,7 @@ use rune_kit::{
     Checkbox, Button, ButtonVariant, ControlSize, Dialog, FileNode, FileTree, IconButton, IconButtonVariant, Kit, Placement, Popover, SegmentedControl, Select, Switch, TextInput, Tree,
     TreeItem, TreeModel,
 };
+use search::fuzzy;
 use settings::{CONTEXT_LINES, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
 
 /// The open project; `None` before one is chosen. Swapped when the reader switches project.
@@ -2764,28 +2766,6 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
 /// How well `q` matches `path` as letters in order, ignoring case: higher is better, `None`
 /// when it doesn't. Runs of letters, letters starting a word and letters in the file name
 /// count most, as editors' quick open scores them.
-fn fuzzy(q: &str, path: &str) -> Option<i32> {
-    let (q, p) = (q.to_ascii_lowercase().into_bytes(), path.to_ascii_lowercase().into_bytes());
-    let name = path.rfind('/').map_or(0, |i| i + 1);
-    let (mut score, mut at, mut last) = (0, 0, None::<usize>);
-    for &c in q.iter().filter(|c| !c.is_ascii_whitespace()) {
-        let i = at + p[at..].iter().position(|&x| x == c)?;
-        score += 1;
-        if last.is_some_and(|l| l + 1 == i) {
-            score += 5;
-        }
-        if i == 0 || matches!(p[i - 1], b'/' | b'_' | b'-' | b'.' | b' ') {
-            score += 4;
-        }
-        if i >= name {
-            score += 3;
-        }
-        last = Some(i);
-        at = i + 1;
-    }
-    Some(score)
-}
-
 /// ⌘P: the files of the diff matching what's typed, best first; Return goes to the one picked.
 fn jump_palette(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let (matches, line) = s.jump_matches();
