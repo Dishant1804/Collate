@@ -405,7 +405,7 @@ impl Collate {
     fn send_compose(&mut self) {
         let Some(c) = self.pulls.compose.take() else { return };
         let body = self.pulls.text.text.trim().to_owned();
-        let n = self.pulls.pr.as_ref().map_or(0, |p| p.pull.number);
+        let (n, head) = self.pulls.pr.as_ref().map_or((0, String::new()), |p| (p.pull.number, p.head_oid.clone()));
         match c {
             Compose::Review(v) => {
                 let pending = self.pending();
@@ -418,7 +418,7 @@ impl Collate {
                     Verdict::Comment => "Reviewed",
                 };
                 let note = if count == 0 { String::new() } else { format!(" with {count} line comment{}", if count == 1 { "" } else { "s" }) };
-                self.pr_act("Sending the review…", move |gh| gh.review(n, v, &body, &drafts).map(|_| format!("{what} #{n}{note}")), move |s| {
+                self.pr_act("Sending the review…", move |gh| gh.review(n, &head, v, &body, &drafts).map(|_| format!("{what} #{n}{note}")), move |s| {
                     // The comments are on GitHub now; keep them here only once.
                     let mut i = 0;
                     s.comments.retain(|_| {
@@ -490,15 +490,15 @@ impl Collate {
     }
 
     fn merge_menu(&mut self, tx: &mut Tx) {
-        let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
+        let Some((n, head)) = self.pulls.pr.as_ref().map(|p| (p.pull.number, p.head_oid.clone())) else { return };
         let mut menu = PopupMenu::new();
         for m in Method::ALL {
             menu = menu.item(PopupItem::new(m.title(), m.title()));
         }
         tx.popup_menu(menu, "pr-merge", move |s: &mut Collate, picked, _| {
             let Some(m) = Method::ALL.into_iter().find(|m| Some(m.title()) == picked) else { return };
-            let delete = s.pulls.delete_branch;
-            s.pr_act("Merging…", move |gh| gh.merge(n, m, delete).map(|_| format!("Merged #{n}")), Collate::reread);
+            let (delete, head) = (s.pulls.delete_branch, head.clone());
+            s.pr_act("Merging…", move |gh| gh.merge(n, &head, m, delete).map(|_| format!("Merged #{n}")), Collate::reread);
         });
     }
 

@@ -124,6 +124,8 @@ pub struct Detail {
     pub mergeable: String,
     /// GitHub's merge state: `CLEAN`, `BEHIND`, `BLOCKED`, `DIRTY`, `UNSTABLE`, `HAS_HOOKS`, …
     pub merge_state: String,
+    /// The head commit the diff shows, which a review and a merge are pinned to: the one
+    /// fetched, not whatever GitHub's head is by the time the reader acts.
     pub head_oid: String,
     /// Reviewers and where each stands: their latest review's state, or `REQUESTED`.
     pub reviewers: Vec<(String, String)>,
@@ -298,6 +300,7 @@ impl Gh {
                 None => self.fetch(n, &d.pull.url, &d.pull.base)?,
             };
             d.commentable = commentable;
+            d.head_oid = range.rsplit_once("..").map_or("", |(_, tip)| tip).to_owned();
             Ok((range, d))
         })
     }
@@ -320,16 +323,18 @@ impl Gh {
         Ok((format!("{mb}..{tip}"), hunk_ranges(&patch)))
     }
 
-    /// Submit a review: its verdict, a summary and comments on lines, in one go.
-    pub fn review(&self, number: u32, verdict: Verdict, body: &str, drafts: &[Draft]) -> Result<(), String> {
-        let comments: Vec<Value> = drafts
-            .iter()
-            .map(|d| serde_json::json!({ "path": d.path, "line": d.line, "side": if d.left { "LEFT" } else { "RIGHT" }, "body": d.body }))
-            .collect();
-        let mut req = serde_json::json!({ "event": verdict.event(), "comments": comments });
-        if !body.trim().is_empty() {
-            req["body"] = Value::String(body.to_owned());
-        }
+    /// Refuse when pull request `number`'s head is no longer `seen`, the commit the reader
+    /// reviewed: acting now would approve or merge commits they haven't read.
+    fn still_at(&self, number: u32, seen: &str, refused: &str) -> Result<(), String> {
+        let now = self.run(&["pr", "view", &number.to_string(), "--json", "headRefOid", "--jq", ".headRefOid"], None)?;
+        pinned(number, seen, now.trim(), refused)
+    }
+
+    /// Submit a review of commit `head`: its verdict, a summary and comments on lines, in one
+    /// go. The lines are `head`'s, so the comments land where the reader put them.
+    pub fn review(&self, number: u32, head: &str, verdict: Verdict, body: &str, drafts: &[Draft]) -> Result<(), String> {
+        self.still_at(number, head, "nothing was sent")?;
+        let req = review_request(head, verdict, body, drafts);
         self.run(&["api", "-X", "POST", &format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews"), "--input", "-"], Some(&req.to_string())).map(|_| ())
     }
 
@@ -350,9 +355,12 @@ impl Gh {
         self.run(&["pr", "comment", &number.to_string(), "--body-file", "-"], Some(body)).map(|_| ())
     }
 
-    pub fn merge(&self, number: u32, method: Method, delete_branch: bool) -> Result<(), String> {
+    /// Merge, only while the head is still `head`: GitHub refuses it if a push lands between
+    /// the check and the merge.
+    pub fn merge(&self, number: u32, head: &str, method: Method, delete_branch: bool) -> Result<(), String> {
+        self.still_at(number, head, "nothing was merged")?;
         let n = number.to_string();
-        let mut args = vec!["pr", "merge", &n, method.flag()];
+        let mut args = vec!["pr", "merge", &n, method.flag(), "--match-head-commit", head];
         if delete_branch {
             args.push("--delete-branch");
         }
@@ -426,6 +434,30 @@ impl Gh {
         }
         Ok(self.run(&args, Some(body))?.lines().last().unwrap_or("").trim().to_owned())
     }
+}
+
+/// Whether pull request `n`'s head is `now` still the reviewed `seen`.
+fn pinned(n: u32, seen: &str, now: &str, refused: &str) -> Result<(), String> {
+    if seen.is_empty() {
+        return Err(format!("Reload #{n} first: Collate doesn't know which commit you reviewed"));
+    }
+    if now != seen {
+        return Err(format!("#{n} has new commits since you opened it, so {refused}. Read them, then try again"));
+    }
+    Ok(())
+}
+
+/// The body of a review of commit `head`.
+fn review_request(head: &str, verdict: Verdict, body: &str, drafts: &[Draft]) -> Value {
+    let comments: Vec<Value> = drafts
+        .iter()
+        .map(|d| serde_json::json!({ "path": d.path, "line": d.line, "side": if d.left { "LEFT" } else { "RIGHT" }, "body": d.body }))
+        .collect();
+    let mut req = serde_json::json!({ "commit_id": head, "event": verdict.event(), "comments": comments });
+    if !body.trim().is_empty() {
+        req["body"] = Value::String(body.to_owned());
+    }
+    req
 }
 
 /// Each hunk's lines on both sides, by the file's path (the new one, or the old for a deletion).
@@ -701,6 +733,18 @@ mod tests {
         assert_eq!(check("https://github.com/o/r/actions/runs/42766795004/job/129665059298").run_id(), Some(42766795004));
         assert_eq!(check("https://app.circleci.com/pipelines/x").run_id(), None);
         assert_eq!(check("").run_id(), None);
+    }
+
+    #[test]
+    fn a_review_and_a_merge_are_pinned_to_the_commit_read() {
+        assert_eq!(pinned(7, "abc", "abc", "nothing was sent"), Ok(()));
+        let moved = pinned(7, "abc", "def", "nothing was merged").unwrap_err();
+        assert!(moved.starts_with("#7 has new commits") && moved.contains("nothing was merged"), "{moved}");
+        assert!(pinned(7, "", "abc", "nothing was sent").is_err(), "an unknown reviewed commit never passes");
+        let draft = Draft { path: "a.rs".into(), line: 3, left: true, body: "Why?".into() };
+        let req = review_request("abc", Verdict::Approve, " ", &[draft]);
+        assert_eq!((req["commit_id"].as_str(), req["event"].as_str(), req.get("body")), (Some("abc"), Some("APPROVE"), None));
+        assert_eq!((req["comments"][0]["side"].as_str(), req["comments"][0]["line"].as_u64()), (Some("LEFT"), Some(3)));
     }
 
     #[test]
