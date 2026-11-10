@@ -194,9 +194,14 @@ pub struct Gh {
     root: PathBuf,
 }
 
-/// What `gh` fails with before GitHub is connected.
+/// Pull requests can't be read until the reader connects GitHub: the view asks them to,
+/// instead of showing these as errors.
 pub const NO_CLI: &str = "The GitHub CLI isn't installed";
 pub const SIGNED_OUT: &str = "Not signed in to GitHub";
+
+pub fn needs_connect(e: &str) -> bool {
+    e == NO_CLI || e == SIGNED_OUT
+}
 
 /// Where a command-line tool is. An app opened from the Dock gets only the system's PATH, so
 /// Homebrew's folders are looked in too.

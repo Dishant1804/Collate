@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use rune::{Cursor, El, PopupItem, PopupMenu, TextEdit, Tx, col, row, text};
+use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton, IconButtonVariant, Kit, Markdown, MarkdownStyle, TextArea, TextInput};
 
 use crate::github::{self, CheckState, Detail, Draft, Gh, Method, Pull, Verdict};
@@ -64,6 +64,10 @@ pub struct PullsState {
     /// Pull requests already known to ask for the reader's review: only new ones notify.
     /// `None` until the first list, which notifies of nothing.
     pub asking: Option<HashSet<u32>>,
+    /// Connecting GitHub: what the reader is asked to finish, while Collate waits for it.
+    pub connecting: Option<&'static str>,
+    /// Each press of Connect; a wait for an earlier one ends quietly.
+    pub connect_try: u32,
 }
 
 impl Default for PullsState {
@@ -83,6 +87,8 @@ impl Default for PullsState {
             filter: TextEdit::new(""),
             suggest: false,
             asking: None,
+            connecting: None,
+            connect_try: 0,
         }
     }
 }
@@ -140,6 +146,17 @@ pub fn watch_reviews() {
     });
 }
 
+/// How long Collate waits for the reader to finish connecting GitHub, looking every few seconds.
+const CONNECT_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+const CONNECT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Lucide's GitHub mark (ISC licence).
+static GITHUB_ICON: Icon = Icon {
+    name: "collate-github",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></g>"#,
+};
+
 /// A macOS notification, through AppleScript: no permission to ask for, and nothing to bundle.
 fn notify(title: &str, body: &str) {
     let quote = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
@@ -152,6 +169,52 @@ fn gh() -> Option<Gh> {
 }
 
 impl Collate {
+    /// Sign in to GitHub through the GitHub CLI, in a terminal under the diff, installing the
+    /// CLI with Homebrew first if it's missing; without Homebrew, its download page opens.
+    /// Then wait for the sign-in and read the pull requests.
+    pub fn connect_github(&mut self) {
+        let login = "auth login --hostname github.com --git-protocol https --web";
+        let quote = |p: &std::path::Path| format!("'{}'", p.display().to_string().replace('\'', "'\\''"));
+        let command = match (github::find("gh"), github::find("brew")) {
+            (Some(gh), _) => Some(format!("{} {login}", quote(&gh))),
+            (None, Some(brew)) => Some(format!("{} install gh && {} {login}", quote(&brew), quote(&brew.with_file_name("gh")))),
+            (None, None) => None,
+        };
+        self.pulls.connecting = Some(match command {
+            Some(command) => {
+                let dir = current_repo().map(|r| r.root.clone()).or_else(|| std::env::var_os("HOME").map(Into::into)).unwrap_or_else(|| "/".into());
+                if let Err(e) = self.terminals.run(&dir, &command) {
+                    self.say(e, true);
+                    return;
+                }
+                "Finish signing in in the terminal below; this updates once you're connected."
+            }
+            None => {
+                open_url("https://cli.github.com");
+                "Install the GitHub CLI from the page that opened, then connect again."
+            }
+        });
+        self.pulls.connect_try += 1;
+        let (mine, Some(gh), Some(app)) = (self.pulls.connect_try, gh(), HANDLE.get().cloned()) else { return };
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < CONNECT_FOR {
+                std::thread::sleep(CONNECT_EVERY);
+                if let Ok(me) = gh.me() {
+                    app.update(move |s, _| {
+                        if s.pulls.connect_try == mine {
+                            s.pulls.connecting = None;
+                            s.say(format!("Connected to GitHub as {me}"), false);
+                            s.pulls.list = None;
+                            s.load_pulls();
+                        }
+                    });
+                    return;
+                }
+            }
+        });
+    }
+
     /// Show the list, reading it if it isn't yet.
     pub fn open_pulls(&mut self) {
         self.map.open = false;
@@ -457,6 +520,18 @@ fn decision(k: &Kit, p: &Pull) -> (&'static str, rune::Color) {
     }
 }
 
+/// In place of the list until GitHub is connected: what connecting gives, and the button.
+fn connect_view(s: &Collate, k: &Kit) -> El {
+    let detail = s.pulls.connecting.unwrap_or("See this repository's pull requests, review them, and get a notification when someone asks for your review.");
+    let button = Button::new("Connect to GitHub").icon(&GITHUB_ICON).variant(ButtonVariant::Contrast)
+        .help("Sign in with the GitHub CLI, installing it first if it's missing").on_press(|s: &mut Collate| s.connect_github()).build(k).key("connect-github");
+    col().key("connect").grow(1.0).w_full().center().gap(6.0).fill(k.c.bg_base)
+        .child(icon(&GITHUB_ICON, 32.0).color(k.c.icon_faint).mb(8.0).a11y_hidden())
+        .child(text("Connect to GitHub".to_owned()).font(k.ty.ui_medium).color(k.c.text_base))
+        .child(text(detail.to_owned()).font(k.ty.ui).color(k.c.text_muted).wrap().max_w(420.0).align(rune::Align::Center))
+        .child(button.mt(10.0))
+}
+
 /// The list of open pull requests, in place of the diff.
 pub fn pulls_view(s: &Collate, k: &Kit) -> El {
     let refresh = IconButton::new(&REFRESH_ICON).variant(IconButtonVariant::GhostMuted).label("Reload pull requests").disabled(s.pulls.loading).on_press(|s: &mut Collate| {
@@ -471,13 +546,16 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
         filter = filter.clear_button();
     }
     let filter = filter.on_edit(|s: &mut Collate| &mut s.pulls.filter).width(None).build(k).key("pulls-filter").w(280.0);
-    let head = row().key("pulls-head").w_full().h(28.0).px(EDGE).gap(8.0).items_center()
-        .child(text("Pull Requests".to_owned()).font(k.ty.ui_medium).color(k.c.text_base).grow(1.0))
-        .child(filter)
-        .child(create)
-        .child(refresh.build(k).key("pulls-reload"));
+    let mut head = row().key("pulls-head").w_full().h(28.0).px(EDGE).gap(8.0).items_center()
+        .child(text("Pull Requests".to_owned()).font(k.ty.ui_medium).color(k.c.text_base).grow(1.0));
+    // Filtering and opening one need GitHub, so they wait until it's connected.
+    if !matches!(&s.pulls.list, Some(Err(e)) if github::needs_connect(e)) {
+        head = head.child(filter).child(create);
+    }
+    let head = head.child(refresh.build(k).key("pulls-reload"));
     let body = match &s.pulls.list {
         None => message(k, "Reading pull requests…", ""),
+        Some(Err(e)) if github::needs_connect(e) => connect_view(s, k),
         Some(Err(e)) => message(k, "Can't read pull requests", e),
         Some(Ok((_, pulls))) if pulls.is_empty() => message(k, "No open pull requests", "Open one from this branch with New Pull Request."),
         Some(Ok((me, pulls))) => {

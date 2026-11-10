@@ -5032,6 +5032,10 @@ fn main() {
             ("history", |s: &mut Collate| s.set_scope(Scope::History)),
             ("map", |s: &mut Collate| s.open_map()),
             ("pulls", |s: &mut Collate| s.pulls.open = true),
+            ("pulls-connect", |s: &mut Collate| {
+                s.pulls.open = true;
+                s.pulls.list = Some(Err(github::SIGNED_OUT.into()));
+            }),
             ("history-diff", |s: &mut Collate| {
                 s.set_scope(Scope::History);
                 s.history_diff = true;
@@ -6293,6 +6297,23 @@ mod tests {
         assert!(file_diff(&added, 3, false).images.as_ref().is_some_and(|s| s[0].is_none()), "an added image has no before");
         let against_binary = Change { old: Some(Blob::Binary), ..c };
         assert!(file_diff(&against_binary, 3, false).images.is_none(), "an image against other bytes stays a note");
+    }
+
+    #[test]
+    fn pull_requests_ask_to_connect_github_instead_of_an_error() {
+        let mut rt = loaded();
+        for e in [github::NO_CLI, github::SIGNED_OUT] {
+            rt.update(move |s, _| {
+                s.pulls.list = Some(Err(e.into()));
+                s.pulls.open = true;
+            });
+            rt.frame(1.0 / 60.0);
+            assert!(rt.find("connect-github").is_some(), "{e}: a Connect button");
+            assert!(rt.find("pulls-filter").is_none(), "{e}: no filter that can't work");
+        }
+        rt.update(|s, _| s.pulls.list = Some(Err("HTTP 502".into())));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("connect-github").is_none() && rt.find("pulls-filter").is_some(), "other failures still say what went wrong");
     }
 
     #[test]

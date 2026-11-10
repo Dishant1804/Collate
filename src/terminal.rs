@@ -199,6 +199,15 @@ impl Terminals {
         Ok(())
     }
 
+    /// Starts a shell in `dir` and types `command` into it, as the reader would.
+    pub fn run(&mut self, dir: &Path, command: &str) -> Result<(), String> {
+        self.spawn(dir)?;
+        if let Some(t) = self.active() {
+            t.input(format!("{command}\r").into_bytes());
+        }
+        Ok(())
+    }
+
     pub fn close(&mut self, i: usize) {
         if i >= self.list.len() {
             return;
