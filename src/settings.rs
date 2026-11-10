@@ -86,6 +86,15 @@ impl Editor {
     }
 }
 
+/// Where updates come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Channel {
+    /// The newest GitHub release, downloaded ready-built.
+    Release,
+    /// The newest commit on the main branch, built here (needs Rust).
+    Source,
+}
+
 pub const FONT_SIZES: [f32; 5] = [11.0, 12.0, 13.0, 14.0, 16.0];
 /// Context lines to keep; the last is the whole file.
 pub const CONTEXT_LINES: [u32; 4] = [3, 10, 25, FULL_FILE];
@@ -125,6 +134,11 @@ pub struct Settings {
     /// Show lines that moved in their own colour instead of as removed and added.
     pub show_moved: bool,
     pub fold_large: u32,
+    /// Look for a new version at launch and every few hours.
+    pub check_updates: bool,
+    /// Install a new version as soon as it's found.
+    pub auto_update: bool,
+    pub update_from: Channel,
 }
 
 impl Default for Settings {
@@ -152,6 +166,9 @@ impl Default for Settings {
             ignore_whitespace: false,
             show_moved: true,
             fold_large: 1000,
+            check_updates: true,
+            auto_update: true,
+            update_from: Channel::Release,
         }
     }
 }
@@ -223,6 +240,7 @@ impl Settings {
                         _ => Density::Comfortable,
                     }
                 }
+                "update_from" => s.update_from = if v == "source" { Channel::Source } else { Channel::Release },
                 "motion" => s.motion = if v == "reduced" { Motion::Reduced } else { Motion::Default },
                 "layout" => s.layout = if v == "split" { DiffMode::Split } else { DiffMode::Unified },
                 "default_scope" => {
@@ -269,6 +287,8 @@ impl Settings {
                         "auto_refresh" => s.auto_refresh = b,
                         "ignore_whitespace" => s.ignore_whitespace = b,
                         "show_moved" => s.show_moved = b,
+                        "check_updates" => s.check_updates = b,
+                        "auto_update" => s.auto_update = b,
                         _ => {}
                     }
                 }
@@ -288,6 +308,7 @@ impl Settings {
             Density::Comfortable => "comfortable",
             Density::Spacious => "spacious",
         };
+        let update_from = if self.update_from == Channel::Source { "source" } else { "release" };
         let motion = if self.motion == Motion::Reduced { "reduced" } else { "default" };
         let layout = if self.layout == DiffMode::Split { "split" } else { "unified" };
         let scope = match self.default_scope {
@@ -298,7 +319,7 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
             self.font_size,
             self.wrap,
             self.one_number,
@@ -316,6 +337,8 @@ impl Settings {
             self.ignore_whitespace,
             self.show_moved,
             self.fold_large,
+            self.check_updates,
+            self.auto_update,
         )
     }
 }
@@ -369,6 +392,9 @@ mod tests {
             ignore_whitespace: true,
             show_moved: false,
             fold_large: 300,
+            check_updates: false,
+            auto_update: false,
+            update_from: Channel::Source,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
     }
