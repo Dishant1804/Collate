@@ -42,6 +42,8 @@ pub struct PullsState {
     pub delete_branch: bool,
     /// Long comments shown whole, by their key.
     pub expanded: HashSet<String>,
+    /// Words the list is narrowed to.
+    pub filter: TextEdit,
 }
 
 impl Default for PullsState {
@@ -58,6 +60,7 @@ impl Default for PullsState {
             draft: false,
             delete_branch: true,
             expanded: HashSet::new(),
+            filter: TextEdit::new(""),
         }
     }
 }
@@ -331,8 +334,14 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
     let create = Button::new("New Pull Request").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Open a pull request from this branch")
         .disabled(s.branch.is_empty() || s.branch == "HEAD").on_press(|s: &mut Collate| s.start_compose(Compose::Create)).build(k).key("pr-new");
     let mono = rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono };
+    let mut filter = TextInput::new(&s.pulls.filter).placeholder("Filter by title, number, author, branch or label").leading_icon(k.glyph.search);
+    if !s.pulls.filter.text.is_empty() {
+        filter = filter.clear_button();
+    }
+    let filter = filter.on_edit(|s: &mut Collate| &mut s.pulls.filter).width(None).build(k).key("pulls-filter").w(280.0);
     let head = row().key("pulls-head").w_full().h(28.0).px(EDGE).gap(8.0).items_center()
         .child(text("Pull Requests".to_owned()).font(k.ty.ui_medium).color(k.c.text_base).grow(1.0))
+        .child(filter)
         .child(create)
         .child(refresh.build(k).key("pulls-reload"));
     let body = match &s.pulls.list {
@@ -341,7 +350,12 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
         Some(Ok((_, pulls))) if pulls.is_empty() => message(k, "No open pull requests", "Open one from this branch with New Pull Request."),
         Some(Ok((me, pulls))) => {
             let mut list = col().key("pulls-list").w_full().pb(16.0);
-            for (title, group) in github::group(pulls, me) {
+            let words: Vec<String> = s.pulls.filter.text.split_whitespace().map(str::to_lowercase).collect();
+            let shown: Vec<Pull> = pulls.iter().filter(|p| matches(p, &words)).cloned().collect();
+            if shown.is_empty() {
+                return col().key("pulls").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(message(k, "No pull requests match", "Try fewer or other words."));
+            }
+            for (title, group) in github::group(&shown, me) {
                 if group.is_empty() {
                     continue;
                 }
@@ -372,6 +386,12 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
         }
     };
     col().key("pulls").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(body)
+}
+
+/// Whether every word is in the pull request's title, number, author, branches or labels.
+fn matches(p: &Pull, words: &[String]) -> bool {
+    let hay = format!("{} #{} {} {} {} {}", p.title, p.number, p.author, p.head, p.base, p.labels.join(" ")).to_lowercase();
+    words.iter().all(|w| hay.contains(w.as_str()))
 }
 
 /// What stands between the pull request and merging, in words.
@@ -613,6 +633,19 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
 #[cfg(test)]
 mod tests {
     use super::preview;
+
+    #[test]
+    fn the_filter_wants_every_word_somewhere() {
+        let p = crate::github::Pull {
+            number: 42, title: "Add billing".into(), author: "ana".into(), head: "billing".into(), base: "main".into(), draft: false,
+            decision: String::new(), requested: vec![], additions: 0, deletions: 0, updated: String::new(), labels: vec!["db".into()], checks: vec![], url: String::new(),
+        };
+        let w = |s: &str| s.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
+        assert!(super::matches(&p, &w("")));
+        assert!(super::matches(&p, &w("BILL ana")));
+        assert!(super::matches(&p, &w("#42 db")));
+        assert!(!super::matches(&p, &w("billing bo")));
+    }
 
     #[test]
     fn long_comments_fold_before_their_details_or_at_a_line_end() {
