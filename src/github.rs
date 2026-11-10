@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
-/// One open pull request in the list.
+/// One pull request in the list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pull {
     pub number: u32,
@@ -18,6 +18,7 @@ pub struct Pull {
     pub author: String,
     pub head: String,
     pub base: String,
+    pub state: PrState,
     pub draft: bool,
     /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or empty.
     pub decision: String,
@@ -27,8 +28,18 @@ pub struct Pull {
     pub deletions: u32,
     pub updated: String,
     pub labels: Vec<String>,
+    /// Every check, for a pull request opened to review; the list reads only `ci`.
     pub checks: Vec<Check>,
+    /// The checks taken together.
+    pub ci: Option<CheckState>,
     pub url: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Merged,
+    Closed,
 }
 
 /// A status check or commit status on a pull request's head.
@@ -247,10 +258,20 @@ impl Gh {
         Ok(self.run(&["api", "user", "--jq", ".login"], None)?.trim().to_owned())
     }
 
-    /// The repository's open pull requests, newest activity first.
-    pub fn pulls(&self) -> Result<Vec<Pull>, String> {
-        let v = self.json(&["pr", "list", "--state", "open", "--limit", "100", "--json", LIST_FIELDS], None)?;
-        Ok(v.as_array().map(|a| a.iter().map(pull).collect()).unwrap_or_default())
+    /// The signed-in login, the repository's open pull requests and its last merged and closed
+    /// ones, newest activity first. Two GraphQL queries at once, asking only what the list
+    /// shows: `gh pr list` reads every check of every pull request (seconds on a busy
+    /// repository) where the list needs only their rollup, and finished ones need no checks.
+    pub fn list(&self) -> Result<(String, Vec<Pull>), String> {
+        let query = |q: &str| self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", &format!("query={q}")], None);
+        let (open, done) = std::thread::scope(|t| {
+            let done = t.spawn(|| query(DONE));
+            (query(OPEN), done.join().unwrap_or_else(|_| Err("Reading pull requests failed".into())))
+        });
+        let (open, done) = (open?, done?);
+        let nodes = |v: &Value| v["data"]["repository"]["pullRequests"]["nodes"].as_array().map(|a| a.iter().map(node).collect::<Vec<_>>()).unwrap_or_default();
+        let me = open["data"]["viewer"]["login"].as_str().ok_or("Unexpected reply from gh: no login")?.to_owned();
+        Ok((me, [nodes(&open), nodes(&done)].concat()))
     }
 
     /// One pull request with its conversation, reviews, checks and line threads.
@@ -417,6 +438,11 @@ fn hunk_ranges(patch: &str) -> Vec<(String, bool, u32, u32)> {
 }
 
 /// Line threads, with the commented line's hunk to find the line's text.
+/// The open pull requests, and who's asking. A hundred is GitHub's most per page.
+const OPEN: &str = "query($owner:String!,$name:String!){viewer{login} repository(owner:$owner,name:$name){pullRequests(states:OPEN,first:100,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url state isDraft headRefName baseRefName reviewDecision additions deletions updatedAt author{login} labels(first:20){nodes{name}} reviewRequests(first:20){nodes{requestedReviewer{...on User{login} ...on Team{name} ...on Bot{login} ...on Mannequin{login}}}} commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}}";
+/// The last merged and closed pull requests, without what only an open one needs.
+const DONE: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:[MERGED,CLOSED],first:30,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url state isDraft headRefName baseRefName additions deletions updatedAt author{login} labels(first:20){nodes{name}}}}}}";
+
 const THREADS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated path line startLine originalLine diffSide comments(first:50){nodes{databaseId author{login} body createdAt diffHunk}}}}}}}";
 
 fn s(v: &Value, k: &str) -> String {
@@ -427,14 +453,25 @@ fn login(v: &Value) -> String {
     v["login"].as_str().unwrap_or("ghost").to_owned()
 }
 
+fn state(v: &Value) -> PrState {
+    match v["state"].as_str() {
+        Some("MERGED") => PrState::Merged,
+        Some("CLOSED") => PrState::Closed,
+        _ => PrState::Open,
+    }
+}
+
+/// A pull request from `gh pr view`'s JSON.
 fn pull(v: &Value) -> Pull {
     let list = |k: &str, f: fn(&Value) -> String| v[k].as_array().map(|a| a.iter().map(f).collect()).unwrap_or_default();
+    let checks: Vec<Check> = v["statusCheckRollup"].as_array().map(|a| a.iter().map(check).collect()).unwrap_or_default();
     Pull {
         number: v["number"].as_u64().unwrap_or(0) as u32,
         title: s(v, "title"),
         author: login(&v["author"]),
         head: s(v, "headRefName"),
         base: s(v, "baseRefName"),
+        state: state(v),
         draft: v["isDraft"].as_bool().unwrap_or(false),
         decision: s(v, "reviewDecision"),
         requested: list("reviewRequests", |r| r["login"].as_str().or(r["name"].as_str()).unwrap_or("").to_owned()),
@@ -442,7 +479,38 @@ fn pull(v: &Value) -> Pull {
         deletions: v["deletions"].as_u64().unwrap_or(0) as u32,
         updated: s(v, "updatedAt"),
         labels: list("labels", |l| s(l, "name")),
-        checks: v["statusCheckRollup"].as_array().map(|a| a.iter().map(check).collect()).unwrap_or_default(),
+        ci: overall(&checks),
+        checks,
+        url: s(v, "url"),
+    }
+}
+
+/// A pull request from the GraphQL list: its connections are under `nodes`, and its checks
+/// come as one rollup.
+fn node(v: &Value) -> Pull {
+    let names = |k: &str, f: fn(&Value) -> Option<&str>| v[k]["nodes"].as_array().into_iter().flatten().filter_map(f).map(str::to_owned).collect();
+    let ci = match v["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"].as_str() {
+        Some("SUCCESS") => Some(CheckState::Passed),
+        Some("FAILURE" | "ERROR") => Some(CheckState::Failed),
+        Some("PENDING" | "EXPECTED") => Some(CheckState::Pending),
+        _ => None,
+    };
+    Pull {
+        number: v["number"].as_u64().unwrap_or(0) as u32,
+        title: s(v, "title"),
+        author: login(&v["author"]),
+        head: s(v, "headRefName"),
+        base: s(v, "baseRefName"),
+        state: state(v),
+        draft: v["isDraft"].as_bool().unwrap_or(false),
+        decision: s(v, "reviewDecision"),
+        requested: names("reviewRequests", |r| r["requestedReviewer"]["login"].as_str().or(r["requestedReviewer"]["name"].as_str())),
+        additions: v["additions"].as_u64().unwrap_or(0) as u32,
+        deletions: v["deletions"].as_u64().unwrap_or(0) as u32,
+        updated: s(v, "updatedAt"),
+        labels: names("labels", |l| l["name"].as_str()),
+        checks: Vec::new(),
+        ci,
         url: s(v, "url"),
     }
 }
@@ -545,12 +613,21 @@ pub fn replace_lines(text: &str, first: u32, last: u32, with: &str) -> Option<St
     Some(lines[..a - 1].concat() + with + &lines[b..].concat())
 }
 
-/// The pull requests that want the reader's attention first: asked of them, then theirs, then the rest.
-pub fn group<'a>(pulls: &'a [Pull], me: &str) -> [(&'static str, Vec<&'a Pull>); 3] {
-    let asked: Vec<&Pull> = pulls.iter().filter(|p| p.requested.iter().any(|r| r == me)).collect();
-    let mine: Vec<&Pull> = pulls.iter().filter(|p| p.author == me).collect();
-    let rest: Vec<&Pull> = pulls.iter().filter(|p| p.author != me && !p.requested.iter().any(|r| r == me)).collect();
-    [("Review Requested", asked), ("Yours", mine), ("Everyone Else", rest)]
+/// Whether the open pull request asks `me` for a review.
+pub fn asks(p: &Pull, me: &str) -> bool {
+    p.state == PrState::Open && p.requested.iter().any(|r| r == me)
+}
+
+/// The open pull requests that want the reader's attention first: asked of them, then theirs,
+/// then the rest; then the merged and the closed.
+pub fn group<'a>(pulls: &'a [Pull], me: &str) -> [(&'static str, Vec<&'a Pull>); 5] {
+    let open = |p: &&Pull| p.state == PrState::Open;
+    let asked: Vec<&Pull> = pulls.iter().filter(|p| asks(p, me)).collect();
+    let mine: Vec<&Pull> = pulls.iter().filter(open).filter(|p| p.author == me).collect();
+    let rest: Vec<&Pull> = pulls.iter().filter(open).filter(|p| p.author != me && !asks(p, me)).collect();
+    let merged: Vec<&Pull> = pulls.iter().filter(|p| p.state == PrState::Merged).collect();
+    let closed: Vec<&Pull> = pulls.iter().filter(|p| p.state == PrState::Closed).collect();
+    [("Review Requested", asked), ("Yours", mine), ("Everyone Else", rest), ("Merged", merged), ("Closed", closed)]
 }
 
 #[cfg(test)]
@@ -573,7 +650,22 @@ mod tests {
         assert_eq!(overall(&p.checks[..2]), Some(CheckState::Pending));
         assert_eq!(overall(&[]), None);
         let g = group(std::slice::from_ref(&p), "me");
-        assert_eq!((g[0].1.len(), g[1].1.len(), g[2].1.len()), (1, 0, 0));
+        assert_eq!(g.iter().map(|g| g.1.len()).collect::<Vec<_>>(), [1, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_list_reads_from_graphql_and_groups_by_state() {
+        let v: Value = serde_json::from_str(r#"[{"number":7,"title":"Fix","state":"OPEN","isDraft":true,"author":{"login":"ana"},"reviewDecision":"",
+            "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"me"}},{"requestedReviewer":{"name":"core"}}]},"labels":{"nodes":[{"name":"bug"}]},
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"ERROR"}}}]}},
+            {"number":6,"title":"Old","state":"MERGED","author":{"login":"me"},"reviewRequests":{"nodes":[{"requestedReviewer":{"login":"me"}}]}},
+            {"number":5,"title":"Dropped","state":"CLOSED","author":null}]"#).unwrap();
+        let pulls: Vec<Pull> = v.as_array().unwrap().iter().map(node).collect();
+        assert_eq!((pulls[0].state, pulls[0].draft, pulls[0].ci), (PrState::Open, true, Some(CheckState::Failed)));
+        assert_eq!((pulls[0].requested.as_slice(), pulls[0].labels.as_slice()), (&["me".to_owned(), "core".to_owned()][..], &["bug".to_owned()][..]));
+        assert_eq!((pulls[1].state, pulls[1].ci, pulls[2].state, pulls[2].author.as_str()), (PrState::Merged, None, PrState::Closed, "ghost"));
+        let g = group(&pulls, "me");
+        assert_eq!(g.iter().map(|g| g.1.iter().map(|p| p.number).collect::<Vec<_>>()).collect::<Vec<_>>(), [vec![7], vec![], vec![], vec![6], vec![5]], "a finished pull request asks nothing");
     }
 
     #[test]

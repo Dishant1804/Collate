@@ -6340,12 +6340,13 @@ mod tests {
     fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
         let mut rt = loaded();
         let pull = |number: u32, author: &str, requested: &[&str]| github::Pull {
-            number, title: format!("Change {number}"), author: author.into(), head: format!("b{number}"), base: "main".into(), draft: false,
+            number, title: format!("Change {number}"), author: author.into(), head: format!("b{number}"), base: "main".into(), state: github::PrState::Open, draft: false,
             decision: "REVIEW_REQUIRED".into(), requested: requested.iter().map(|r| (*r).to_owned()).collect(), additions: 3, deletions: 1,
-            updated: "2026-11-10T09:00:00Z".into(), labels: vec![], checks: vec![], url: String::new(),
+            updated: "2026-11-10T09:00:00Z".into(), labels: vec![], checks: vec![], ci: None, url: String::new(),
         };
+        let merged = github::Pull { state: github::PrState::Merged, ..pull(6, "me", &[]) };
         rt.update(move |s, _| {
-            s.pulls.list = Some(Ok(("me".into(), vec![pull(7, "ana", &["me"]), pull(8, "me", &[]), pull(9, "bo", &[])])));
+            s.pulls.list = Some(Ok(("me".into(), vec![pull(7, "ana", &["me"]), pull(8, "me", &[]), pull(9, "bo", &[]), merged])));
             s.pulls.open = true;
         });
         rt.frame(1.0 / 60.0);

@@ -1,5 +1,5 @@
-//! The Pull Requests place: the repository's open pull requests, grouped by what they want of
-//! the reader, and one pull request under review. Its diff is a range in History; its details,
+//! The Pull Requests place: the repository's pull requests, the open ones grouped by what they
+//! want of the reader and then the merged and closed, and one pull request under review. Its diff is a range in History; its details,
 //! checks, conversation and actions take the staging panel's top; its line threads sit under
 //! their lines with the reader's own comments, which a review sends as its line comments.
 
@@ -112,7 +112,7 @@ impl PullsState {
     /// Pull requests asking the reader for a review.
     pub fn asked(&self) -> usize {
         match &self.list {
-            Some(Ok((me, pulls))) => pulls.iter().filter(|p| p.requested.iter().any(|r| r == me)).count(),
+            Some(Ok((me, pulls))) => pulls.iter().filter(|p| github::asks(p, me)).count(),
             _ => 0,
         }
     }
@@ -121,7 +121,7 @@ impl PullsState {
 /// The pull requests asking `me` for a review, and those of them not in `seen` (none the first
 /// time, when nothing has been seen).
 fn fresh_requests<'a>(seen: Option<&HashSet<u32>>, pulls: &'a [Pull], me: &str) -> (HashSet<u32>, Vec<&'a Pull>) {
-    let now: HashSet<u32> = pulls.iter().filter(|p| p.requested.iter().any(|r| r == me)).map(|p| p.number).collect();
+    let now: HashSet<u32> = pulls.iter().filter(|p| github::asks(p, me)).map(|p| p.number).collect();
     let fresh = match seen {
         Some(seen) => pulls.iter().filter(|p| now.contains(&p.number) && !seen.contains(&p.number)).collect(),
         None => Vec::new(),
@@ -236,13 +236,17 @@ impl Collate {
     }
 
     pub fn load_pulls(&mut self) {
-        let (Some(gh), Some(app)) = (gh(), HANDLE.get().cloned()) else { return };
+        let (Some(root), Some(app)) = (current_repo().map(|r| r.root.clone()), HANDLE.get().cloned()) else { return };
         if std::mem::replace(&mut self.pulls.loading, true) {
             return;
         }
         std::thread::spawn(move || {
-            let got = gh.me().and_then(|me| Ok((me, gh.pulls()?)));
+            let got = Gh::new(&root).list();
             app.update(move |s, _| {
+                // The reader switched projects meanwhile: this list was the last one's.
+                if current_repo().is_none_or(|r| r.root != root) {
+                    return;
+                }
                 s.pulls.loading = false;
                 s.pulls.list = Some(got);
                 s.note_review_requests();
@@ -543,7 +547,7 @@ fn connect_view(s: &Collate, k: &Kit) -> El {
         .child(button.mt(10.0))
 }
 
-/// The list of open pull requests, in place of the diff.
+/// The list of pull requests, in place of the diff.
 pub fn pulls_view(s: &Collate, k: &Kit) -> El {
     let refresh = IconButton::new(&REFRESH_ICON).variant(IconButtonVariant::GhostMuted).label("Reload pull requests").disabled(s.pulls.loading).on_press(|s: &mut Collate| {
         s.pulls.list = None;
@@ -568,7 +572,7 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
         None => message(k, "Reading pull requests…", ""),
         Some(Err(e)) if github::needs_connect(e) => connect_view(s, k),
         Some(Err(e)) => message(k, "Can't read pull requests", e),
-        Some(Ok((_, pulls))) if pulls.is_empty() => message(k, "No open pull requests", "Open one from this branch with New Pull Request."),
+        Some(Ok((_, pulls))) if pulls.is_empty() => message(k, "No pull requests", "Open one from this branch with New Pull Request."),
         Some(Ok((me, pulls))) => {
             let mut list = col().key("pulls-list").w_full().pb(16.0);
             let words: Vec<String> = s.pulls.filter.text.split_whitespace().map(str::to_lowercase).collect();
@@ -903,8 +907,8 @@ mod tests {
     #[test]
     fn only_new_review_requests_notify_and_never_the_first_time() {
         let pull = |number: u32, requested: &[&str]| crate::github::Pull {
-            number, title: String::new(), author: "ana".into(), head: String::new(), base: String::new(), draft: false, decision: String::new(),
-            requested: requested.iter().map(|r| (*r).to_owned()).collect(), additions: 0, deletions: 0, updated: String::new(), labels: vec![], checks: vec![], url: String::new(),
+            number, title: String::new(), author: "ana".into(), head: String::new(), base: String::new(), state: crate::github::PrState::Open, draft: false, decision: String::new(),
+            requested: requested.iter().map(|r| (*r).to_owned()).collect(), additions: 0, deletions: 0, updated: String::new(), labels: vec![], checks: vec![], ci: None, url: String::new(),
         };
         let first = [pull(1, &["me"]), pull(2, &["bo"])];
         let (seen, fresh) = super::fresh_requests(None, &first, "me");
@@ -925,8 +929,8 @@ mod tests {
     #[test]
     fn the_filter_wants_every_word_somewhere() {
         let p = crate::github::Pull {
-            number: 42, title: "Add billing".into(), author: "ana".into(), head: "billing".into(), base: "main".into(), draft: false,
-            decision: String::new(), requested: vec![], additions: 0, deletions: 0, updated: String::new(), labels: vec!["db".into()], checks: vec![], url: String::new(),
+            number: 42, title: "Add billing".into(), author: "ana".into(), head: "billing".into(), base: "main".into(), state: crate::github::PrState::Open, draft: false,
+            decision: String::new(), requested: vec![], additions: 0, deletions: 0, updated: String::new(), labels: vec!["db".into()], checks: vec![], ci: None, url: String::new(),
         };
         let w = |s: &str| s.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>();
         assert!(super::matches(&p, &w("")));
