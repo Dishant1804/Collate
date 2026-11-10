@@ -194,6 +194,17 @@ pub struct Gh {
     root: PathBuf,
 }
 
+/// What `gh` fails with before GitHub is connected.
+pub const NO_CLI: &str = "The GitHub CLI isn't installed";
+pub const SIGNED_OUT: &str = "Not signed in to GitHub";
+
+/// Where a command-line tool is. An app opened from the Dock gets only the system's PATH, so
+/// Homebrew's folders are looked in too.
+pub fn find(name: &str) -> Option<PathBuf> {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(':').chain(["/opt/homebrew/bin", "/usr/local/bin"]).map(|d| Path::new(d).join(name)).find(|p| p.is_file())
+}
+
 const LIST_FIELDS: &str = "number,title,author,headRefName,baseRefName,isDraft,reviewDecision,reviewRequests,additions,deletions,updatedAt,labels,statusCheckRollup,url";
 
 impl Gh {
@@ -202,13 +213,10 @@ impl Gh {
     }
 
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
-        let mut c = Command::new("gh");
+        let mut c = Command::new(find("gh").ok_or(NO_CLI)?);
         c.args(args).current_dir(&self.root).env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1").env("GH_NO_UPDATE_NOTIFIER", "1");
         c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = c.spawn().map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => "Pull requests need the GitHub CLI: brew install gh, then gh auth login".to_owned(),
-            _ => format!("can't run gh: {e}"),
-        })?;
+        let mut child = c.spawn().map_err(|e| format!("can't run gh: {e}"))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
             use std::io::Write;
             pipe.write_all(input.as_bytes()).map_err(|e| format!("gh: {e}"))?;
@@ -217,7 +225,7 @@ impl Gh {
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
             if err.contains("gh auth login") || err.contains("not logged") {
-                return Err("Sign in to GitHub first: run gh auth login in a terminal".into());
+                return Err(SIGNED_OUT.into());
             }
             return Err(if err.is_empty() { format!("gh {} failed", args.first().unwrap_or(&"")) } else { err });
         }
