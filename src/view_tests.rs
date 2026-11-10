@@ -1350,6 +1350,19 @@ fn the_checklist_asks_the_agent_about_the_change_in_view() {
 }
 
 #[test]
+fn the_agent_writes_a_commit_message_only_for_what_is_staged() {
+    let mut rt = loaded();
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("write-message").is_some(), "in the commit box's head");
+    assert_eq!(rt.state.staged, 0, "the fixture stages nothing");
+    rt.update(|s, _| s.write_message());
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.starts_with("Stage files first")));
+    assert!(!rt.state.writing_message);
+}
+
+#[test]
 fn a_changed_png_is_drawn_not_called_binary() {
     // A 1×1 PNG, then another.
     let png = |byte: u8| -> Vec<u8> {

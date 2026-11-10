@@ -3,10 +3,18 @@
 //! the agent the reader already has does the rest, in a terminal under the diff.
 use std::path::Path;
 
-use rune::{PopupItem, PopupMenu, Tx};
+use rune::{PopupItem, PopupMenu, TextEdit, Tx};
 
 use crate::diff::Side;
-use crate::{Collate, Scope, abbrev, current_repo, paths_file};
+use crate::settings::Agent;
+use crate::{Collate, HANDLE, Scope, abbrev, current_repo, paths_file};
+
+/// How a commit message should read until the reader writes their own instructions.
+const COMMIT_RULES: &str = "A subject line of at most 72 characters in the imperative mood, then, only if the subject doesn't make the reason clear, a blank line and a short body saying why.";
+
+/// The most of a staged diff the agent is given: its prompt is one shell argument, and macOS
+/// caps those at about 1 MB.
+const DIFF_CAP: usize = 200_000;
 
 /// The checklist until the reader writes their own: what a reviewer asks of every change.
 const CHECKLIST: [&str; 5] = [
@@ -99,12 +107,13 @@ impl Collate {
         self.run_agent(&prompt);
     }
 
-    /// Opens the checklist in the reader's editor, writing the default one first.
-    fn edit_checklist(&mut self) {
-        let Some(path) = paths_file("checklist.txt") else { return };
+    /// Opens one of the reader's agent files in their editor, writing `default` to it first
+    /// when it doesn't exist yet.
+    fn edit_agent_file(&mut self, name: &str, default: &str) {
+        let Some(path) = paths_file(name) else { return };
         if !path.exists() {
-            let text = format!("# One question a line; the agent answers them about the change in view.\n{}\n", CHECKLIST.join("\n"));
-            if let Err(e) = std::fs::write(&path, text) {
+            let made = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, default));
+            if let Err(e) = made {
                 self.say(format!("Couldn't write {}: {e}", path.display()), true);
                 return;
             }
@@ -134,6 +143,7 @@ impl Collate {
             .item(PopupItem::new("ask:comments", format!("Send {n} Comment{} to {agent}", if n == 1 { "" } else { "s" })).enabled(n > 0))
             .separator()
             .item(PopupItem::new("ask:edit", "Edit Questions…"))
+            .item(PopupItem::new("ask:commit-rules", "Edit Commit Message Instructions…"))
     }
 
     /// Acts on an item of [`Collate::agent_menu`]; other ids do nothing.
@@ -141,7 +151,11 @@ impl Collate {
         match id.strip_prefix("ask:") {
             Some("all") => self.ask_checklist(None),
             Some("comments") => self.send_comments(),
-            Some("edit") => self.edit_checklist(),
+            Some("edit") => {
+                let text = format!("# One question a line; the agent answers them about the change in view.\n{}\n", CHECKLIST.join("\n"));
+                self.edit_agent_file("checklist.txt", &text);
+            }
+            Some("commit-rules") => self.edit_agent_file("commit-instructions.txt", &format!("# How the agent writes commit messages, in your words.\n{COMMIT_RULES}\n")),
             Some(i) => {
                 if let Ok(i) = i.parse() {
                     self.ask_checklist(Some(i));
@@ -149,6 +163,42 @@ impl Collate {
             }
             None => {}
         }
+    }
+
+    /// Has the agent write a commit message for what's staged, off the UI thread. It lands in
+    /// the box for the reader to edit and commit; nothing commits by itself.
+    pub fn write_message(&mut self) {
+        if self.writing_message {
+            return;
+        }
+        if self.staged == 0 && !self.amend {
+            self.say("Stage files first: the message describes what's staged", true);
+            return;
+        }
+        let (Some(app), Some(repo)) = (HANDLE.get().cloned(), current_repo()) else {
+            self.say("Open a project first", true);
+            return;
+        };
+        self.writing_message = true;
+        let (agent, amend, draft) = (self.settings.agent, self.amend, self.message.text.trim().to_owned());
+        let rules = read_agent_file("commit-instructions.txt").unwrap_or_else(|| COMMIT_RULES.to_owned());
+        std::thread::spawn(move || {
+            let got = repo.staged_diff(amend).and_then(|diff| {
+                let recent = repo.recent_subjects(10).unwrap_or_default();
+                ask_agent(agent, &repo.root, &message_prompt(&rules, &recent, &draft, &diff))
+            });
+            app.update(move |s, _| {
+                s.writing_message = false;
+                match got.map(|m| clean_message(&m)) {
+                    Ok(m) if !m.is_empty() => {
+                        s.message = TextEdit::new(m);
+                        s.say(format!("{} wrote the message: read it, then commit", agent.title()), false);
+                    }
+                    Ok(_) => s.say(format!("{} answered with nothing", agent.title()), true),
+                    Err(e) => s.say(format!("{} couldn't write the message: {e}", agent.title()), true),
+                }
+            });
+        });
     }
 
     /// Copies the selection as a reference (`agent` false) or as an excerpt for an agent.
@@ -215,18 +265,76 @@ impl Collate {
     }
 }
 
-/// The reader's questions, one a line (`#` starts a note), or the default ones.
+/// One of the reader's agent files, its lines without notes (`#`) or blanks; `None` when
+/// there isn't one.
+fn read_agent_file(name: &str) -> Option<String> {
+    // Tests use the defaults, whatever the reader has written.
+    if cfg!(test) {
+        return None;
+    }
+    let text = std::fs::read_to_string(paths_file(name)?).ok()?;
+    Some(note_free_lines(&text).join("\n"))
+}
+
+/// The reader's questions, one a line, or the default ones.
 fn load_checklist() -> Vec<String> {
-    // Tests ask the default questions, whatever the reader has written.
-    let text = if cfg!(test) { None } else { paths_file("checklist.txt").and_then(|p| std::fs::read_to_string(p).ok()) };
-    match text {
-        Some(t) => parse_checklist(&t),
+    match read_agent_file("checklist.txt") {
+        Some(t) => t.lines().map(str::to_owned).collect(),
         None => CHECKLIST.map(str::to_owned).to_vec(),
     }
 }
 
-fn parse_checklist(text: &str) -> Vec<String> {
+fn note_free_lines(text: &str) -> Vec<String> {
     text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect()
+}
+
+/// The prompt for a commit message: the reader's rules, the repository's recent subjects to
+/// match, the reader's draft when there is one, and the diff (cut short past [`DIFF_CAP`]).
+fn message_prompt(rules: &str, recent: &[String], draft: &str, diff: &str) -> String {
+    let mut p = format!("Write the git commit message for the staged change below. {rules}\n\nReply with the message alone: no preamble, no code fences.\n");
+    if !recent.is_empty() {
+        p += &format!("\nRecent commit subjects in this repository, whose style to match:\n{}\n", recent.iter().map(|s| format!("- {s}\n")).collect::<String>());
+    }
+    if !draft.is_empty() {
+        p += &format!("\nMy draft, whose intent to keep:\n{draft}\n");
+    }
+    let mut end = diff.len().min(DIFF_CAP);
+    while !diff.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = if end < diff.len() { "\n[the diff goes on; cut here]" } else { "" };
+    p + &format!("\nThe staged diff:\n\n```diff\n{}{cut}\n```\n", &diff[..end])
+}
+
+/// Runs `agent` once on `prompt` in `dir` and returns what it printed. Through the reader's
+/// login shell, which has the PATH their terminal has (an app opened from the Finder doesn't).
+fn ask_agent(agent: Agent, dir: &Path, prompt: &str) -> Result<String, String> {
+    let file = std::env::temp_dir().join(format!("collate-ask-{}-{:?}.md", std::process::id(), std::thread::current().id()));
+    std::fs::write(&file, prompt).map_err(|e| format!("couldn't write the prompt: {e}"))?;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let out = std::process::Command::new(shell)
+        .args(["-ilc", &agent_command(agent.print_command(), &file)])
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output();
+    let _ = std::fs::remove_file(&file);
+    let out = out.map_err(|e| format!("couldn't start the shell: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it stopped with an error");
+        return Err(last.trim().to_owned());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The message without what agents wrap one in: spaces round it and a code fence.
+fn clean_message(text: &str) -> String {
+    let t = text.trim();
+    let t = match t.strip_prefix("```") {
+        Some(rest) => rest.split_once('\n').map_or("", |(_, body)| body).trim_end().strip_suffix("```").unwrap_or(rest),
+        None => t,
+    };
+    t.trim().to_owned()
 }
 
 /// The shell command that starts `agent` with the prompt in `file` as its argument.
@@ -246,6 +354,18 @@ mod tests {
 
     #[test]
     fn the_checklist_is_a_question_a_line_without_notes_or_blanks() {
-        assert_eq!(parse_checklist("# mine\n\n  Is it safe?  \nWho calls it?\n"), ["Is it safe?", "Who calls it?"]);
+        assert_eq!(note_free_lines("# mine\n\n  Is it safe?  \nWho calls it?\n"), ["Is it safe?", "Who calls it?"]);
+    }
+
+    #[test]
+    fn a_commit_message_prompt_carries_the_style_the_draft_and_the_diff() {
+        let p = message_prompt("Be brief.", &["Fix the parser".into()], "fix crash", "+x");
+        assert!(p.starts_with("Write the git commit message for the staged change below. Be brief."));
+        assert!(p.contains("\n- Fix the parser\n") && p.contains("intent to keep:\nfix crash\n") && p.ends_with("```diff\n+x\n```\n"), "{p}");
+        let long = "é".repeat(DIFF_CAP);
+        let p = message_prompt("", &[], "", &long);
+        assert!(p.contains("[the diff goes on; cut here]") && p.len() < DIFF_CAP + 1000, "cut on a character, not mid-way");
+        assert_eq!(clean_message("\n```text\nAdd it\n\nBecause.\n```\n"), "Add it\n\nBecause.");
+        assert_eq!(clean_message("  Add it  "), "Add it");
     }
 }

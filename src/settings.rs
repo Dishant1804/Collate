@@ -108,6 +108,16 @@ impl Agent {
         }
     }
 
+    /// The command that runs it once, without a session, and prints its answer.
+    pub fn print_command(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude -p",
+            Agent::Codex => "codex exec",
+            Agent::Gemini => "gemini -p",
+            Agent::Cursor => "cursor-agent -p",
+        }
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Agent::Claude => "Claude Code",

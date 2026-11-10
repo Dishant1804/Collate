@@ -272,6 +272,8 @@ struct Collate {
     inspector: PaneState,
     message: TextEdit,
     committing: bool,
+    /// The coding agent is writing the commit message.
+    writing_message: bool,
     confirm: Option<Discard>,
     notice: Option<Notice>,
     sidebar: PaneState,
@@ -423,6 +425,7 @@ fn init() -> Collate {
         inspector: PaneState::new(300.0).range(220.0, 520.0),
         message: TextEdit::new(""),
         committing: false,
+        writing_message: false,
         confirm: None,
         notice: None,
         sidebar: PaneState::new(290.0).range(180.0, 560.0),
@@ -3310,8 +3313,20 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
     let amend = Checkbox::new(s.amend).label("Amend last commit").disabled(s.head.is_none() || s.committing).on_toggle(|s: &mut Collate| s.toggle_amend()).build(k).key("amend");
     // Set as the lists above are: an edge-to-edge hairline, as between them, then a 28 pt title
     // right under it.
+    let agent = s.settings.agent.title();
+    let write = Button::new(if s.writing_message { "Writing…".to_owned() } else { format!("Write with {agent}") })
+        .variant(ButtonVariant::Ghost)
+        .control_size(ControlSize::Small)
+        .disabled(s.writing_message || (s.staged == 0 && !s.amend))
+        .help(format!("{agent} drafts the message from what's staged, keeping the intent of what you've typed; you commit it"))
+        .on_press(|s: &mut Collate| s.write_message())
+        .build(k)
+        .key("write-message")
+        .mr(-GHOST_PAD);
     let head = row().key("commit-head").w_full().h(28.0).px(PANEL_INSET).items_center()
-        .child(text("Commit").font(k.ty.text_xsmall_medium).color(k.c.text_muted));
+        .child(text("Commit").font(k.ty.text_xsmall_medium).color(k.c.text_muted))
+        .child(col().grow(1.0))
+        .child(write);
     col()
         .key("commit-box")
         .w_full()

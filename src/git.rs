@@ -794,6 +794,21 @@ impl Repo {
         self.run(&["log", "-1", "--format=%h %s"], None)
     }
 
+    /// What a commit would record: the staged diff against HEAD, or with `amend` against the
+    /// last commit's parent, as the amended commit would be.
+    pub fn staged_diff(&self, amend: bool) -> Result<String, String> {
+        let mut args = vec!["diff", "--cached", "--no-color", "--no-ext-diff"];
+        if amend {
+            args.push("HEAD^");
+        }
+        self.run(&args, None)
+    }
+
+    /// The last `n` commit subjects, newest first: the repository's style for a new one.
+    pub fn recent_subjects(&self, n: usize) -> Result<Vec<String>, String> {
+        Ok(self.run(&["log", &format!("-{n}"), "--format=%s"], None)?.lines().map(str::to_owned).collect())
+    }
+
     /// The last commit's whole message, to start an amend from.
     pub fn last_message(&self) -> Option<String> {
         self.run(&["log", "-1", "--format=%B"], None).ok()
@@ -1207,6 +1222,35 @@ mod tests {
         assert_eq!((e[0].index, e[0].worktree), (b'.', b'M'));
         assert_eq!((e[1].index, e[1].worktree), (b'A', b'.'));
         assert!(e[2].untracked);
+    }
+
+    #[test]
+    fn the_staged_diff_is_what_a_commit_or_an_amend_records() {
+        let dir = std::env::temp_dir().join(format!("collate-staged-diff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["config", "commit.gpgsign", "false"]] {
+            git(args);
+        }
+        for (file, subject) in [("a.txt", "Add a"), ("b.txt", "Add b")] {
+            std::fs::write(dir.join(file), file).unwrap();
+            git(&["add", "-A"]);
+            git(&["commit", "-qm", subject]);
+        }
+        std::fs::write(dir.join("c.txt"), "c").unwrap();
+        std::fs::write(dir.join("unstaged.txt"), "u").unwrap();
+        git(&["add", "c.txt"]);
+        let repo = Repo::open(&dir).unwrap();
+        let staged = repo.staged_diff(false).unwrap();
+        assert!(staged.contains("+++ b/c.txt") && !staged.contains("b.txt") && !staged.contains("unstaged"), "{staged}");
+        let amended = repo.staged_diff(true).unwrap();
+        assert!(amended.contains("+++ b/b.txt") && amended.contains("+++ b/c.txt"), "the last commit's change too: {amended}");
+        assert_eq!(repo.recent_subjects(5).unwrap(), ["Add b", "Add a"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
