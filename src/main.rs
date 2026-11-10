@@ -278,6 +278,8 @@ lucide!(STAGED_ICON, "collate-circle-check", r#"<circle cx="12" cy="12" r="10"/>
 lucide!(GRAPH_ICON, "collate-git-graph", r#"<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>"#);
 lucide!(PULLS_ICON, "collate-git-pull-request", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/>"#);
 lucide!(MAP_ICON, "collate-layout-dashboard", r#"<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>"#);
+// Beside a link that leaves the app, as a browser would open it.
+lucide!(EXTERNAL_ICON, "collate-external-link", r#"<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>"#);
 
 /// Commits read per page of History; the next page loads as the list nears its end.
 const HISTORY_PAGE: usize = 500;
@@ -3810,8 +3812,14 @@ fn commit_card(s: &Collate, k: &Kit) -> Option<El> {
             .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(sha.clone()); s.say("Copied the commit hash", false); })));
     if let Some(web) = &s.web {
         let url = format!("{web}/commit/{}", c.id);
-        card = card.child(line("commit-web", "", text(format!("View on {}", web_name(web))).font(k.ty.text_small).color(k.c.text_accent)
-            .cursor(Cursor::Pointer).role("link").label(format!("Open {url}")).on_press(move |_: &mut Collate| open_url(&url))));
+        let name = web_name(web);
+        // In the card's grey, with the host's mark when it's GitHub and an arrow that says it opens the browser.
+        let mut link = row().gap(5.0).items_center().cursor(Cursor::Pointer).role("link").label(format!("Open {url}")).help(url.clone());
+        if name == "GitHub" {
+            link = link.child(icon(&pulls::GITHUB_ICON, 13.0).color(k.c.icon_muted));
+        }
+        link = link.child(text(format!("View on {name}")).font(k.ty.text_small).color(k.c.text_muted)).child(icon(&EXTERNAL_ICON, 11.0).color(k.c.icon_faint));
+        card = card.child(line("commit-web", "", link.on_press(move |_: &mut Collate| open_url(&url))));
     }
     if c.parents.len() > 1 {
         let parents = c.parents.iter().map(|p| p.chars().take(8).collect::<String>()).collect::<Vec<_>>().join("  ");
@@ -4434,6 +4442,15 @@ fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
 }
 
 const SETTINGS_TABS: [&str; 7] = ["Appearance", "Diff", "Languages", "Review", "Projects", "Refresh", "Updates"];
+lucide!(APPEARANCE_ICON, "collate-palette", r#"<path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>"#);
+lucide!(DIFF_ICON, "collate-diff", r#"<path d="M12 3v14"/><path d="M5 10h14"/><path d="M5 21h14"/>"#);
+lucide!(LANGUAGES_ICON, "collate-languages", r#"<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>"#);
+lucide!(REVIEW_ICON, "collate-eye", r#"<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>"#);
+lucide!(PROJECTS_ICON, "collate-folder", r#"<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>"#);
+lucide!(REFRESH_TAB_ICON, "collate-refresh-cw", r#"<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>"#);
+lucide!(UPDATES_ICON, "collate-download", r#"<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>"#);
+/// Each settings section's Lucide icon, in `SETTINGS_TABS` order.
+static SETTINGS_ICONS: [&Icon; 7] = [&APPEARANCE_ICON, &DIFF_ICON, &LANGUAGES_ICON, &REVIEW_ICON, &PROJECTS_ICON, &REFRESH_TAB_ICON, &UPDATES_ICON];
 /// The Projects section, which has its own Add button.
 const PROJECTS_TAB: usize = 4;
 
@@ -4521,6 +4538,8 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             .label(name.to_string())
             .checked(on)
             .on_press(move |s: &mut Collate| s.settings_tab = i)
+            .gap(6.0)
+            .child(icon(SETTINGS_ICONS[i], 16.0).color(if on { k.c.icon_base } else { k.c.icon_muted }).a11y_hidden())
             .child(text(name.to_string()).font(if on { k.ty.ui_medium } else { k.ty.ui }).color(if on { k.c.text_base } else { k.c.text_muted }))
     }));
     // Right: the section's rows straight on the surface, divided by hairlines (no card in a
