@@ -9,6 +9,8 @@ description = "A fast, lightweight git diff viewer for macOS, built on Rune."
 rune = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96" }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a057f270da06b048a689be96" }
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+# The diff search's regular expressions.
+regex = "1"
 
 [profile.release]
 lto = "thin"

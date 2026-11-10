@@ -167,7 +167,7 @@ pub struct DiffState {
     hovered: Vec<(Side, String)>,
     highlighter: Highlighter,
     style: Style,
-    search: Option<String>,
+    search: Option<super::Finder>,
     search_rev: u64,
     chunks: RefCell<HashMap<(u32, Side, u32), Rc<Chunk>>>,
     /// Per file, lines added and removed: counted once, read by every frame's headers.
@@ -366,17 +366,16 @@ impl DiffState {
         }
     }
 
-    /// Text to highlight in every line, ignoring case; `None` or empty for none.
-    pub fn set_search(&mut self, q: Option<String>) {
-        let q = q.filter(|q| !q.is_empty());
-        if self.search != q {
-            self.search = q;
+    /// What to highlight in every line; `None` for nothing.
+    pub fn set_search(&mut self, f: Option<super::Finder>) {
+        if self.search.as_ref().map(|f| f.query()) != f.as_ref().map(|f| f.query()) {
+            self.search = f;
             self.search_rev += 1;
         }
     }
 
-    pub fn search(&self) -> Option<&str> {
-        self.search.as_deref()
+    pub fn search(&self) -> Option<&super::Finder> {
+        self.search.as_ref()
     }
 
     pub(crate) fn search_rev(&self) -> u64 {
@@ -386,11 +385,11 @@ impl DiffState {
     /// Every line in the shown hunks that holds the search text, in order, as the line to
     /// scroll to.
     pub fn search_hits(&self) -> Vec<(usize, LineRef)> {
-        let Some(q) = self.search.as_deref() else { return Vec::new() };
+        let Some(q) = &self.search else { return Vec::new() };
         let mut out = Vec::new();
         for (f, file) in self.files.iter().enumerate() {
             for l in file.hunks.iter().flat_map(|h| &h.lines) {
-                if super::view::find_all(&l.text, q).is_empty() {
+                if q.find_all(&l.text).is_empty() {
                     continue;
                 }
                 let at = match (l.kind, l.old, l.new) {

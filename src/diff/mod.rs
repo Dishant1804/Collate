@@ -7,11 +7,13 @@
 //!
 //! Adapted from rune-kit's `diff` (MIT, see `LICENSE`) and restyled for Collate.
 
+mod find;
 mod model;
 mod myers;
 mod state;
 mod view;
 
+pub use find::{Finder, Query};
 pub use model::{FileDiff, FileStatus, LineKind, Side, mark_moved, parse};
 pub use state::{DiffMode, DiffState, LineRef, Style};
 pub use myers::{WordEdit, apply_edits, word_edits};

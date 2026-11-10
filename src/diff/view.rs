@@ -835,10 +835,10 @@ fn layer(len: usize, syntax: &[(Range<usize>, Color)], words: &[Range<usize>], b
     out
 }
 
-/// `spans` with every case-insensitive occurrence of `q` in `text` given background `bg`, over
-/// whatever colours and word changes are there.
-fn mark(text: &str, spans: Vec<Span>, q: &str, bg: Color) -> Vec<Span> {
-    let hits = find_all(text, q);
+/// `spans` with every match of `q` in `text` given background `bg`, over whatever colours and
+/// word changes are there.
+fn mark(text: &str, spans: Vec<Span>, q: &super::Finder, bg: Color) -> Vec<Span> {
+    let hits = q.find_all(text);
     if hits.is_empty() {
         return spans;
     }
@@ -859,15 +859,6 @@ fn mark(text: &str, spans: Vec<Span>, q: &str, bg: Color) -> Vec<Span> {
         out.push(sp);
     }
     out
-}
-
-/// Byte ranges of `q` in `text`, ignoring ASCII case.
-pub(crate) fn find_all(text: &str, q: &str) -> Vec<Range<usize>> {
-    if q.is_empty() || q.len() > text.len() {
-        return Vec::new();
-    }
-    let (t, q) = (text.to_ascii_lowercase(), q.to_ascii_lowercase());
-    t.match_indices(&q).map(|(i, m)| i..i + m.len()).collect()
 }
 
 /// `code` as drawn: text layout draws a tab as one space, so each tab is followed by spaces up

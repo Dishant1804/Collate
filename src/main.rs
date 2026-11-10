@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
 
-use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, GHOST_PAD, LineKind, LineRef, WordEdit, apply_edits, mark_moved, parse, word_edits};
+use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, LineKind, LineRef, Query, WordEdit, apply_edits, mark_moved, parse, word_edits};
 use git::{Blob, Change, Repo, Scope, Snapshot, Staged};
 use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::shell::{self, PaneState, Sidebar, SidebarRow, SidebarSection, SplitView, Toolbar};
@@ -347,6 +347,12 @@ struct Collate {
     sidebar: PaneState,
     /// Text searched for in the diff, the lines holding it, and the one last jumped to.
     search: TextEdit,
+    /// The search's options: match case, whole words, a regular expression; and why the
+    /// pattern doesn't parse, when it doesn't.
+    find_case: bool,
+    find_word: bool,
+    find_regex: bool,
+    search_error: Option<String>,
     hits: Vec<(usize, LineRef)>,
     hit: Option<usize>,
     /// Files marked viewed that changed since: shown, not silently unmarked.
@@ -431,6 +437,10 @@ fn init() -> Collate {
         notice: None,
         sidebar: PaneState::new(290.0).range(180.0, 560.0),
         search: TextEdit::new(""),
+        find_case: false,
+        find_word: false,
+        find_regex: false,
+        search_error: None,
         hits: Vec::new(),
         hit: None,
         stale: HashSet::new(),
@@ -1219,10 +1229,20 @@ impl Collate {
 
     /// Rerun the search over the shown lines, keeping the current hit when it still holds.
     fn find(&mut self) {
-        let q = self.search.text.trim().to_owned();
-        self.diff.set_search((!q.is_empty()).then_some(q));
+        // Spaces around a plain search are a slip; in a pattern they may be meant.
+        let text = if self.find_regex { self.search.text.clone() } else { self.search.text.trim().to_owned() };
+        let finder = Finder::new(Query { text, case: self.find_case, word: self.find_word, regex: self.find_regex });
+        self.search_error = finder.as_ref().err().cloned();
+        self.diff.set_search(finder.ok().flatten());
         self.hits = self.diff.search_hits();
         self.hit = self.hit.filter(|&h| h < self.hits.len());
+    }
+
+    /// Flips one of the search's options and searches again.
+    fn search_option(&mut self, flip: fn(&mut Collate)) {
+        flip(self);
+        self.hit = None;
+        self.find();
     }
 
     /// Jump to the next (or previous) line holding the search text, opening its file.
@@ -1718,6 +1738,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("o", "Open the file in your editor"),
             ("⌘F", "Search the diff: type, ⏎ next match, ⇧⏎ previous, esc done"),
             ("n  N  ⌘G", "Next / previous search match"),
+            ("⌥⌘C  ⌥⌘W  ⌥⌘R", "Search: match case, whole words, regular expression"),
             ("m", "Jump to the other end of a move (blue lines)"),
             ("z  Z", "Collapse / expand every file"),
             ("s", "Unified / split"),
@@ -2413,6 +2434,7 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         None => what.child(text(basis).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).shrink()),
     };
     let hits = match (s.hits.len(), s.hit) {
+        _ if s.search_error.is_some() => "Bad pattern".to_owned(),
         (0, _) if !s.search.text.trim().is_empty() => "No matches".to_owned(),
         (0, _) => String::new(),
         (n, Some(i)) => format!("{} of {n}", i + 1),
@@ -2440,6 +2462,34 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         .key("search");
     // While ⌘F has the keys, the field looks focused.
     let search = if s.searching { row().key("ring").radius(8.0).border(2.0, k.c.border_focus).child(search) } else { search };
+    // The search's options, as an editor's find bar has them.
+    let option = |key: &str, glyph: &str, name: &str, keys: &str, on: bool, flip: fn(&mut Collate)| {
+        text(glyph.to_owned())
+            .key(key.to_owned())
+            .font(rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono })
+            .color(if on { k.c.text_base } else { k.c.text_faint })
+            .px(5.0)
+            .h(20.0)
+            .radius(k.radius.sm)
+            .fill(if on { k.alpha(k.c.text_base, 0.12) } else { k.alpha(k.c.text_base, 0.0) })
+            .hover(k.alpha(k.c.text_base, 0.08))
+            .cursor(Cursor::Pointer)
+            .role("checkbox")
+            .label(format!("{name}{}", if on { ", on" } else { ", off" }))
+            .help(format!("{name} ({keys})"))
+            .on_press(move |s: &mut Collate| s.search_option(flip))
+    };
+    let options = row()
+        .key("search-options")
+        .gap(2.0)
+        .items_center()
+        .child(option("find-case", "Aa", "Match case", "⌥⌘C", s.find_case, |s| s.find_case ^= true))
+        .child(option("find-word", "ab", "Whole words", "⌥⌘W", s.find_word, |s| s.find_word ^= true))
+        .child(option("find-regex", ".*", "Regular expression", "⌥⌘R", s.find_regex, |s| s.find_regex ^= true));
+    let hits = match &s.search_error {
+        Some(e) => text(hits).key("hits").font(k.ty.text_small).color(k.c.danger.fg).help(e.clone()),
+        None => text(hits).key("hits").font(k.ty.text_small).color(k.c.text_muted),
+    };
     let top = row()
         .key("totals")
         .w_full()
@@ -2447,8 +2497,9 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         .items_center()
         .child(what)
         .child(row().grow(1.0))
-        .child(text(hits).key("hits").font(k.ty.text_small).color(k.c.text_muted))
+        .child(hits)
         .child(search)
+        .child(options)
         .child(text(format!("{viewed}/{n} viewed")).key("viewed-count").font(k.ty.text_small).color(k.c.text_muted));
     // Row 2, only when there's something to say about how the diff is drawn.
     // A 28 pt band right under the first, as the sidebar's and the panel's second rows are, so
@@ -2762,6 +2813,18 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.is_command('[') || ev.is_command(']') {
         s.go(ev.is_command('['));
         return true;
+    }
+    if ev.mods.alt && ev.mods.cmd {
+        let flip: Option<fn(&mut Collate)> = match ev.key {
+            Key::Command('c') => Some(|s| s.find_case ^= true),
+            Key::Command('w') => Some(|s| s.find_word ^= true),
+            Key::Command('r') => Some(|s| s.find_regex ^= true),
+            _ => None,
+        };
+        if let Some(flip) = flip {
+            s.search_option(flip);
+            return true;
+        }
     }
     if ev.is_command('r') {
         return refresh();
@@ -4086,6 +4149,34 @@ mod tests {
         assert_eq!(current_repo().unwrap().root.canonicalize().unwrap(), dir.canonicalize().unwrap());
         let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_options_narrow_the_matches() {
+        let mut rt = loaded();
+        let hits = |rt: &mut Runtime<Collate>, q: &str, flip: Option<fn(&mut Collate)>| {
+            rt.update(|s, _| {
+                s.search = TextEdit::new(q);
+                if let Some(flip) = flip {
+                    s.search_option(flip);
+                }
+                s.find();
+            });
+            let n = rt.state.hits.len();
+            rt.update(|s, _| (s.find_case, s.find_word, s.find_regex) = (false, false, false));
+            n
+        };
+        let files = rt.state.diff.files().len();
+        assert_eq!(hits(&mut rt, "CHANGED", None), files * 2, "both added lines of each file, in any case");
+        assert_eq!(hits(&mut rt, "CHANGED", Some(|s| s.find_case = true)), 0, "match case");
+        assert_eq!(hits(&mut rt, "chang", Some(|s| s.find_word = true)), 0, "whole words only");
+        assert_eq!(hits(&mut rt, r"also\s+changed\(4\d\)", Some(|s| s.find_regex = true)), files, "a regular expression");
+        rt.update(|s, _| {
+            s.find_regex = true;
+            s.search = TextEdit::new("(");
+            s.find();
+        });
+        assert!(rt.state.search_error.is_some() && rt.state.hits.is_empty(), "a bad pattern says so and finds nothing");
     }
 
     #[test]
