@@ -265,6 +265,20 @@ static REFRESH_ICON: Icon = Icon {
     body: r#"<path d="M3.1 7.2A5 5 0 0 1 12.3 5.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.9 3.3L12.5 5.9L9.9 5.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.9 8.8A5 5 0 0 1 3.7 10.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M3.1 12.7L3.5 10.1L6.1 10.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>"#,
 };
 
+/// The sidebar's places, Lucide's icons (ISC licence, licenses/lucide.txt): a changed file,
+/// changes not yet ready and ready to commit, the graph, pull requests and the map's tiles.
+macro_rules! lucide {
+    ($name:ident, $id:literal, $body:literal) => {
+        static $name: Icon = Icon { name: $id, view: 24.0, body: concat!(r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#, $body, "</g>") };
+    };
+}
+lucide!(ALL_ICON, "collate-file-diff", r#"<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M9 10h6"/><path d="M12 13V7"/><path d="M9 17h6"/>"#);
+lucide!(UNSTAGED_ICON, "collate-circle-dashed", r#"<path d="M10.1 2.182a10 10 0 0 1 3.8 0"/><path d="M13.9 21.818a10 10 0 0 1-3.8 0"/><path d="M17.609 3.721a10 10 0 0 1 2.69 2.7"/><path d="M2.182 13.9a10 10 0 0 1 0-3.8"/><path d="M20.279 17.609a10 10 0 0 1-2.7 2.69"/><path d="M21.818 10.1a10 10 0 0 1 0 3.8"/><path d="M3.721 6.391a10 10 0 0 1 2.7-2.69"/><path d="M6.391 20.279a10 10 0 0 1-2.69-2.7"/>"#);
+lucide!(STAGED_ICON, "collate-circle-check", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
+lucide!(GRAPH_ICON, "collate-git-graph", r#"<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>"#);
+lucide!(PULLS_ICON, "collate-git-pull-request", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/>"#);
+lucide!(MAP_ICON, "collate-layout-dashboard", r#"<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>"#);
+
 /// Commits read per page of History; the next page loads as the list nears its end.
 const HISTORY_PAGE: usize = 500;
 
@@ -3297,9 +3311,9 @@ const NAV_W: f32 = 24.0 * 2.0 + 2.0;
 /// The leading sidebar: the places to look, with how much is in each. Working Copy is what
 /// isn't committed; Review is what is.
 fn views_sidebar(s: &Collate, k: &Kit) -> El {
-    let place = |key: &str, label: &str, scope: Scope, badge: Option<usize>, detail: Option<String>| {
+    let place = |key: &str, label: &str, glyph: &'static Icon, scope: Scope, badge: Option<usize>, detail: Option<String>| {
         let elsewhere = s.map.open || s.pulls.open || s.pulls.pr.is_some();
-        let mut r = SidebarRow::new(label.to_owned()).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| {
+        let mut r = SidebarRow::new(label.to_owned()).icon(glyph).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| {
             s.map.open = false;
             s.pulls.open = false;
             s.close_pull();
@@ -3314,22 +3328,22 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
         r.build(k).key(key.to_owned())
     };
     let working = SidebarSection::new("Working Copy").rows([
-        place("view-all", "All Changes", Scope::Uncommitted, Some(s.total), None),
-        place("view-unstaged", "Unstaged", Scope::Unstaged, Some(s.unstaged), None),
-        place("view-staged", "Staged", Scope::Staged, Some(s.staged_shown), None),
+        place("view-all", "All Changes", &ALL_ICON, Scope::Uncommitted, Some(s.total), None),
+        place("view-unstaged", "Unstaged", &UNSTAGED_ICON, Scope::Unstaged, Some(s.unstaged), None),
+        place("view-staged", "Staged", &STAGED_ICON, Scope::Staged, Some(s.staged_shown), None),
     ]);
     let review = SidebarSection::new("Review").rows([
-        place("view-history", "Git Graph", Scope::History, None, None),
+        place("view-history", "Git Graph", &GRAPH_ICON, Scope::History, None, None),
         // The repository's open pull requests, and the one being reviewed.
         {
-            let mut r = SidebarRow::new("Pull Requests").selected(s.pulls.open || s.pulls.pr.is_some()).on_select(|s: &mut Collate, _: &mut Tx| s.open_pulls());
+            let mut r = SidebarRow::new("Pull Requests").icon(&PULLS_ICON).selected(s.pulls.open || s.pulls.pr.is_some()).on_select(|s: &mut Collate, _: &mut Tx| s.open_pulls());
             if s.pulls.asked() > 0 {
                 r = r.badge(s.pulls.asked().to_string());
             }
             r.build(k).key("view-pulls")
         },
         // The whole repository, with this view's changes on it.
-        SidebarRow::new("Map").selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
+        SidebarRow::new("Map").icon(&MAP_ICON).selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
             s.pulls.open = false;
             s.open_map();
         }).build(k).key("view-map"),
