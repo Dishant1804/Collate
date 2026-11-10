@@ -17,11 +17,18 @@ change. You review, stage, discard and commit without leaving the diff.
 - A map of the whole repository with the current changes on it.
 - Search in the diff (match case, whole words, regular expressions), viewed marks that
   survive restarts, folding of large and low-signal files (lockfiles, bundles, generated code).
-- Image diffs: a changed PNG or JPEG shows before and after side by side.
+- Image diffs: a changed PNG, JPEG, SVG or PDF (its first page) shows before and after
+  side by side.
 - Conflicts: keep ours, theirs or both, for a whole file or one conflict at a time.
 - Compare any two branches, tags or commits; blame and the history of a file.
-- Fetch, pull and push; switch, create and stash branches; amend; cherry-pick, revert and
-  reset from the commit graph.
+- Fetch, pull, push and force push (with lease); switch, create, rename, delete, merge,
+  rebase and stash branches; tags; amend; cherry-pick, revert and reset from the commit
+  graph. A merge or rebase stopped on conflicts waits with Continue, Skip and Abort.
+- Pull requests on GitHub, through the GitHub CLI: the open ones grouped by what they ask
+  of you, and any one with its diff, checks, conversation and line threads. Approve,
+  request changes, comment, suggest changes, reply and resolve; merge, update the branch,
+  re-run failed checks, edit the title, reviewers and labels; open a new one. A
+  notification says when someone asks for your review.
 - Comments on lines, kept on your Mac, copied out as Markdown for a pull request.
 - Go to a file or line (⌘P, ⌘L), and marks beside the scroll bar where the changes are.
 - Keyboard first: press `?` in the app for the full list of keys.
@@ -32,7 +39,8 @@ change. You review, stage, discard and commit without leaving the diff.
 - `git` on your `PATH`.
 - For downloaded languages: Xcode's command line tools (`xcode-select --install`).
 - A stable Rust toolchain to build it. It is developed on Rust 1.98.
-- Optional: the GitHub CLI (`gh`), used for commit authors' pictures.
+- Optional: the GitHub CLI (`gh`, signed in with `gh auth login`), for pull requests and
+  commit authors' pictures.
 
 ## Install
 
