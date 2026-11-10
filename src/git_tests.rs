@@ -490,6 +490,32 @@ fn a_range_shows_what_changed_between_two_commits() {
 }
 
 #[test]
+fn stash_branch_and_reset_move_the_repository() {
+    let (dir, r) = repo("moves", &[("a.txt", "one\n")]);
+    let first = r.resolve("HEAD").unwrap();
+    write(&dir, "a.txt", "one\ntwo\n");
+    r.stash("half done").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+    let stashes = r.stashes();
+    assert_eq!(stashes.len(), 1);
+    assert!(stashes[0].message.contains("half done"));
+    r.stash_do("pop", &stashes[0].name).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\ntwo\n");
+    assert!(r.stashes().is_empty());
+    r.stage_all().unwrap();
+    r.commit("second", false).unwrap();
+    r.commit("second, reworded", true).unwrap();
+    assert_eq!(r.last_message().unwrap().trim(), "second, reworded");
+    r.new_branch("side", Some(&first), true).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+    r.switch("main").unwrap();
+    r.revert("HEAD").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+    r.reset("hard", &first).unwrap();
+    assert_eq!(r.resolve("HEAD").unwrap(), first);
+}
+
+#[test]
 fn conflicts_settle_by_side_by_block_or_both() {
     let text = "a\n<<<<<<< HEAD\nours 1\n=======\ntheirs 1\n>>>>>>> other\nb\n<<<<<<< HEAD\nours 2\n||||||| base\nbase 2\n=======\ntheirs 2\n>>>>>>> other\nc\n";
     assert_eq!(patch::resolve(text, patch::Keep::Ours, None), ("a\nours 1\nb\nours 2\nc\n".to_owned(), 2));

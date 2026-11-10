@@ -116,6 +116,14 @@ pub struct Repo {
     pub root: PathBuf,
 }
 
+/// One entry of `git stash list`.
+#[derive(Clone, Debug)]
+pub struct Stash {
+    pub name: String,
+    pub id: String,
+    pub message: String,
+}
+
 /// An entry of `git status --porcelain=v2`.
 struct Entry {
     index: u8,
@@ -680,6 +688,29 @@ impl Repo {
         self.run(&["log", "-1", "--format=%B"], None).ok()
     }
 
+    /// Stashes every change, untracked files included.
+    pub fn stash(&self, message: &str) -> Result<String, String> {
+        let mut args = vec!["stash", "push", "-u"];
+        if !message.is_empty() {
+            args.extend(["-m", message]);
+        }
+        self.run(&args, None)
+    }
+
+    /// The stashes, newest first: their name (`stash@{0}`), commit and message.
+    pub fn stashes(&self) -> Vec<Stash> {
+        let out = self.run(&["stash", "list", "--format=%gd%x1f%H%x1f%gs"], None).unwrap_or_default();
+        out.lines().filter_map(|l| {
+            let mut f = l.splitn(3, '\x1f');
+            Some(Stash { name: f.next()?.to_owned(), id: f.next()?.to_owned(), message: f.next()?.to_owned() })
+        }).collect()
+    }
+
+    /// Applies a stash (`pop` also drops it), or with `how` "drop" only drops it.
+    pub fn stash_do(&self, how: &str, name: &str) -> Result<String, String> {
+        self.run(&["stash", how, "-q", name], None)
+    }
+
     /// Fetches every remote, dropping branches deleted there.
     pub fn fetch(&self) -> Result<String, String> {
         self.run(&["fetch", "--all", "--prune", "-q"], None)
@@ -698,6 +729,13 @@ impl Repo {
         } else {
             self.run(&["push", "-q", "-u", "origin", "HEAD"], None)
         }
+    }
+
+    /// Switches to `branch`; a remote one (`origin/x`) checks out a local `x` that tracks it.
+    pub fn switch(&self, branch: &str) -> Result<String, String> {
+        let remote = self.run(&["remote"], None).unwrap_or_default();
+        let local = remote.lines().find_map(|r| branch.strip_prefix(r).and_then(|b| b.strip_prefix('/'))).unwrap_or(branch);
+        self.run(&["switch", "-q", local], None)
     }
 
     /// Makes branch `name` at `at` (HEAD when `None`) and, with `switch`, moves onto it.

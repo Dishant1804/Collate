@@ -300,6 +300,8 @@ struct Discard {
 enum Ask {
     /// A new branch at a commit (HEAD when `None`), switched to.
     Branch(Option<String>),
+    /// A new stash's message.
+    Stash,
 }
 
 /// A repository change that throws work away, waiting for the reader to confirm it.
@@ -307,6 +309,7 @@ enum Ask {
 enum Risky {
     /// `git reset --hard` to a commit.
     ResetHard(String),
+    DropStash(String),
 }
 
 struct Notice {
@@ -810,6 +813,7 @@ impl Collate {
         match ask {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
             Ask::Branch(at) => self.act_bg("Creating the branch…", move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
+            Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
         }
     }
 
@@ -859,6 +863,7 @@ impl Collate {
     fn confirm_risky(&mut self) {
         match self.risky.take() {
             Some(Risky::ResetHard(id)) => self.act_bg("Resetting…", move |r| r.reset("hard", &id).map(|_| format!("Reset to {} and threw the changes away", abbrev(&id)))),
+            Some(Risky::DropStash(name)) => self.act_bg("Dropping the stash…", move |r| r.stash_do("drop", &name).map(|_| format!("Dropped {name}"))),
             None => {}
         }
     }
@@ -1056,43 +1061,82 @@ impl Collate {
     }
 
     /// The toolbar's "⋯" menu: how the diff is drawn, and the app's less frequent commands.
-    /// The title bar's branch menu: sync with the remote, the branch as a pull request against
-    /// its base, and the bases to choose from (local branches and `origin`'s).
+    /// The title bar's branch menu, as GitHub Desktop's: sync with the remote, switch or make a
+    /// branch, stash, and the branch as a pull request against a base.
     fn branch_menu(&mut self, tx: &mut Tx) {
-        if let Some(r) = current_repo() {
+        let repo = current_repo();
+        if let Some(r) = &repo {
             self.branches = r.branches();
         }
+        let stashes = repo.as_deref().map(Repo::stashes).unwrap_or_default();
         let base = self.base.clone().unwrap_or_default();
         let (ahead, behind) = self.ahead_behind.unwrap_or((0, 0));
         let count = |verb: &str, n: usize| if n == 0 { verb.to_owned() } else { format!("{verb} {n} Commit{}", if n == 1 { "" } else { "s" }) };
         let idle = self.busy.is_none();
-        let mut menu = PopupMenu::new()
+        let mut switch = PopupMenu::new();
+        let locals: HashSet<&str> = self.branches.iter().filter(|b| !b.starts_with("origin/")).map(String::as_str).collect();
+        for b in self.branches.iter().filter(|b| **b != self.branch) {
+            // A remote branch already checked out here is its local branch.
+            if b.strip_prefix("origin/").is_some_and(|l| locals.contains(l) || l == self.branch) {
+                continue;
+            }
+            switch = switch.item(PopupItem::new(format!("switch:{b}"), b.clone()));
+        }
+        let mut stash_menu = PopupMenu::new();
+        for st in &stashes {
+            let one = PopupMenu::new()
+                .item(PopupItem::new(format!("show:{}", st.id), "Show Changes"))
+                .item(PopupItem::new(format!("apply:{}", st.name), "Apply"))
+                .item(PopupItem::new(format!("pop:{}", st.name), "Apply and Drop"))
+                .separator()
+                .item(PopupItem::new(format!("drop:{}", st.name), "Drop…"));
+            stash_menu = stash_menu.submenu(format!("{} - {}", st.name, st.message), one);
+        }
+        let mut bases = PopupMenu::new();
+        for b in self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(30) {
+            bases = bases.item(PopupItem::new(format!("base:{b}"), b.clone()).checked(*b == base));
+        }
+        let menu = PopupMenu::new()
             .item(PopupItem::new("fetch", "Fetch").enabled(idle))
             .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
             .item(PopupItem::new("push", count("Push", ahead)).enabled(idle))
             .separator()
+            .submenu_enabled("Switch To", switch, idle)
+            .item(PopupItem::new("new-branch", "New Branch…").enabled(idle))
+            .separator()
+            .item(PopupItem::new("stash", "Stash All Changes…").enabled(idle && self.total > 0))
+            .submenu_enabled(format!("Stashes ({})", stashes.len()), stash_menu, !stashes.is_empty())
+            .separator()
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
-            .separator();
-        let candidates: Vec<&String> = self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(20).collect();
-        for b in candidates {
-            menu = menu.item(PopupItem::new(format!("base:{b}"), format!("Compare against {b}")).checked(*b == base));
-        }
-        menu = menu.separator().item(PopupItem::new("compare", "Compare Branches or Tags…"));
-        tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| match picked {
-            Some("fetch") => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
-            Some("pull") => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
-            Some("push") => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
-            Some("preview") => {
-                s.map.open = false;
-                s.set_scope(Scope::Branch);
+            .submenu("Compare Against", bases)
+            .item(PopupItem::new("compare", "Compare Branches or Tags…"));
+        tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| {
+            let Some(p) = picked else { return };
+            let (what, arg) = p.split_once(':').unwrap_or((p, ""));
+            let arg = arg.to_owned();
+            match what {
+                "fetch" => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
+                "pull" => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
+                "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
+                "switch" => s.act_bg("Switching…", move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
+                "new-branch" => s.ask(Ask::Branch(None)),
+                "compare" => s.start_compare(),
+                "stash" => s.ask(Ask::Stash),
+                "show" => s.open_commit(&arg),
+                "apply" => s.act_bg("Applying the stash…", move |r| r.stash_do("apply", &arg).map(|_| format!("Applied {arg}"))),
+                "pop" => s.act_bg("Applying the stash…", move |r| r.stash_do("pop", &arg).map(|_| format!("Applied and dropped {arg}"))),
+                "drop" => s.risky = Some(Risky::DropStash(arg)),
+                "preview" => {
+                    s.map.open = false;
+                    s.set_scope(Scope::Branch);
+                }
+                "base" => {
+                    s.set_base(&arg);
+                    s.map.open = false;
+                    s.set_scope(Scope::Branch);
+                }
+                _ => {}
             }
-            Some("compare") => s.start_compare(),
-            Some(p) if p.starts_with("base:") => {
-                s.set_base(&p["base:".len()..]);
-                s.map.open = false;
-                s.set_scope(Scope::Branch);
-            }
-            _ => {}
         });
     }
 
@@ -1937,8 +1981,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         // and choose the base it's compared against.
         let mut r = row().key("branch").gap(8.0).px(6.0).h(26.0).radius(6.0).items_center().min_w(0.0).shrink()
             .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button")
-            .label(format!("Branch {}: preview pull request, choose base", s.branch))
-            .help("Preview pull request, choose the base branch")
+            .label(format!("Branch {}: sync, switch, stash, preview pull request", s.branch))
+            .help("Fetch, pull and push, switch branches, stash, preview a pull request")
             .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.branch_menu(tx));
         let base = s.base.as_deref().map(|b| b.strip_prefix("origin/").unwrap_or(b).to_owned()).filter(|b| *b != s.branch);
         if let Some(b) = base {
@@ -2166,6 +2210,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let (title, what, button, placeholder) = match ask {
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
+            Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
         };
         let field = TextInput::new(&s.prompt_text)
             .placeholder(placeholder)
@@ -2222,6 +2267,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     if let Some(r) = &s.risky {
         let (title, what, button) = match r {
             Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
+            Risky::DropStash(name) => (format!("Drop {name}?"), "Its changes are deleted. There's no backup.".to_owned(), "Drop Stash"),
         };
         let buttons = row()
             .key("risky-buttons")
