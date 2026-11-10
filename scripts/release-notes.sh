@@ -25,7 +25,7 @@ echo
 cat <<NOTES
 ## Install
 
-The simplest way to install is to build it on your Mac: see the README's Install section.
+Install or update with \`npx collate-app@latest\`.
 
 \`Collate-$version-macos-universal.zip\` holds the app, for Apple silicon and Intel Macs,
 macOS 13 or later; it needs \`git\` on your \`PATH\`. Unzip it and move Collate to

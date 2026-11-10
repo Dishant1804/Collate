@@ -7,97 +7,34 @@ Review, stage, discard and commit without leaving the diff; review GitHub pull r
 
 ## Install
 
-Collate is built from source. It isn't signed with an Apple Developer ID yet, so there is
-no download to drag into Applications; building it on your Mac takes a few minutes.
-
-### 1. Get the tools (once)
-
-You need macOS 13 or newer.
-
 ```sh
-xcode-select --install                                          # git, a C compiler and the linker
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  # Rust (pick the default install)
-source "$HOME/.cargo/env"                                       # or open a new terminal
+npx collate-app@latest
 ```
 
-Skip either line if `git --version` or `cargo --version` already works.
+That is the whole install. It checks your Mac, installs anything missing, puts Collate in
+Applications and adds a `collate` command for the terminal. Run it again to update.
 
-### 2. Build and install
+You need macOS 13 or newer and [Node.js](https://nodejs.org) 18 or newer (for `npx`). If
+git is missing, the installer adds Xcode's command line tools; finish the dialog it opens.
+
+- `npx collate-app@latest --build` builds the latest source instead of downloading the
+  newest release. It installs Rust if you don't have it.
+- `npx collate-app@latest --uninstall` removes the app and the command.
+
+Then open Collate from Launchpad, or run `collate` in a repository.
+
+Optional: the GitHub CLI (`brew install gh`, then `gh auth login`) for pull requests and
+commit authors' pictures.
+
+## Build from source
+
+For working on Collate itself, with Rust installed:
 
 ```sh
 git clone https://github.com/Dishant1804/Collate.git
 cd Collate
-scripts/install.sh
-```
-
-The first build downloads its dependencies and takes a few minutes. When it finishes,
-`Collate.app` is in `/Applications` (or `~/Applications` when that isn't writable) and a
-`collate` command is in `~/.local/bin`.
-
-### 3. Open it
-
-Open Collate from Launchpad or Spotlight, or from a terminal:
-
-```sh
-collate            # the repository in the current folder
-collate ~/code/app # that one
-```
-
-If the shell says `collate: command not found`, add `~/.local/bin` to your `PATH`:
-
-```sh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-```
-
-### Update
-
-```sh
-cd Collate
-git pull
-osascript -e 'quit app "Collate"'   # the installer won't replace a running app
-scripts/install.sh
-```
-
-### Uninstall
-
-```sh
-rm -rf /Applications/Collate.app ~/Applications/Collate.app ~/.local/bin/collate
-rm -rf ~/Library/Application\ Support/Collate ~/Library/Caches/Collate   # settings and caches
-```
-
-### Optional
-
-- The GitHub CLI (`brew install gh`, then `gh auth login`) for pull requests and commit
-  authors' pictures.
-- Extra languages (C, C++, Java, Ruby and about forty more) are compiled on first use with
-  the tools from step 1.
-
-### Install with an AI agent
-
-Paste this into Claude Code, Codex, Cursor or any coding agent that can run commands:
-
-```text
-Install Collate, a git diff viewer for macOS, from https://github.com/Dishant1804/Collate.
-1. Check this is macOS 13 or newer (`sw_vers -productVersion`). Stop and tell me if not.
-2. If `xcode-select -p` fails, run `xcode-select --install`, then wait and ask me to
-   finish the installer dialog before going on.
-3. If `cargo --version` fails, install Rust with
-   `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`, then
-   `source "$HOME/.cargo/env"`.
-4. Clone the repository into ~/Collate (or `git pull` there if it already exists).
-5. If Collate is running, quit it: `osascript -e 'quit app "Collate"'`.
-6. In the clone, run `scripts/install.sh` and wait for "Installed ...". Show me any error
-   in full instead of working around it.
-7. If `~/.local/bin` isn't on my PATH, add it to ~/.zshrc.
-8. Run `open -a Collate` and tell me where the app and the `collate` command were installed.
-```
-
-## Run from source
-
-For working on Collate itself, without installing:
-
-```sh
-cargo run --release -- /path/to/a/repository
+cargo run --release -- /path/to/a/repository   # run without installing
+scripts/install.sh                             # or install it
 ```
 
 Without a path, Collate opens the project you used last, or offers to add one.

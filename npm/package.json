@@ -1,0 +1,13 @@
+{
+  "name": "collate-app",
+  "version": "1.0.0",
+  "description": "Installs Collate, a fast git diff viewer for macOS: npx collate-app@latest",
+  "bin": { "collate-app": "bin/collate-app.js" },
+  "files": ["bin"],
+  "os": ["darwin"],
+  "engines": { "node": ">=18" },
+  "repository": { "type": "git", "url": "git+https://github.com/Dishant1804/Collate.git", "directory": "npm" },
+  "homepage": "https://github.com/Dishant1804/Collate",
+  "keywords": ["git", "diff", "macos", "code-review"],
+  "license": "MIT"
+}
