@@ -2,6 +2,7 @@
 //! throwaway repository in the temp folder.
 
 use super::*;
+use crate::settings::Motion;
 use rune::{Env, Runtime};
 
 #[test]
