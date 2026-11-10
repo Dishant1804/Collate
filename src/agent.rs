@@ -1,11 +1,21 @@
 //! Handing work to the reader's coding agent: the selected lines as a reference or as a
-//! prompt-ready excerpt. Collate makes the text; the agent the reader already has does the rest.
-use rune::{PopupItem, PopupMenu, Tx};
-
+//! prompt-ready excerpt, their comments, and their review checklist. Collate makes the text;
+//! the agent the reader already has does the rest, in a terminal under the diff.
 use std::path::Path;
 
+use rune::{PopupItem, PopupMenu, Tx};
+
 use crate::diff::Side;
-use crate::{Collate, Scope, abbrev, current_repo};
+use crate::{Collate, Scope, abbrev, current_repo, paths_file};
+
+/// The checklist until the reader writes their own: what a reviewer asks of every change.
+const CHECKLIST: [&str; 5] = [
+    "What does this change do?",
+    "Is it correct? What cases does it miss?",
+    "Could it be slower or use more memory?",
+    "Does its design fit the code around it?",
+    "Is it tested? What has no test?",
+];
 
 impl Collate {
     /// The selection as `path#L10-L25` (`path#L10` for one line), as editors and agents read
@@ -42,6 +52,102 @@ impl Collate {
                 Some((c, None)) => format!("commit {}", abbrev(c)),
                 None => "the history".into(),
             },
+        }
+    }
+
+    /// The git command whose output is this view's diff, and whether files git doesn't track
+    /// yet are in the view too (`git diff` leaves them out).
+    fn diff_command(&self) -> (String, bool) {
+        match self.scope {
+            Scope::Uncommitted => ("git diff HEAD".into(), true),
+            Scope::Staged => ("git diff --cached".into(), false),
+            Scope::Unstaged => ("git diff".into(), true),
+            Scope::Branch => (format!("git diff {}", self.base_commit.as_deref().map_or("HEAD".to_owned(), abbrev)), true),
+            Scope::History => match self.commit.as_deref().map(|c| (c, c.split_once(".."))) {
+                Some((_, Some((a, b)))) if a.strip_suffix('^') == Some(b) => (format!("git show {}", abbrev(b)), false),
+                Some((_, Some((a, b)))) => (format!("git diff {} {}", abbrev(a), abbrev(b)), false),
+                Some((c, None)) => (format!("git show {}", abbrev(c)), false),
+                None => ("git show HEAD".into(), false),
+            },
+        }
+    }
+
+    /// The prompt that asks the agent `questions` about the change in view, read-only.
+    pub fn checklist_prompt(&self, questions: &[String]) -> String {
+        let (command, untracked) = self.diff_command();
+        let also = if untracked { ", plus the untracked files `git status` lists" } else { "" };
+        let list: String = questions.iter().enumerate().map(|(i, q)| format!("{}. {q}\n", i + 1)).collect();
+        format!(
+            "Review {}. Read the change with `{command}`{also}, and the code around it as you need. Answer each question below in turn, citing files and lines. Don't change any files.\n\n{}",
+            self.compared_text(),
+            list.trim_end()
+        )
+    }
+
+    /// Asks the agent the checklist's question `which`, or all of them.
+    pub fn ask_checklist(&mut self, which: Option<usize>) {
+        let all = load_checklist();
+        let questions = match which {
+            Some(i) => all.get(i).cloned().into_iter().collect(),
+            None => all,
+        };
+        if questions.is_empty() {
+            self.say("The checklist has no questions: add some with Edit Questions", true);
+            return;
+        }
+        let prompt = self.checklist_prompt(&questions);
+        self.run_agent(&prompt);
+    }
+
+    /// Opens the checklist in the reader's editor, writing the default one first.
+    fn edit_checklist(&mut self) {
+        let Some(path) = paths_file("checklist.txt") else { return };
+        if !path.exists() {
+            let text = format!("# One question a line; the agent answers them about the change in view.\n{}\n", CHECKLIST.join("\n"));
+            if let Err(e) = std::fs::write(&path, text) {
+                self.say(format!("Couldn't write {}: {e}", path.display()), true);
+                return;
+            }
+        }
+        let mut cmd = std::process::Command::new("open");
+        match self.settings.editor.app() {
+            Some(app) => cmd.args(["-a", app]),
+            None => cmd.arg("-t"),
+        };
+        match cmd.arg(&path).status() {
+            Ok(st) if st.success() => {}
+            Ok(_) => self.say(format!("Couldn't open {}", path.display()), true),
+            Err(e) => self.say(format!("Couldn't run open: {e}"), true),
+        }
+    }
+
+    /// The "⋯" menu's Ask Agent submenu: each question, all of them, the comments, and the
+    /// list itself.
+    pub fn agent_menu(&self) -> PopupMenu {
+        let agent = self.settings.agent.title();
+        let mut menu = PopupMenu::new().item(PopupItem::new("ask:all", "Ask Every Question"));
+        for (i, q) in load_checklist().iter().enumerate() {
+            menu = menu.item(PopupItem::new(format!("ask:{i}"), q.clone()));
+        }
+        let n = self.comments.len();
+        menu.separator()
+            .item(PopupItem::new("ask:comments", format!("Send {n} Comment{} to {agent}", if n == 1 { "" } else { "s" })).enabled(n > 0))
+            .separator()
+            .item(PopupItem::new("ask:edit", "Edit Questions…"))
+    }
+
+    /// Acts on an item of [`Collate::agent_menu`]; other ids do nothing.
+    pub fn agent_menu_pick(&mut self, id: &str) {
+        match id.strip_prefix("ask:") {
+            Some("all") => self.ask_checklist(None),
+            Some("comments") => self.send_comments(),
+            Some("edit") => self.edit_checklist(),
+            Some(i) => {
+                if let Ok(i) = i.parse() {
+                    self.ask_checklist(Some(i));
+                }
+            }
+            None => {}
         }
     }
 
@@ -109,6 +215,20 @@ impl Collate {
     }
 }
 
+/// The reader's questions, one a line (`#` starts a note), or the default ones.
+fn load_checklist() -> Vec<String> {
+    // Tests ask the default questions, whatever the reader has written.
+    let text = if cfg!(test) { None } else { paths_file("checklist.txt").and_then(|p| std::fs::read_to_string(p).ok()) };
+    match text {
+        Some(t) => parse_checklist(&t),
+        None => CHECKLIST.map(str::to_owned).to_vec(),
+    }
+}
+
+fn parse_checklist(text: &str) -> Vec<String> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect()
+}
+
 /// The shell command that starts `agent` with the prompt in `file` as its argument.
 fn agent_command(agent: &str, file: &Path) -> String {
     let quoted = format!("'{}'", file.display().to_string().replace('\'', "'\\''"));
@@ -122,5 +242,10 @@ mod tests {
     #[test]
     fn the_agent_reads_its_prompt_from_a_file_the_shell_quotes() {
         assert_eq!(agent_command("claude", Path::new("/tmp/it's.md")), "claude \"$(cat '/tmp/it'\\''s.md')\"");
+    }
+
+    #[test]
+    fn the_checklist_is_a_question_a_line_without_notes_or_blanks() {
+        assert_eq!(parse_checklist("# mine\n\n  Is it safe?  \nWho calls it?\n"), ["Is it safe?", "Who calls it?"]);
     }
 }

@@ -1366,6 +1366,7 @@ impl Collate {
             .item(PopupItem::new("expand", "Expand All Files"))
             .separator()
             .item(PopupItem::new("comments", format!("Copy {} Comment{} as Markdown", self.comments.len(), if self.comments.len() == 1 { "" } else { "s" })).enabled(!self.comments.is_empty()))
+            .submenu("Ask Agent", self.agent_menu())
             .separator()
             .item(PopupItem::new("reread", "Reread Repository"))
             .item(PopupItem::new("add", "Add Local Project…"))
@@ -1385,7 +1386,8 @@ impl Collate {
             Some("add") => s.add_project(),
             Some("keys") => s.show_help = true,
             Some("settings") => s.screen = Screen::Settings,
-            _ => {}
+            Some(id) => s.agent_menu_pick(id),
+            None => {}
         });
     }
 

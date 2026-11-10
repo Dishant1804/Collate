@@ -1315,9 +1315,37 @@ fn comments_go_to_the_agent_as_one_prompt() {
         rt.frame(1.0 / 60.0);
     }
     assert!(rt.find("send-comments").is_some(), "offered beside Copy as Markdown");
-    // The tests have no project open, so nothing starts; it says why instead.
+    // The tests have no terminal (and may have no project), so nothing starts; it says why.
     click(&mut rt, "send-comments");
-    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text == "Open a project first"));
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error), "{:?}", rt.state.notice.as_ref().map(|n| &n.text));
+    assert!(rt.state.terminals.list.is_empty());
+}
+
+#[test]
+fn the_checklist_asks_the_agent_about_the_change_in_view() {
+    let mut rt = loaded();
+    let prompt = rt.state.checklist_prompt(&["Is it safe?".to_owned(), "Who calls it?".to_owned()]);
+    assert!(prompt.starts_with("Review the uncommitted changes (HEAD to the working tree). Read the change with `git diff HEAD`, plus the untracked files"), "{prompt}");
+    assert!(prompt.ends_with("\n\n1. Is it safe?\n2. Who calls it?") && prompt.contains("Don't change any files."));
+    rt.update(|s, _| {
+        s.scope = Scope::History;
+        s.commit = Some("0123456789abcdef^..0123456789abcdef".into());
+    });
+    assert!(rt.state.checklist_prompt(&["Why?".to_owned()]).starts_with("Review commit 0123456. Read the change with `git show 0123456`, and the code"));
+    rt.update(|s, _| s.scope = Scope::Uncommitted);
+    // In the "⋯" menu: every default question, the comments (none yet) and the list itself.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "more");
+    let menu = rt.popup_menu().expect("the more menu");
+    assert_eq!(menu.find("ask:0").map(|i| i.title()), Some("What does this change do?"));
+    assert!(menu.find("ask:all").is_some() && menu.find("ask:edit").is_some());
+    assert!(menu.find("ask:comments").is_some_and(|i| !i.is_enabled()));
+    // The tests have no terminal (and may have no project), so the agent doesn't start.
+    rt.resolve_popup(Some("ask:all")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error), "{:?}", rt.state.notice.as_ref().map(|n| &n.text));
     assert!(rt.state.terminals.list.is_empty());
 }
 
