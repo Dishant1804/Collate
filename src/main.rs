@@ -1369,9 +1369,13 @@ impl Collate {
             stash_menu = stash_menu.submenu(format!("{} - {}", st.name, st.message), one);
         }
         // Any other branch can be merged in.
-        let mut merges = PopupMenu::new();
-        for b in self.branches.iter().filter(|b| **b != self.branch && b.strip_prefix("origin/") != Some(self.branch.as_str())).take(40) {
-            merges = merges.item(PopupItem::new(format!("merge:{b}"), b.clone()));
+        let (mut merges, mut rebases) = (PopupMenu::new(), PopupMenu::new());
+        for b in self.branches.iter().filter(|b| **b != self.branch).take(40) {
+            // Its own upstream can be rebased onto (to take what others pushed), not merged in.
+            if b.strip_prefix("origin/") != Some(self.branch.as_str()) {
+                merges = merges.item(PopupItem::new(format!("merge:{b}"), b.clone()));
+            }
+            rebases = rebases.item(PopupItem::new(format!("rebase:{b}"), b.clone()));
         }
         let detached = self.branch.is_empty() || self.branch == "HEAD";
         let mut bases = PopupMenu::new();
@@ -1386,6 +1390,7 @@ impl Collate {
             .submenu_enabled("Switch To", switch, idle)
             .item(PopupItem::new("new-branch", "New Branch…").enabled(idle))
             .submenu_enabled(format!("Merge Into {}", self.branch), merges, idle && !detached && self.operation.is_none())
+            .submenu_enabled(format!("Rebase {} Onto", self.branch), rebases, idle && !detached && self.operation.is_none() && self.total == 0)
             .separator()
             .item(PopupItem::new("stash", "Stash All Changes…").enabled(idle && self.total > 0))
             .submenu_enabled(format!("Stashes ({})", stashes.len()), stash_menu, !stashes.is_empty())
@@ -1403,6 +1408,7 @@ impl Collate {
                 "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
                 "switch" => s.act_bg("Switching…", move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
                 "merge" => s.act_bg("Merging…", move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
+                "rebase" => s.act_bg("Rebasing…", move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
                 "new-branch" => s.ask(Ask::Branch(None)),
                 "compare" => s.start_compare(),
                 "stash" => s.ask(Ask::Stash),

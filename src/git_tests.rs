@@ -608,3 +608,20 @@ fn merging_a_branch_brings_its_commits_or_stops_on_conflicts() {
     assert!(e.contains("stopped on conflicts"), "{e}");
     assert_eq!(r.operation(), Some(crate::git::Operation::Merge));
 }
+
+#[test]
+fn rebasing_replays_the_branch_on_its_new_base() {
+    let (dir, r) = repo("rebase", &[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    sh(&dir, &["switch", "-qc", "feature"]);
+    write(&dir, "b.txt", "two, mine\n");
+    sh(&dir, &["commit", "-qam", "mine"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    write(&dir, "a.txt", "one, upstream\n");
+    sh(&dir, &["commit", "-qam", "upstream"]);
+    sh(&dir, &["switch", "-q", "feature"]);
+    r.rebase("main").unwrap();
+    assert_eq!(sh(&dir, &["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["mine", "upstream", "init"]);
+    let (_, r) = diverged("rebase-conflict");
+    assert!(r.rebase("other").unwrap_err().contains("stopped on conflicts"));
+    assert_eq!(r.operation(), Some(crate::git::Operation::Rebase));
+}

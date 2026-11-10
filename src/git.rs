@@ -863,6 +863,11 @@ impl Repo {
         self.stopped(self.run(&["merge", "--no-edit", branch], None))
     }
 
+    /// Replay the current branch's own commits on top of `onto`.
+    pub fn rebase(&self, onto: &str) -> Result<String, String> {
+        self.stopped(self.run(&["rebase", onto], None))
+    }
+
     /// `result`, unless git stopped for conflicts, which is the reader's next step rather than
     /// a failure to report in git's words.
     fn stopped(&self, result: Result<String, String>) -> Result<String, String> {
