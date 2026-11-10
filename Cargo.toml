@@ -11,6 +11,8 @@ rune-kit = { git = "https://github.com/anomalyco/rune", rev = "39301f6793266450a
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 # The diff search's regular expressions.
 regex = "1"
+# The terminal drawer: a PTY and a VT parser and grid, as Alacritty itself runs them.
+alacritty_terminal = { version = "0.26", default-features = false }
 
 [profile.release]
 lto = "thin"

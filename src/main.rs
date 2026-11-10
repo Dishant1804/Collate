@@ -16,6 +16,7 @@ mod map_view;
 mod nav;
 mod patch;
 mod settings;
+mod terminal;
 #[cfg(test)]
 mod git_tests;
 
@@ -420,6 +421,8 @@ struct Collate {
     projects: Vec<PathBuf>,
     /// The starred projects, which the switcher lists first.
     favorites: Vec<PathBuf>,
+    /// The terminal drawer under the diff and its shells.
+    terminals: terminal::Terminals,
     project_open: bool,
     project_search: TextEdit,
     /// The switcher's keyboard pick: an index into `project_order`, or one past it for "Add".
@@ -519,6 +522,7 @@ fn init() -> Collate {
         words: None,
         projects: load_projects(),
         favorites: load_paths("favorites"),
+        terminals: terminal::Terminals::default(),
         project_open: false,
         project_search: TextEdit::new(""),
         project_pick: 0,
@@ -694,6 +698,26 @@ impl Collate {
             None => self.favorites.push(p.to_owned()),
         }
         save_paths("favorites", &self.favorites);
+    }
+
+    /// ⌘J: shows or hides the terminal drawer, starting a shell the first time.
+    fn toggle_terminal(&mut self) {
+        if self.terminals.open {
+            return self.terminals.set_open(false);
+        }
+        if self.terminals.list.is_empty() {
+            self.new_terminal();
+        } else {
+            self.terminals.set_open(true);
+        }
+    }
+
+    /// Another shell, in the project's folder (home without one).
+    fn new_terminal(&mut self) {
+        let dir = current_repo().map(|r| r.root.clone()).or_else(|| std::env::var_os("HOME").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("/"));
+        if let Err(e) = self.terminals.spawn(&dir) {
+            self.say(e, true);
+        }
     }
 
     /// Opens or closes the project switcher; it opens on an empty search, the open project picked.
@@ -2423,6 +2447,16 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .on_press(|s: &mut Collate| s.inspector.toggle())
         .build(k)
         .key("panel-toggle");
+    let term = IconButton::new(&terminal::TERMINAL_ICON)
+        .variant(IconButtonVariant::GhostMuted)
+        .expanded(s.terminals.open)
+        .label(if s.terminals.open { "Hide terminal" } else { "Show terminal" })
+        .help("Terminal")
+        .shortcut("⌘J")
+        .disabled(no_project)
+        .on_press(|s: &mut Collate| s.toggle_terminal())
+        .build(k)
+        .key("terminal-toggle");
     let more = IconButton::new(&MORE_ICON)
         .variant(IconButtonVariant::GhostMuted)
         .label("View options and more")
@@ -2433,7 +2467,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     // No title: the sidebar already marks the view shown.
     let toolbar = Toolbar::new()
         .leading(leading)
-        .trailing(row().gap(6.0).items_center().child(modes.build(k)).child(panel).child(more));
+        .trailing(row().gap(6.0).items_center().child(modes.build(k)).child(term).child(panel).child(more));
 
     let n = s.diff.files().len();
     let body = if !s.has_project {
@@ -2481,6 +2515,13 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         Some(bar) => col().key("body").w_full().grow(1.0).min_h(0.0).child(body).child(bar),
         None => body,
     };
+    let body = if s.terminals.open && s.has_project {
+        let window_h = rune::memo::layout_with("window", |r| r[3]).unwrap_or(840.0);
+        let drawer = terminal::drawer(&s.terminals, k, window_h, |s: &mut Collate| &mut s.terminals, |s: &mut Collate| s.new_terminal());
+        col().key("with-terminal").w_full().grow(1.0).min_h(0.0).child(body).child(drawer)
+    } else {
+        body
+    };
 
     if s.show_help {
         let keys: &[(&str, &str)] = &[
@@ -2510,6 +2551,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("⌘,", "Settings"),
             ("⇧⌘B", "Show / hide the views sidebar"),
             ("⌥⌘0", "Show / hide the staging panel"),
+            ("⌘J", "Show / hide the terminal; ⌘K clears it"),
         ];
         let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
         let rows = keys.iter().enumerate().map(|(i, (key, what))| {
@@ -3924,6 +3966,10 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return false;
     }
+    if ev.is_command('j') && s.has_project {
+        s.toggle_terminal();
+        return true;
+    }
     if shell::is_sidebar_toggle(ev) {
         s.sidebar.toggle();
         return true;
@@ -4344,6 +4390,12 @@ fn main() {
         on_key: Some(on_key),
         poll: Some(poll),
         setup: Some(|s: &mut Collate, waker| {
+            // Shells' events, from their threads, run here on the UI thread.
+            s.terminals.connect(std::sync::Arc::new(|id, event| {
+                if let Some(app) = HANDLE.get() {
+                    app.update_if(move |s, tx| s.terminals.event(id, event, tx));
+                }
+            }));
             s.avatars.start(rune::ImageCache::new(waker), |email, bytes| {
                 if let Some(app) = HANDLE.get() {
                     app.update(move |s, _| s.avatars.landed(email, bytes));
@@ -5314,6 +5366,40 @@ mod tests {
         assert_eq!(current_repo().unwrap().root.canonicalize().unwrap(), dir.canonicalize().unwrap());
         let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn command_j_opens_a_terminal_under_the_diff() {
+        let mut rt = loaded();
+        rt.on_key = Some(on_key);
+        rt.update(|s, _| s.terminals.connect(std::sync::Arc::new(|_, _| {})));
+        let cmd_j = KeyEvent { key: Key::Command('j'), mods: rune::Mods { cmd: true, ..Default::default() } };
+        rt.key(cmd_j.clone());
+        for _ in 0..5 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(rt.state.terminals.open && rt.state.terminals.list.len() == 1, "⌘J starts a shell");
+        let id = rt.state.terminals.list[0].id;
+        let (_, grid_y) = rt.find(&format!("terminal-grid-{id}")).expect("the grid is drawn");
+        let (_, diff_y) = rt.find("summary").expect("the diff stays");
+        assert!(grid_y > diff_y, "the terminal sits under the diff");
+        assert!(rt.state.terminals.list[0].keys.focused, "it takes the keys");
+        // Typing reaches the shell through the app's own key path.
+        for c in "echo collate-$((6*7))".chars() {
+            rt.key(KeyEvent { key: Key::Text(c.to_string()), mods: Default::default() });
+        }
+        rt.key(KeyEvent { key: Key::Enter, mods: Default::default() });
+        let start = std::time::Instant::now();
+        while !rt.state.terminals.list[0].shown().contains("collate-42") {
+            assert!(start.elapsed().as_secs() < 20, "the shell ran what was typed:\n{}", rt.state.terminals.list[0].shown());
+            rt.frame(1.0 / 60.0);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("terminal-cursor").is_some(), "the cursor shows");
+        rt.key(cmd_j);
+        rt.frame(1.0 / 60.0);
+        assert!(!rt.state.terminals.open && rt.state.terminals.list.len() == 1, "⌘J again hides it; the shell keeps running");
     }
 
     #[test]
