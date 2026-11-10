@@ -4326,7 +4326,7 @@ fn setting(k: &Kit, key: &str, title: &str, keys: &[&str], detail: &str, control
     if !detail.is_empty() {
         words = words.child(text(detail.to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap());
     }
-    row().key(key.to_owned()).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().items_center().child(control))
+    row().key(key.to_owned()).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().items_center().child(control))
 }
 
 /// The Languages section: whether to download grammars, what's built in, and every grammar on
@@ -4366,7 +4366,7 @@ fn languages_settings(s: &Collate, k: &Kit) -> Vec<El> {
             button = button.help(help);
         }
         let button = button.on_press(move |s: &mut Collate| if installed { s.remove_language(g) } else { s.prepare_language(g) }).build(k);
-        rows.push(row().key(format!("lang-{}", g.id)).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().child(button)));
+        rows.push(row().key(format!("lang-{}", g.id)).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(button)));
     }
     rows
 }
@@ -4401,7 +4401,7 @@ fn update_settings(s: &Collate, k: &Kit) -> Vec<El> {
         }),
     };
     vec![
-        row().key("version").w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().child(button.control_size(ControlSize::Small).build(k))),
+        row().key("version").w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(button.control_size(ControlSize::Small).build(k))),
         setting(k, "check", "Check for updates", &[], "Look for a new version when Collate opens and every few hours", switch(k, "Check for updates", st.check_updates, |c, v| c.check_updates = v)),
         setting(k, "auto-update", "Install automatically", &[], "Install a new version in the background; it opens when Collate next starts", switch(k, "Install automatically", st.auto_update, |c, v| c.auto_update = v)),
         setting(k, "from", "Update from", &[], "Latest source builds the newest commit on main, which needs Rust", pick(k, &["Releases", "Latest source"], &CHANNELS, st.update_from, |c, v| c.update_from = v)),
@@ -4466,7 +4466,7 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         ],
         2 => languages_settings(s, k),
         3 => vec![
-            setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "Pull Request Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
+            setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "PR Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
             setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
             setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
             setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
@@ -4487,7 +4487,7 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
                     }
                     let words = col().grow(1.0).min_w(0.0).gap(4.0).child(name).child(text(tilde(p)).font(k.ty.text_small).color(k.c.text_muted).truncate());
                     let remove = Button::new("Remove").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(open).help(if open { "The open project stays in the list" } else { "Remove from the list; the folder isn't touched" }).on_press(move |s: &mut Collate| s.forget_project(i)).build(k);
-                    row().key(format!("proj{i}")).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().child(remove))
+                    row().key(format!("proj{i}")).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(remove))
                 })
                 .collect();
             if rows.is_empty() {
