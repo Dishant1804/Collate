@@ -1,13 +1,15 @@
 //! Commit authors' pictures, as Zed shows them: the GitHub avatar of the account behind an
 //! email. Each is looked up once, off the UI thread, and kept in `~/Library/Caches/Collate/avatars`;
-//! an author GitHub doesn't know keeps their initials.
+//! an author GitHub doesn't know keeps their initials. The authors waiting are looked up
+//! together, in one GraphQL query through `gh`, so a long history costs one request.
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, SystemTime};
 
 use rune::{Image, ImageCache};
+use serde_json::Value;
 
 use crate::graph;
 
@@ -15,6 +17,11 @@ use crate::graph;
 const MISS_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 /// The size fetched: sharp at the side panel's 44 pt on a 2× screen.
 const PIXELS: u32 = 96;
+/// Pictures downloaded at once.
+const DOWNLOADS: usize = 8;
+/// Commits asked about in one query; each is one field, and GitHub's queries stay cheap well
+/// past this.
+const PER_QUERY: usize = 100;
 
 struct Job {
     email: String,
@@ -35,12 +42,13 @@ pub struct Avatars {
 
 impl Avatars {
     /// Looks pictures up on one worker; `deliver` hands each result back to the UI thread.
-    pub fn start(&mut self, cache: ImageCache, deliver: impl Fn(String, Option<Vec<u8>>) + Send + 'static) {
+    pub fn start(&mut self, cache: ImageCache, deliver: impl Fn(String, Option<Vec<u8>>) + Send + Sync + 'static) {
         let (tx, rx) = mpsc::channel::<Job>();
         std::thread::spawn(move || {
-            for job in rx {
-                let bytes = resolve(&job);
-                deliver(job.email, bytes);
+            while let Ok(first) = rx.recv() {
+                // Every job waiting goes together, to ask GitHub about their commits at once.
+                let jobs: Vec<Job> = std::iter::once(first).chain(rx.try_iter()).collect();
+                resolve(jobs, &deliver);
             }
         });
         self.cache = Some(cache);
@@ -78,23 +86,60 @@ impl Avatars {
     }
 }
 
-/// The picture's bytes: from the disk cache, else looked up and saved. A failed lookup (no
+/// Each job's picture: from the disk cache, else looked up and saved. A failed lookup (no
 /// network, rate limited) saves nothing, so a later session asks again.
-fn resolve(job: &Job) -> Option<Vec<u8>> {
-    let file = cache_file(&job.email)?;
-    if let Ok(meta) = std::fs::metadata(&file) {
-        if meta.len() > 0 {
-            return std::fs::read(&file).ok();
-        }
-        // An empty file: GitHub had no account for this email, recently.
-        if meta.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < MISS_FOR) {
-            return None;
+fn resolve(jobs: Vec<Job>, deliver: &(impl Fn(String, Option<Vec<u8>>) + Sync)) {
+    let mut ask: Vec<(Job, PathBuf)> = Vec::new();
+    for job in jobs {
+        match cache_file(&job.email) {
+            Some(file) => match cached(&file) {
+                Some(bytes) => deliver(job.email, bytes),
+                None => ask.push((job, file)),
+            },
+            None => deliver(job.email, None),
         }
     }
-    let found = noreply_url(&job.email).map(Some).or_else(|| job.repo.as_deref().and_then(|r| commit_avatar(r, &job.sha)))?;
-    let bytes = match found {
+    // Where each picture is: a no-reply address names its account, else GitHub names the one
+    // behind the author's commit, a query per repository.
+    let mut found: Vec<Option<Option<String>>> = ask.iter().map(|(j, _)| noreply_url(&j.email).map(Some)).collect();
+    let mut repos: Vec<&str> = ask.iter().zip(&found).filter(|(_, f)| f.is_none()).filter_map(|((j, _), _)| j.repo.as_deref()).collect();
+    repos.sort_unstable();
+    repos.dedup();
+    for repo in repos {
+        let unknown: Vec<usize> = (0..ask.len()).filter(|&i| found[i].is_none() && ask[i].0.repo.as_deref() == Some(repo)).collect();
+        for part in unknown.chunks(PER_QUERY) {
+            let shas: Vec<&str> = part.iter().map(|&i| ask[i].0.sha.as_str()).collect();
+            for (&i, url) in part.iter().zip(commit_avatars(repo, &shas)) {
+                found[i] = url;
+            }
+        }
+    }
+    let lookups: Vec<_> = ask.into_iter().zip(found).collect();
+    for part in lookups.chunks(DOWNLOADS) {
+        std::thread::scope(|t| {
+            for ((job, file), found) in part {
+                t.spawn(move || deliver(job.email.clone(), found.as_ref().and_then(|url| save(file, url.as_deref()))));
+            }
+        });
+    }
+}
+
+/// The cached picture: `Some(None)` when GitHub had no account for the email recently, `None`
+/// when it's to be looked up.
+fn cached(file: &Path) -> Option<Option<Vec<u8>>> {
+    let meta = std::fs::metadata(file).ok()?;
+    if meta.len() > 0 {
+        return Some(std::fs::read(file).ok());
+    }
+    // An empty file: GitHub had no account for this email, recently.
+    meta.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < MISS_FOR).then_some(None)
+}
+
+/// Download the picture at `url` into `file`, or with no `url`, note there's none.
+fn save(file: &Path, url: Option<&str>) -> Option<Vec<u8>> {
+    let bytes = match url {
         Some(url) => {
-            let out = Command::new("curl").args(["-sfL", "--max-time", "15", &url]).output().ok()?;
+            let out = Command::new("curl").args(["-sfL", "--max-time", "15", url]).output().ok()?;
             if !out.status.success() || out.stdout.is_empty() {
                 return None;
             }
@@ -103,7 +148,7 @@ fn resolve(job: &Job) -> Option<Vec<u8>> {
         None => Vec::new(),
     };
     let _ = std::fs::create_dir_all(file.parent()?);
-    let _ = std::fs::write(&file, &bytes);
+    let _ = std::fs::write(file, &bytes);
     (!bytes.is_empty()).then_some(bytes)
 }
 
@@ -124,30 +169,46 @@ fn noreply_url(email: &str) -> Option<String> {
     })
 }
 
-/// The avatar of the account GitHub links `sha` to: `Some(None)` when it links none, `None`
-/// when GitHub couldn't be asked. `gh` is signed in, with a far higher rate limit; without it,
-/// the public API.
-fn commit_avatar(repo: &str, sha: &str) -> Option<Option<String>> {
-    let path = format!("repos/{repo}/commits/{sha}");
-    let url = match Command::new("gh").args(["api", &path, "--jq", ".author.avatar_url // \"\""]).output() {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-        Ok(_) => return None,
-        Err(_) => {
-            let out = Command::new("curl").args(["-sf", "--max-time", "15", "-H", "Accept: application/vnd.github+json", &format!("https://api.github.com/{path}")]).output().ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let body = String::from_utf8_lossy(&out.stdout).replace(": ", ":");
-            // The commit's own `author` holds no avatar, so the first is the account's, unless
-            // GitHub linked no account (`"author":null`) and it's the committer's.
-            if body.contains("\"author\":null") {
-                String::new()
-            } else {
-                body.split_once("\"avatar_url\":\"").and_then(|(_, rest)| rest.split_once('"')).map(|(u, _)| u.to_owned())?
+/// The avatars of the accounts GitHub links each of `shas` to: `Some(None)` when it links none,
+/// `None` when GitHub couldn't be asked or doesn't have the commit. With `gh`, signed in, one
+/// GraphQL query for them all; without it, the public API, a request each, limited to 60 an
+/// hour, so the first refusal stops the rest.
+fn commit_avatars(repo: &str, shas: &[&str]) -> Vec<Option<Option<String>>> {
+    let mut urls = vec![None; shas.len()];
+    let Some((owner, name)) = repo.split_once('/') else { return urls };
+    let Some(gh) = crate::github::find("gh") else {
+        for (url, sha) in urls.iter_mut().zip(shas) {
+            *url = public_avatar(repo, sha);
+            if url.is_none() {
+                break;
             }
         }
+        return urls;
     };
-    Some((!url.is_empty()).then(|| format!("{url}{}s={PIXELS}", if url.contains('?') { '&' } else { '?' })))
+    let fields: String = shas.iter().enumerate().map(|(i, sha)| format!("c{i}:object(oid:\"{sha}\"){{...on Commit{{author{{user{{avatarUrl(size:{PIXELS})}}}}}}}}")).collect();
+    let query = format!("query($owner:String!,$name:String!){{repository(owner:$owner,name:$name){{{fields}}}}}");
+    let Ok(out) = Command::new(gh).args(["api", "graphql", "-f", &format!("owner={owner}"), "-f", &format!("name={name}"), "-f", &format!("query={query}")]).env("GH_PROMPT_DISABLED", "1").output() else { return urls };
+    // A commit GitHub hasn't got fails its field alone, and `gh` exits with an error, but the rest still answer.
+    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return urls };
+    for (i, url) in urls.iter_mut().enumerate() {
+        let author = &v["data"]["repository"][format!("c{i}")]["author"];
+        if author.is_object() {
+            *url = Some(author["user"]["avatarUrl"].as_str().map(str::to_owned));
+        }
+    }
+    urls
+}
+
+/// `commit_avatars` for one commit, through the public API.
+fn public_avatar(repo: &str, sha: &str) -> Option<Option<String>> {
+    let out = Command::new("curl").args(["-sf", "--max-time", "15", "-H", "Accept: application/vnd.github+json", &format!("https://api.github.com/repos/{repo}/commits/{sha}")]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    // `author` is the account GitHub linked the commit's email to, or null.
+    let url = v["author"]["avatar_url"].as_str();
+    Some(url.map(|u| format!("{u}{}s={PIXELS}", if u.contains('?') { '&' } else { '?' })))
 }
 
 #[cfg(test)]
