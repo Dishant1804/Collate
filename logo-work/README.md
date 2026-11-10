@@ -14,4 +14,4 @@ node logo-work/variants/draw.mjs
 node logo-work/variants/present.mjs
 ```
 
-Application assets have not been replaced. Installed Dock testing and production exports remain pending.
+`assets/icon.svg` is the Graphite finish; `scripts/bundle.sh` renders it into the app icon.
