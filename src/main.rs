@@ -1911,6 +1911,10 @@ fn paths_file(name: &str) -> Option<PathBuf> {
 }
 
 fn load_paths(name: &str) -> Vec<PathBuf> {
+    // Tests start from empty lists, whatever the reader has starred or opened.
+    if cfg!(test) {
+        return Vec::new();
+    }
     let text = paths_file(name).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     text.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).collect()
 }
