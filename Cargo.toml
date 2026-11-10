@@ -21,6 +21,8 @@ tree-sitter = "0.27"
 tree-sitter-highlight = "0.27"
 # The type a compiled grammar's entry point is wrapped in to become a language.
 tree-sitter-language = "0.1"
+# Reads the GitHub CLI's JSON for pull requests (src/github.rs); Rune already builds it.
+serde_json = "1"
 # Opens a compiled grammar.
 libloading = "0.8"
 

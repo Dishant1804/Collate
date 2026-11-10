@@ -10,6 +10,7 @@
 mod avatars;
 mod diff;
 mod git;
+mod github;
 mod grammars;
 mod graph;
 mod map;
