@@ -481,6 +481,8 @@ struct Collate {
     history_query: TextEdit,
     found: Vec<search::Found>,
     found_pick: usize,
+    /// The staging panel's lists folded to their titles, by key ("unstaged", "staged").
+    folded_lists: HashSet<&'static str>,
 }
 
 /// What the toolbar's search looks through: the diff's lines, the Map's files, or History's
@@ -544,6 +546,7 @@ fn init() -> Collate {
         history_query: TextEdit::new(""),
         found: Vec::new(),
         found_pick: 0,
+        folded_lists: HashSet::new(),
         jumping: false,
         jump: String::new(),
         jump_pick: 0,
@@ -3045,30 +3048,55 @@ const COLUMN_TOP: f32 = 6.0;
 type Bulk<'a> = (&'a str, fn(&mut Collate));
 
 /// One list of the staging panel: a header with its count and its bulk action, then the
-/// files. A row's trailing button stages or unstages that file at once.
-fn file_section(k: &Kit, key: &str, title: &str, count: usize, bulk: Option<Bulk>, list: El, empty: &str) -> El {
+/// files. A row's trailing button stages or unstages that file at once. `(key, title)` names
+/// it; its title folds it.
+fn file_section(s: &Collate, k: &Kit, (key, title): (&'static str, &str), count: usize, bulk: Option<Bulk>, list: El, empty: &str) -> El {
+    let folded = s.folded_lists.contains(key);
+    // The title, its count and a disclosure chevron; a click anywhere up to the bulk action folds the list to its title or opens it.
+    let toggle = row()
+        .key(format!("{key}-toggle"))
+        .grow(1.0)
+        .h_full()
+        .gap(4.0)
+        .items_center()
+        .cursor(Cursor::Pointer)
+        .role("button")
+        .label(title.to_owned())
+        .description(format!("{count} files"))
+        .expanded(!folded)
+        .help(if folded { "Show the list" } else { "Fold the list to its title" })
+        .on_press(move |s: &mut Collate| {
+            if !s.folded_lists.remove(key) {
+                s.folded_lists.insert(key);
+            }
+        })
+        // Set as the sidebar sets "Working Copy", so the two columns' titles read as one kind.
+        .child(text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).a11y_hidden())
+        .child(text(count.to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint).a11y_hidden())
+        // The file tree's chevron, turned as it turns its folders'.
+        .child(icon(k.glyph.chevron_down, 16.0).key("disclosure").color(k.c.icon_faint).icon_rotation(if folded { -std::f32::consts::FRAC_PI_2 } else { 0.0 }).motion(k.motion.control).a11y_hidden());
     let mut head = row()
         .key(format!("{key}-head"))
         .w_full()
         // As tall as a sidebar row, so the first title is level with the sidebar's first row.
         .h(28.0)
         .px(PANEL_INSET)
-        .gap(4.0)
         .items_center()
-        // Set as the sidebar sets "Working Copy", so the two columns' titles read as one kind.
-        .child(text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted))
-        .child(text(count.to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint))
-        .child(row().grow(1.0));
+        .child(toggle);
     if let Some((label, f)) = bulk.filter(|_| count > 0) {
         // A ghost button pads its label; pull it out by that much so the label, not the
         // invisible box, ends on the panel's edge with the filter above it.
         head = head.child(Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(f).build(k).key(format!("{key}-bulk")).mr(-GHOST_PAD));
     }
+    // Folded, a list is its title alone and gives its space to the other.
+    if folded {
+        return col().key(key.to_owned()).w_full().motion(k.motion.disclosure).child(head);
+    }
     // An empty list says so in one line and gives its space to the list that has files.
     if count == 0 {
         return col().key(key.to_owned()).w_full().child(head).child(row().key(format!("{key}-empty")).w_full().h(28.0).px(PANEL_INSET).items_center().child(text(empty.to_owned()).font(k.ty.text_small).color(k.c.text_faint)));
     }
-    col().key(key.to_owned()).w_full().grow(1.0).min_h(0.0).child(head).child(list)
+    col().key(key.to_owned()).w_full().grow(1.0).min_h(0.0).motion(k.motion.disclosure).child(head).child(list)
 }
 
 /// A file list for the staging panel. `quick` is the row button: stage (`true`) or unstage.
@@ -3153,13 +3181,13 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).mb(-4.0).child(filter.w_full()));
     p = match s.scope {
         Scope::Uncommitted => p
-            .child(file_section(k, "unstaged", "Unstaged Files", unstaged_n, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged"))
+            .child(file_section(s, k, ("unstaged", "Unstaged Files"), unstaged_n, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged"))
             .child(col().key("between").w_full().h(1.0).fill(k.c.border_weak))
-            .child(file_section(k, "staged", "Staged Files", staged_n, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged yet"))
+            .child(file_section(s, k, ("staged", "Staged Files"), staged_n, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged yet"))
             .child(commit_box(s, k)),
-        Scope::Unstaged => p.child(file_section(k, "unstaged", "Unstaged Files", all, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged")).child(commit_box(s, k)),
-        Scope::Staged => p.child(file_section(k, "staged", "Staged Files", all, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged")).child(commit_box(s, k)),
-        Scope::Branch | Scope::History => p.child(file_section(k, "changed", "Changed Files", all, None, file_list(s, k, false, None), "No files changed")),
+        Scope::Unstaged => p.child(file_section(s, k, ("unstaged", "Unstaged Files"), all, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged")).child(commit_box(s, k)),
+        Scope::Staged => p.child(file_section(s, k, ("staged", "Staged Files"), all, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged")).child(commit_box(s, k)),
+        Scope::Branch | Scope::History => p.child(file_section(s, k, ("changed", "Changed Files"), all, None, file_list(s, k, false, None), "No files changed")),
     };
     p
 }
@@ -5128,6 +5156,19 @@ mod tests {
         rt.update(|s, _| s.settings.motion = Motion::Default);
         rt.frame(1.0 / 60.0);
         assert_eq!(rt.time_scale, 1.0);
+    }
+
+    #[test]
+    fn staged_and_unstaged_fold_to_their_titles() {
+        let mut rt = loaded();
+        let tall = |rt: &Runtime<Collate>, key: &str| rt.presented(key).map(|p| p.0[3]).unwrap_or_else(|| panic!("{key} is drawn"));
+        assert!(rt.find("src/chevron").is_some(), "the unstaged list shows its files");
+        click(&mut rt, "unstaged-toggle");
+        assert!(rt.state.folded_lists.contains("unstaged"));
+        assert!(rt.find("src/chevron").is_none(), "folded, its rows are gone");
+        assert!((tall(&rt, "unstaged") - 28.0).abs() < 0.5, "and it's its title alone");
+        click(&mut rt, "unstaged-toggle");
+        assert!(rt.find("src/chevron").is_some(), "a second click opens it again");
     }
 
     #[test]
