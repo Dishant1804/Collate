@@ -130,3 +130,81 @@ pub fn line_to(file: &FileDiff, h: usize, r: usize, a: usize, target: &str, reve
     let picked: Vec<bool> = (0..hunk.lines.len()).map(|i| i == r || i == a).collect();
     lines(&f, h, Some(&picked), reverse)
 }
+
+/// Which side of a conflict to keep.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Keep {
+    Ours,
+    Theirs,
+    Both,
+}
+
+/// `text` with its conflicts settled: each `<<<<<<<` … `=======` … `>>>>>>>` block (with or
+/// without diff3's `|||||||` base) replaced by the side kept. With `within`, only the blocks
+/// starting on those lines (1-based, inclusive) are settled; the rest stay as they are.
+/// Returns the text and how many blocks it settled.
+pub fn resolve(text: &str, keep: Keep, within: Option<(u32, u32)>) -> (String, usize) {
+    #[derive(PartialEq)]
+    enum At {
+        Outside,
+        Ours,
+        Base,
+        Theirs,
+    }
+    let mut out = String::with_capacity(text.len());
+    let (mut ours, mut theirs, mut block) = (String::new(), String::new(), String::new());
+    let mut at = At::Outside;
+    let mut settle = false;
+    let mut settled = 0;
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        let n = i as u32 + 1;
+        let marker = |m: &str| line.starts_with(m) && line[m.len()..].chars().next().is_none_or(|c| c == ' ' || c == '\n' || c == '\r');
+        match at {
+            At::Outside if marker("<<<<<<<") => {
+                at = At::Ours;
+                settle = within.is_none_or(|(a, b)| (a..=b).contains(&n));
+                block.clear();
+                ours.clear();
+                theirs.clear();
+                block.push_str(line);
+            }
+            At::Outside => out.push_str(line),
+            At::Ours | At::Base if marker("=======") => {
+                at = At::Theirs;
+                block.push_str(line);
+            }
+            At::Ours if marker("|||||||") => {
+                at = At::Base;
+                block.push_str(line);
+            }
+            At::Theirs if marker(">>>>>>>") => {
+                at = At::Outside;
+                block.push_str(line);
+                if settle {
+                    settled += 1;
+                    if keep != Keep::Theirs {
+                        out.push_str(&ours);
+                    }
+                    if keep != Keep::Ours {
+                        out.push_str(&theirs);
+                    }
+                } else {
+                    out.push_str(&block);
+                }
+            }
+            _ => {
+                block.push_str(line);
+                match at {
+                    At::Ours => ours.push_str(line),
+                    At::Theirs => theirs.push_str(line),
+                    _ => {}
+                }
+            }
+        }
+    }
+    // A block left open (no closing marker) stays as written.
+    if at != At::Outside {
+        out.push_str(&block);
+    }
+    (out, settled)
+}

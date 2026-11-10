@@ -263,6 +263,8 @@ struct FileInfo {
     in_base: bool,
     /// What "viewed" remembers: the path and its new side.
     new_hash: u64,
+    /// A merge left conflict markers in it.
+    conflicted: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -973,6 +975,39 @@ impl Collate {
         self.after_discard(result, format!("Discarded {path}"));
     }
 
+    /// Settles the conflicts of file `f` (those in hunk `h` alone, when given) by keeping one
+    /// side or both. The working file is backed up first, and a file settled whole is staged,
+    /// which marks it resolved.
+    fn resolve(&mut self, f: usize, h: Option<usize>, keep: patch::Keep) {
+        let Some((file, _)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        let within = h.and_then(|h| file.hunks.get(h)).map(|h| (h.new_start, h.new_start + h.new_count.max(1) - 1));
+        let Some(repo) = current_repo() else { return };
+        let side = match keep {
+            patch::Keep::Ours => "ours",
+            patch::Keep::Theirs => "theirs",
+            patch::Keep::Both => "both sides",
+        };
+        let result = repo.backup(&path).and_then(|backup| {
+            if h.is_none() && keep != patch::Keep::Both {
+                return repo.take_side(&path, side).map(|_| backup);
+            }
+            let full = repo.root.join(&path);
+            let text = std::fs::read_to_string(&full).map_err(|e| format!("{path}: {e}"))?;
+            let (text, n) = patch::resolve(&text, keep, within);
+            if n == 0 {
+                return Err(format!("No conflict markers {} {path}", if h.is_some() { "in this hunk of" } else { "in" }));
+            }
+            std::fs::write(&full, text).map_err(|e| format!("{path}: {e}"))?;
+            if h.is_none() {
+                repo.stage(&path)?;
+            }
+            Ok(backup)
+        });
+        let what = if h.is_some() { "this conflict" } else { "every conflict" };
+        self.after_discard(result, format!("Kept {side} for {what} in {path}"));
+    }
+
     /// Ask before a discard: it changes the working tree.
     fn ask_discard(&mut self, f: usize, hunk: Option<usize>) {
         if hunk.is_some() && self.settings.ignore_whitespace {
@@ -1150,7 +1185,7 @@ impl Collate {
         self.hidden = hidden;
         let changes = snap.changes;
         let hashes: Vec<u64> = changes.iter().map(|c| c.hash).collect();
-        let info: Vec<FileInfo> = changes.iter().map(|c| FileInfo { staged: c.staged, in_base: c.old.is_some(), new_hash: c.new_hash }).collect();
+        let info: Vec<FileInfo> = changes.iter().map(|c| FileInfo { staged: c.staged, in_base: c.old.is_some(), new_hash: c.new_hash, conflicted: c.conflicted }).collect();
         // Staging can change what a file's actions offer without changing its two sides.
         let staging_moved = info.iter().map(|i| i.staged).ne(self.info.iter().map(|i| i.staged));
         self.info = info;
@@ -1548,6 +1583,22 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
         );
     }
     let staged = s.info.get(f).map_or(Staged::No, |i| i.staged);
+    if s.info.get(f).is_some_and(|i| i.conflicted) && !s.scope.read_only() {
+        // A merge stopped on this file: settle it with a side, both, or by hand and mark it.
+        let keep = |key: &str, label: &str, help: &str, how: patch::Keep| action(k, key, label, help, false, move |s| s.resolve(f, None, how));
+        r = r.child(row().key("conflict").h(20.0).px(6.0).mr(4.0).items_center().radius(4.0).fill(k.alpha(k.c.danger.fg, 0.14))
+                .help("A merge couldn't combine both sides' changes here. Keep a side, both, or edit it and mark it resolved.")
+                .child(text("Conflict").font(k.ty.text_xsmall_medium).color(k.c.danger.fg)))
+            .child(keep("ours", "Use Ours", "Keep this branch's version of the whole file, and mark it resolved", patch::Keep::Ours))
+            .child(keep("theirs", "Use Theirs", "Keep the incoming version of the whole file, and mark it resolved", patch::Keep::Theirs))
+            .child(keep("both", "Use Both", "Keep both sides of every conflict, ours first, and mark it resolved", patch::Keep::Both))
+            .child(action(k, "resolved", "Mark Resolved", "Stage the file as it is now", false, move |s| s.stage_file(f)));
+        let more_key = format!("file-more-{f}");
+        let anchor = more_key.clone();
+        let more = IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).label("More actions for this file").help("More actions")
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.file_menu(f, &anchor, tx)).build(k).key(more_key);
+        return r.child(more).child(viewed_toggle(k, f, s.is_viewed(f)));
+    }
     let primary = match s.scope {
         Scope::Uncommitted if staged == Staged::Fully => Some(action(k, "unstage", "Unstage File", "Unstage the whole file (U)", false, move |s| s.unstage_file(f))),
         Scope::Uncommitted | Scope::Unstaged => Some(action(k, "stage", "Stage File", "Stage the whole file (A)", false, move |s| s.stage_file(f))),
@@ -1581,6 +1632,15 @@ fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
         return r.child(text("Whitespace hidden: stage whole files").font(k.ty.text_small).color(k.c.text_faint));
     }
     let staged = s.info.get(f).map_or(Staged::No, |i| i.staged);
+    let conflict = s.info.get(f).is_some_and(|i| i.conflicted)
+        && s.diff.files().get(f).and_then(|file| file.hunks.get(h)).is_some_and(|hunk| hunk.lines.iter().any(|l| l.text.starts_with("<<<<<<<")));
+    if conflict && s.scope != Scope::Staged {
+        let keep = |key: &str, label: &str, help: &str, how: patch::Keep| action(k, key, label, help, false, move |s| s.resolve(f, Some(h), how));
+        return r
+            .child(keep("ours", "Ours", "Keep this branch's side of the conflicts in this hunk", patch::Keep::Ours))
+            .child(keep("theirs", "Theirs", "Keep the incoming side of the conflicts in this hunk", patch::Keep::Theirs))
+            .child(keep("both", "Both", "Keep both sides of the conflicts in this hunk, ours first", patch::Keep::Both));
+    }
     // With lines selected in this hunk, its actions act on them alone.
     let lines = s.picked(f, h).is_some();
     let (st, un, di) = if lines { ("Stage Lines", "Unstage Lines", "Discard Lines…") } else { ("Stage Hunk", "Unstage Hunk", "Discard Hunk…") };

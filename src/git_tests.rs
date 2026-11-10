@@ -470,3 +470,32 @@ fn remotes_give_their_web_pages() {
     assert_eq!(web_url("ssh://git@example.com:2222/ada/repo.git").as_deref(), Some("https://example.com/ada/repo"));
     assert_eq!(web_url("/local/path/repo"), None);
 }
+
+#[test]
+fn conflicts_settle_by_side_by_block_or_both() {
+    let text = "a\n<<<<<<< HEAD\nours 1\n=======\ntheirs 1\n>>>>>>> other\nb\n<<<<<<< HEAD\nours 2\n||||||| base\nbase 2\n=======\ntheirs 2\n>>>>>>> other\nc\n";
+    assert_eq!(patch::resolve(text, patch::Keep::Ours, None), ("a\nours 1\nb\nours 2\nc\n".to_owned(), 2));
+    assert_eq!(patch::resolve(text, patch::Keep::Theirs, None), ("a\ntheirs 1\nb\ntheirs 2\nc\n".to_owned(), 2));
+    assert_eq!(patch::resolve(text, patch::Keep::Both, None).0, "a\nours 1\ntheirs 1\nb\nours 2\ntheirs 2\nc\n");
+    // Only the block starting on line 8 is settled.
+    let (second, n) = patch::resolve(text, patch::Keep::Theirs, Some((7, 14)));
+    assert_eq!(n, 1);
+    assert!(second.starts_with("a\n<<<<<<< HEAD\n") && second.ends_with("b\ntheirs 2\nc\n"));
+    // An unclosed block is left as written.
+    assert_eq!(patch::resolve("x\n<<<<<<< HEAD\ny\n", patch::Keep::Ours, None), ("x\n<<<<<<< HEAD\ny\n".to_owned(), 0));
+
+    let (dir, r) = repo("conflict", &[("a.txt", "one\n")]);
+    sh(&dir, &["switch", "-qc", "other"]);
+    write(&dir, "a.txt", "theirs\n");
+    sh(&dir, &["commit", "-qam", "theirs"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    write(&dir, "a.txt", "ours\n");
+    sh(&dir, &["commit", "-qam", "ours"]);
+    let merge = Command::new("git").arg("-C").arg(&dir).args(["merge", "-q", "other"]).output().unwrap();
+    assert!(!merge.status.success(), "the merge stops on the conflict");
+    let changes = snapshot(&r, Scope::Uncommitted);
+    assert!(changes[0].conflicted && changes[0].path == "a.txt");
+    r.take_side("a.txt", "theirs").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "theirs\n");
+    assert!(!snapshot(&r, Scope::Uncommitted)[0].conflicted, "staged, so resolved");
+}

@@ -71,6 +71,9 @@ pub struct Change {
     pub generated: bool,
     /// Unchanged since the last snapshot: the sides hold no text, the diff is in the cache.
     pub reused: bool,
+    /// Both sides of a merge changed it and git couldn't combine them: the working file holds
+    /// conflict markers.
+    pub conflicted: bool,
 }
 
 impl Change {
@@ -173,6 +176,7 @@ struct Plan {
     /// Whether `old` and `new` name content that can't change under the same name (blob ids,
     /// commits), so the identity is safe to remember.
     stable: bool,
+    conflicted: bool,
 }
 
 impl Repo {
@@ -296,7 +300,7 @@ impl Repo {
                         (_, _, b'.') => Staged::Fully,
                         _ => Staged::Partly,
                     };
-                    Plan { path: e.path, orig: e.orig, old, new, staged, untracked: e.untracked, stable: !conflicted }
+                    Plan { path: e.path, orig: e.orig, old, new, staged, untracked: e.untracked, stable: !conflicted, conflicted }
                 })
                 .collect()
         };
@@ -332,6 +336,7 @@ impl Repo {
                 staged: Staged::No,
                 untracked: false,
                 stable: true,
+                conflicted: false,
             })
             .collect())
     }
@@ -391,7 +396,7 @@ impl Repo {
                 let r = memo.files[&p.path];
                 // Known: which sides exist and the hashes; no text (the diff is cached).
                 let blank = |has: bool| has.then(|| Blob::Text(String::new()));
-                out.push(Change { path: p.path, old_path: p.orig, old: blank(r.has_old), new: blank(r.has_new), hash: r.hash, staged: p.staged, untracked: p.untracked, new_hash: r.new_hash, generated, reused: true });
+                out.push(Change { path: p.path, old_path: p.orig, old: blank(r.has_old), new: blank(r.has_new), hash: r.hash, staged: p.staged, untracked: p.untracked, new_hash: r.new_hash, generated, reused: true, conflicted: p.conflicted });
                 continue;
             }
             let (old, git_new) = std::mem::take(&mut read[i]);
@@ -417,7 +422,7 @@ impl Repo {
                     memo.files.remove(&p.path);
                 }
             }
-            out.push(Change { path: p.path, old_path: p.orig, old, new, hash, staged: p.staged, untracked: p.untracked, new_hash, generated, reused: false });
+            out.push(Change { path: p.path, old_path: p.orig, old, new, hash, staged: p.staged, untracked: p.untracked, new_hash, generated, reused: false, conflicted: p.conflicted });
         }
         Ok(out)
     }
@@ -651,6 +656,12 @@ impl Repo {
     pub fn commit(&self, message: &str) -> Result<String, String> {
         self.run(&["commit", "-q", "-F", "-"], Some(message))?;
         self.run(&["log", "-1", "--format=%h %s"], None)
+    }
+
+    /// Settles a conflicted file with one side's version, `ours` or `theirs`, and stages it.
+    pub fn take_side(&self, path: &str, side: &str) -> Result<(), String> {
+        self.run(&["checkout", &format!("--{side}"), "--", path], None)?;
+        self.stage(path)
     }
 
     pub fn merge_base(&self, base: &str) -> Result<String, String> {
