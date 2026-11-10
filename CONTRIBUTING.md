@@ -43,7 +43,13 @@ with many changed files under `src/`.
 
 | Path | What |
 |---|---|
-| `src/main.rs` | App state (`Collate`), every view outside the diff, keys, the watcher thread, the view tests |
+| `src/main.rs` | App state (`Collate`) and the views outside the diff without a file of their own |
+| `src/keys.rs` | What each key does |
+| `src/watcher.rs` | The watcher thread: it notices changes, rereads the repository and diffs the files |
+| `src/history_view.rs` | History: the commit graph, the commit card and header |
+| `src/settings_view.rs` | The settings panel |
+| `src/comments.rs` | The reader's comments on lines |
+| `src/view_tests.rs` | The view tests |
 | `src/git.rs` | Everything that runs `git`: status, snapshots, staging, discard, commit |
 | `src/patch.rs` | Building the patches that stage or discard hunks, lines and words |
 | `src/diff/` | The diff itself: model and parsing, Myers diff, row state, drawing |

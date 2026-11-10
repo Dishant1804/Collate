@@ -1,6 +1,6 @@
 ---
 name: ui-change
-description: Use when changing how Collate looks - layout, spacing, type, colours, controls, or any view function in src/main.rs, src/map_view.rs or src/diff/view.rs.
+description: Use when changing how Collate looks - layout, spacing, type, colours, controls, or any view function in src/main.rs, src/history_view.rs, src/settings_view.rs, src/comments.rs, src/map_view.rs or src/diff/view.rs.
 ---
 
 # Changing Collate's UI

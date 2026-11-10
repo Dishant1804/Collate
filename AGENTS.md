@@ -25,7 +25,10 @@ install failed; a `cargo build` alone doesn't update the app.
 
 ## Layout
 
-- `src/main.rs`: app state (`Collate`), views outside the diff, keys, the watcher thread, view tests.
+- `src/main.rs`: app state (`Collate`) and the views outside the diff that have no file of
+  their own. `src/keys.rs`: keys. `src/watcher.rs`: the watcher thread and `prepare`.
+- `src/history_view.rs`, `src/settings_view.rs`: History's graph and commit card, the settings
+  panel. `src/comments.rs`: the reader's comments. `src/view_tests.rs`: the view tests.
 - `src/git.rs`: every `git` call. `src/patch.rs`: patches for staging hunks, lines, words.
 - `src/diff/`: `model.rs` (files, hunks, parsing), `myers.rs` (line and word diff),
   `state.rs` (rows, folds, selection), `view.rs` (drawing).
