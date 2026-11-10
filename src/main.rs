@@ -5402,6 +5402,64 @@ mod tests {
         assert!(!rt.state.terminals.open && rt.state.terminals.list.len() == 1, "⌘J again hides it; the shell keeps running");
     }
 
+    /// Frames while a shell floods the terminal with coloured lines, every row changing.
+    /// `cargo test --release bench_terminal_frames -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_terminal_frames() {
+        let mut rt = loaded();
+        rt.update(|s, _| {
+            s.terminals.connect(std::sync::Arc::new(|_, _| {}));
+            s.terminals.height = 600.0;
+            s.new_terminal();
+        });
+        for _ in 0..10 {
+            rt.frame(1.0 / 60.0);
+        }
+        let id = rt.state.terminals.list[0].id;
+        // What the shell's thread sends the app when output lands.
+        let wake = move |rt: &mut Runtime<Collate>| {
+            rt.update(move |s, tx| {
+                s.terminals.event(id, alacritty_terminal::event::Event::Wakeup, tx);
+            })
+        };
+        // The prompt drawn first, as on any open.
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        wake(&mut rt);
+        rt.frame(1.0 / 60.0);
+        // A keystroke, then its frame, as typing goes.
+        let mut keys = Vec::new();
+        for c in "echo typing".chars() {
+            let t = std::time::Instant::now();
+            rt.key(KeyEvent { key: Key::Text(c.to_string()), mods: Default::default() });
+            rt.frame(1.0 / 60.0);
+            keys.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        keys.sort_by(f64::total_cmp);
+        eprintln!("keystroke to frame: median {:.2} ms, max {:.2} ms", keys[keys.len() / 2], keys[keys.len() - 1]);
+        rt.key(KeyEvent { key: Key::Text("u".into()), mods: rune::Mods { ctrl: true, ..Default::default() } });
+        // Every line different, as real output is, so no frame reuses another's shaped text.
+        let flood = "awk 'BEGIN{for(i=0;i<300000;i++) printf \"\\033[31mred \\033[1;32mgreen\\033[0m plain \\033[44mblue bg\\033[0m %d %d\\n\", i, i*7}'\r";
+        for c in flood.chars() {
+            let key = if c == '\r' { Key::Enter } else { Key::Text(c.to_string()) };
+            rt.key(KeyEvent { key, mods: Default::default() });
+        }
+        rt.frame(1.0 / 60.0);
+        let mut times = Vec::new();
+        for _ in 0..240 {
+            std::thread::sleep(std::time::Duration::from_millis(4));
+            wake(&mut rt);
+            let t = std::time::Instant::now();
+            rt.frame(1.0 / 60.0);
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(f64::total_cmp);
+        let shown = rt.state.terminals.list[0].shown();
+        assert!(shown.contains("blue bg"), "the flood was running:\n{shown}");
+        let rows = shown.lines().count();
+        eprintln!("terminal frames, {rows} rows: median {:.2} ms, p90 {:.2} ms, max {:.2} ms", times[times.len() / 2], times[times.len() * 9 / 10], times[times.len() - 1]);
+    }
+
     #[test]
     fn search_options_narrow_the_matches() {
         let mut rt = loaded();
