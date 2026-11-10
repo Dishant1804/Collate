@@ -70,6 +70,8 @@ pub struct PullsState {
     pub connecting: Option<&'static str>,
     /// Each press of Connect; a wait for an earlier one ends quietly.
     pub connect_try: u32,
+    /// The list's groups folded to their titles, by title.
+    pub folded: HashSet<&'static str>,
 }
 
 impl Default for PullsState {
@@ -91,6 +93,8 @@ impl Default for PullsState {
             asking: None,
             connecting: None,
             connect_try: 0,
+            // Finished pull requests are there to look back on, not to act on.
+            folded: HashSet::from(["Merged", "Closed"]),
         }
     }
 }
@@ -598,9 +602,24 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
                 if group.is_empty() {
                     continue;
                 }
+                // A click anywhere on the title folds the group to it or opens it again.
+                let folded = s.pulls.folded.contains(title);
                 list = list.child(row().key(format!("group-{title}")).w_full().h(28.0).px(EDGE).gap(6.0).items_center().mt(8.0)
-                    .child(text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted))
-                    .child(text(group.len().to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint)));
+                    .cursor(Cursor::Pointer).role("button").label(title.to_owned()).description(format!("{} pull requests", group.len())).expanded(!folded)
+                    .help(if folded { "Show the group" } else { "Fold the group to its title" })
+                    .on_press(move |s: &mut Collate| {
+                        if !s.pulls.folded.remove(title) {
+                            s.pulls.folded.insert(title);
+                        }
+                    })
+                    .child(text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).a11y_hidden())
+                    .child(text(group.len().to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint).grow(1.0).a11y_hidden())
+                    // The staging panel's chevron, turned as it turns; its glyph, not its box, on the edge.
+                    .child(icon(k.glyph.chevron_down, 16.0).key("disclosure").mr(-4.0).color(k.c.icon_faint)
+                        .icon_rotation(if folded { -std::f32::consts::FRAC_PI_2 } else { 0.0 }).motion(k.motion.control).a11y_hidden()));
+                if folded {
+                    continue;
+                }
                 for p in group {
                     let n = p.number;
                     let fetching = s.pulls.fetching == Some(n);

@@ -6353,9 +6353,14 @@ mod tests {
             s.pulls.open = true;
         });
         rt.frame(1.0 / 60.0);
-        for key in ["pulls", "group-Review Requested", "group-Yours", "group-Everyone Else", "pull-7", "pull-8", "pull-9"] {
+        for key in ["pulls", "group-Review Requested", "group-Yours", "group-Everyone Else", "group-Merged", "pull-7", "pull-8", "pull-9"] {
             assert!(rt.find(key).is_some(), "{key}");
         }
+        assert!(rt.find("pull-6").is_none(), "the merged start folded");
+        click(&mut rt, "group-Merged");
+        click(&mut rt, "group-Yours");
+        assert!(rt.find("pull-6").is_some() && rt.find("pull-8").is_none(), "a group's title folds and opens it");
+        click(&mut rt, "group-Yours");
         assert_eq!(rt.state.pulls.asked(), 1, "the sidebar counts what asks for the reader");
         rt.update(move |s, _| {
             let detail = github::Detail {
