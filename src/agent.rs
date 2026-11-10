@@ -177,7 +177,6 @@ impl Collate {
             .item(PopupItem::new("ask:commit-rules", "Edit Commit Message Instructions…"))
     }
 
-    /// Acts on an item of [`Collate::agent_menu`]; other ids do nothing.
     /// The agent to run, with its instructions to edit, under the sidebar's agent row.
     pub fn agent_picker(&mut self, tx: &mut Tx) {
         let mut menu = PopupMenu::new();
@@ -186,9 +185,15 @@ impl Collate {
         }
         menu = menu.separator()
             .item(PopupItem::new("ask:edit", "Edit Review Questions…"))
-            .item(PopupItem::new("ask:commit-rules", "Edit Commit Message Instructions…"));
+            .item(PopupItem::new("ask:commit-rules", "Edit Commit Message Instructions…"))
+            .separator()
+            .item(PopupItem::new("settings", "Agent Settings…"));
         tx.popup_menu(menu, "agent-pick", |s: &mut Collate, picked, _| match picked.and_then(|p| p.strip_prefix("agent:")).and_then(|i| i.parse::<usize>().ok()) {
             Some(i) => s.configure(|c| c.agent = Agent::ALL[i]),
+            None if picked == Some("settings") => {
+                s.screen = crate::Screen::Settings;
+                s.settings_tab = crate::settings_view::AGENT_TAB;
+            }
             None => {
                 if let Some(id) = picked {
                     s.agent_menu_pick(id);
@@ -197,6 +202,7 @@ impl Collate {
         });
     }
 
+    /// Acts on an item of [`Collate::agent_menu`]; other ids do nothing.
     pub fn agent_menu_pick(&mut self, id: &str) {
         match id.strip_prefix("ask:") {
             Some("all") => self.ask_checklist(None),

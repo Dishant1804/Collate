@@ -1400,6 +1400,16 @@ fn the_agent_has_its_own_sidebar_section_and_picker() {
         rt.frame(1.0 / 60.0);
     }
     assert!(rt.find("agent-settle").is_some(), "a diverged branch has something to settle");
+    click(&mut rt, "agent-pick");
+    rt.resolve_popup(Some("settings")).unwrap();
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!((rt.state.screen, rt.state.settings_tab), (Screen::Settings, crate::settings_view::AGENT_TAB), "the picker opens the Agent settings");
+    for key in ["agent", "agent-runs", "edit-questions", "edit-commit-rules"] {
+        assert!(rt.find(key).is_some(), "{key} in the Agent settings");
+    }
+    assert!(rt.find("tab-agent").is_some());
 }
 
 #[test]

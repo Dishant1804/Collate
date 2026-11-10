@@ -6,7 +6,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit, SegmentedControl
 use crate::diff::DiffMode;
 use crate::git::Scope;
 use crate::settings::{Agent, CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
-use crate::{ADD_PROJECT, ALL_ICON, Collate, Screen, current_repo, grammars, lucide, project_labels, tilde, update};
+use crate::{ADD_PROJECT, AGENT_ICON, ALL_ICON, Collate, Screen, current_repo, grammars, lucide, project_labels, tilde, update};
 
 /// The width every settings control is right-aligned in, so each description wraps at the
 /// same measure and rows of the same kind come out the same height.
@@ -66,6 +66,21 @@ fn languages_settings(s: &Collate, k: &Kit) -> Vec<El> {
         rows.push(row().key(format!("lang-{}", g.id)).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(button)));
     }
     rows
+}
+
+/// The Agent section: which agent CLI Collate hands work to, how it runs it, and the files
+/// that tell it what to ask and how to write.
+fn agent_settings(s: &Collate, k: &Kit) -> Vec<El> {
+    let st = &s.settings;
+    let edit = |key: &'static str, pick: &'static str| Button::new("Edit…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Open the file in the editor from Review settings").on_press(move |s: &mut Collate| s.agent_menu_pick(pick)).build(k).key(key);
+    let runs = format!("{} in the terminal under the diff (⌘J); {} for what it fills in, like a commit message", st.agent.command(), st.agent.print_command());
+    vec![
+        setting(k, "agent", "Coding agent", &[], "Gets your comments, review questions, commit messages and conflicts; it never pushes", pick(k, &Agent::ALL.map(Agent::title), &Agent::ALL, st.agent, |c, v| c.agent = v)),
+        setting(k, "agent-runs", "Runs as", &[], &runs, row()),
+        setting(k, "agent-checkpoint", "Checkpoint first", &[], "The working tree is saved before the agent starts, to restore from Checkpoints in the sidebar", row()),
+        setting(k, "agent-questions", "Review questions", &[], "What Review Change asks about the change in view, one a line", edit("edit-questions", "ask:edit")),
+        setting(k, "agent-commit", "Commit message instructions", &[], "How the agent writes a message from the staged diff", edit("edit-commit-rules", "ask:commit-rules")),
+    ]
 }
 
 /// The Updates section: the running version and how it stands, then how updates come.
@@ -128,7 +143,7 @@ fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
     Switch::new(on).standard().label(title.to_owned()).hide_label().on_toggle(move |s: &mut Collate| s.configure(|c| set(c, !on))).build(&kk)
 }
 
-pub const SETTINGS_TABS: [&str; 7] = ["Appearance", "Diff", "Languages", "Review", "Projects", "Refresh", "Updates"];
+pub const SETTINGS_TABS: [&str; 8] = ["Appearance", "Diff", "Languages", "Review", "Agent", "Projects", "Refresh", "Updates"];
 lucide!(APPEARANCE_ICON, "collate-palette", r#"<path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>"#);
 lucide!(LANGUAGES_ICON, "collate-languages", r#"<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>"#);
 lucide!(REVIEW_ICON, "collate-eye", r#"<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>"#);
@@ -136,9 +151,11 @@ lucide!(PROJECTS_ICON, "collate-folder-git", r#"<circle cx="12" cy="13" r="2"/><
 lucide!(REFRESH_TAB_ICON, "collate-refresh-cw", r#"<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>"#);
 lucide!(UPDATES_ICON, "collate-download", r#"<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>"#);
 /// Each settings section's Lucide icon, in `SETTINGS_TABS` order.
-static SETTINGS_ICONS: [&Icon; 7] = [&APPEARANCE_ICON, &ALL_ICON, &LANGUAGES_ICON, &REVIEW_ICON, &PROJECTS_ICON, &REFRESH_TAB_ICON, &UPDATES_ICON];
+static SETTINGS_ICONS: [&Icon; 8] = [&APPEARANCE_ICON, &ALL_ICON, &LANGUAGES_ICON, &REVIEW_ICON, &AGENT_ICON, &PROJECTS_ICON, &REFRESH_TAB_ICON, &UPDATES_ICON];
+/// The Agent section, which the sidebar's agent menu opens.
+pub const AGENT_TAB: usize = 4;
 /// The Projects section, which has its own Add button.
-const PROJECTS_TAB: usize = 4;
+const PROJECTS_TAB: usize = 5;
 
 /// Settings as a floating panel over the review: sections down the left, the chosen one's
 /// settings on the right, on one surface. Esc, the close button or a click outside put it
@@ -173,13 +190,13 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         3 => vec![
             setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "PR Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
             setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
-            setting(k, "agent", "Coding agent", &[], "Runs in the terminal under the diff when you send it comments", pick(k, &Agent::ALL.map(Agent::title), &Agent::ALL, st.agent, |c, v| c.agent = v)),
             setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
             setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
             setting(k, "notify", "Review requests", &[], "A notification when someone asks for your review, checked every few minutes", switch(k, "Review requests", st.notify_reviews, |c, v| c.notify_reviews = v)),
             setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
             setting(k, "order", "Source files first", &[], "Then tests, then lockfiles and generated files", switch(k, "Source files first", st.source_first, |c, v| c.source_first = v)),
         ],
+        AGENT_TAB => agent_settings(s, k),
         PROJECTS_TAB => {
             let labels = project_labels(&s.projects);
             let mut rows: Vec<El> = s
@@ -202,7 +219,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             }
             rows
         }
-        5 => vec![
+        6 => vec![
             setting(k, "auto", "Watch for changes", &[], "Reread when files change on disk", switch(k, "Watch for changes", st.auto_refresh, |c, v| c.auto_refresh = v)),
             setting(k, "every", "Check every", &[], "Only when file events aren't available", pick(k, &["0.5 s", "1 s", "2 s", "5 s"], &REFRESH_MS, st.refresh_ms, |c, v| c.refresh_ms = v)),
         ],
