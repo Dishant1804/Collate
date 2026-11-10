@@ -66,6 +66,7 @@ pub struct DiffView<S> {
     hunk: Option<Rc<dyn Fn(&S, usize, usize) -> El>>,
     on_visible_file: Option<Rc<dyn Fn(&mut S, usize)>>,
     images: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
+    comments: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
 }
 
 impl<S: 'static> DiffView<S> {
@@ -79,6 +80,7 @@ impl<S: 'static> DiffView<S> {
             hunk: None,
             on_visible_file: None,
             images: None,
+            comments: None,
         }
     }
 
@@ -106,6 +108,13 @@ impl<S: 'static> DiffView<S> {
     /// [`IMAGE_H`](super::IMAGE_H) high; `version` changes whenever what it draws does.
     pub fn images(mut self, version: u64, f: impl Fn(&S, usize) -> El + 'static) -> Self {
         self.images = Some((version, Rc::new(f)));
+        self
+    }
+
+    /// Draws comment `n` (see [`DiffState::set_comments`]) under its line; `version` changes
+    /// whenever what any comment draws does.
+    pub fn comments(mut self, version: u64, f: impl Fn(&S, usize) -> El + 'static) -> Self {
+        self.comments = Some((version, Rc::new(f)));
         self
     }
 
@@ -371,6 +380,10 @@ impl<S: 'static> View<S> {
                     None => memo(key, (self.look.version, st.rev, st.view_width().to_bits(), 0u64), || self.note(st, f as usize)),
                 }
             }
+            Row::Comment { n, .. } => match &self.d.comments {
+                Some((version, draw)) => memo(key, (self.look.version, st.rev, st.view_width().to_bits(), *version), || draw(s, n as usize)),
+                None => row(),
+            },
             // A hunk's actions read app state, so those rows build every commit; there are few.
             Row::Gap { f, gap } if self.d.hunk.is_some() => self.gap(s, st, f as usize, gap as usize),
             Row::Gap { f, gap } => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.gap(s, st, f as usize, gap as usize)),

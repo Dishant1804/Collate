@@ -302,6 +302,17 @@ enum Ask {
     Branch(Option<String>),
     /// A new stash's message.
     Stash,
+    /// A comment on a line, or a new text for comment `n`.
+    Comment(diff::Anchor, Option<usize>),
+}
+
+/// A note the reader left on a line. Comments stay on this Mac, per project.
+#[derive(Clone, Debug, PartialEq)]
+struct Comment {
+    at: diff::Anchor,
+    body: String,
+    /// Seconds since 1970.
+    time: i64,
 }
 
 /// A repository change that throws work away, waiting for the reader to confirm it.
@@ -430,6 +441,11 @@ struct Collate {
     refs: Vec<String>,
     /// The names of the two ends of the range History shows, when it shows one.
     compared: Option<(String, String)>,
+    /// The reader's comments on lines, which of them the diff shows (their line is in it), and
+    /// a count that moves when they change.
+    comments: Vec<Comment>,
+    comments_shown: Vec<bool>,
+    comments_version: u64,
     /// A file's blame, and a file's history, while shown.
     blame: Option<(String, Vec<git::Blamed>)>,
     file_log: Option<(String, Vec<graph::Commit>)>,
@@ -519,8 +535,12 @@ fn init() -> Collate {
         compared: None,
         blame: None,
         file_log: None,
+        comments: Vec::new(),
+        comments_shown: Vec::new(),
+        comments_version: 0,
     };
     s.viewed = load_viewed();
+    s.comments = load_comments();
     if s.scope == Scope::History {
         s.load_history();
     }
@@ -583,6 +603,8 @@ impl Collate {
         self.hashes.clear();
         self.info.clear();
         self.viewed = load_viewed();
+        self.comments = load_comments();
+        self.place_comments();
         self.stale.clear();
         self.seen.clear();
         self.hidden = 0;
@@ -819,6 +841,17 @@ impl Collate {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
             Ask::Branch(at) => self.act_bg("Creating the branch…", move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
+            Ask::Comment(_, Some(n)) if name.is_empty() => self.delete_comment(n),
+            Ask::Comment(..) if name.is_empty() => {}
+            Ask::Comment(at, edit) => {
+                let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                let c = Comment { at, body: name, time };
+                match edit.filter(|&n| n < self.comments.len()) {
+                    Some(n) => self.comments[n] = c,
+                    None => self.comments.push(c),
+                }
+                self.store_comments();
+            }
         }
     }
 
@@ -906,6 +939,54 @@ impl Collate {
     fn ask(&mut self, what: Ask) {
         self.prompt = Some(what);
         self.prompt_text = TextEdit::new("");
+    }
+
+    /// Starts a comment under the selected line (the last, when several are).
+    fn ask_comment(&mut self) {
+        let Some(sel) = self.diff.selection() else {
+            self.say("Click a line number first: the comment goes under that line", true);
+            return;
+        };
+        let Some(file) = self.diff.files().get(sel.file) else { return };
+        let Some(text) = self.diff.side_line(sel.file, sel.end.side, sel.end.line) else { return };
+        let at = diff::Anchor { path: file.path().to_owned(), side: sel.end.side, line: sel.end.line, text: text.to_owned() };
+        self.ask(Ask::Comment(at, None));
+    }
+
+    fn edit_comment(&mut self, n: usize) {
+        let Some(c) = self.comments.get(n) else { return };
+        self.prompt = Some(Ask::Comment(c.at.clone(), Some(n)));
+        self.prompt_text = TextEdit::new(c.body.clone());
+    }
+
+    fn delete_comment(&mut self, n: usize) {
+        if n < self.comments.len() {
+            self.comments.remove(n);
+            self.store_comments();
+        }
+    }
+
+    /// Saves the comments and puts them under their lines again.
+    fn store_comments(&mut self) {
+        if let Err(e) = save_comments(&self.comments) {
+            self.say(format!("Couldn't save the comments: {e}"), true);
+        }
+        self.place_comments();
+    }
+
+    fn place_comments(&mut self) {
+        let anchors: Vec<diff::Anchor> = self.comments.iter().map(|c| c.at.clone()).collect();
+        self.comments_shown = self.diff.set_comments(&anchors);
+        self.comments_version += 1;
+    }
+
+    /// Every comment as Markdown, each under its file, line and the line's text, to paste
+    /// into a pull request or a message.
+    fn copy_comments(&mut self, tx: &mut Tx) {
+        let md: String = self.comments.iter().map(|c| format!("**{}:{}**\n\n> {}\n\n{}\n\n", c.at.path, c.at.line, c.at.text.trim(), c.body.trim())).collect();
+        tx.copy(md.trim_end().to_owned());
+        let n = self.comments.len();
+        self.say(format!("Copied {n} comment{} as Markdown", if n == 1 { "" } else { "s" }), false);
     }
 
     fn confirm_risky(&mut self) {
@@ -1203,6 +1284,8 @@ impl Collate {
             .item(PopupItem::new("collapse", "Collapse All Files"))
             .item(PopupItem::new("expand", "Expand All Files"))
             .separator()
+            .item(PopupItem::new("comments", format!("Copy {} Comment{} as Markdown", self.comments.len(), if self.comments.len() == 1 { "" } else { "s" })).enabled(!self.comments.is_empty()))
+            .separator()
             .item(PopupItem::new("reread", "Reread Repository"))
             .item(PopupItem::new("add", "Add Local Project…"))
             .separator()
@@ -1217,6 +1300,7 @@ impl Collate {
             Some("reread") => {
                 refresh();
             }
+            Some("comments") => s.copy_comments(tx),
             Some("add") => s.add_project(),
             Some("keys") => s.show_help = true,
             Some("settings") => s.screen = Screen::Settings,
@@ -1554,6 +1638,7 @@ impl Collate {
         }
         self.images = images;
         self.diff.set_files_folded(files, &folded);
+        self.place_comments();
         self.build_lists(&changes);
         // The map's sizes and imports follow the working tree.
         if self.map.open {
@@ -1650,13 +1735,73 @@ impl Collate {
 /// Where this repository's viewed marks are kept, so they survive a restart:
 /// `~/Library/Application Support/Collate/viewed/<hash of the repository's path>`.
 fn viewed_file() -> Option<PathBuf> {
+    project_data("viewed")
+}
+
+/// The open project's file of `kind` (viewed marks, comments) in Collate's support folder.
+fn project_data(kind: &str) -> Option<PathBuf> {
     use std::hash::{Hash, Hasher};
     let repo = current_repo()?;
     let root = &repo.root;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     root.hash(&mut h);
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(format!("Library/Application Support/Collate/viewed/{:016x}", h.finish())))
+    Some(PathBuf::from(home).join(format!("Library/Application Support/Collate/{kind}/{:016x}", h.finish())))
+}
+
+/// A field of the comments file: tabs, breaks and backslashes written as escapes.
+fn escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+}
+
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some(o) => out.push(o),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// The comments file: one comment a line, `path, o|n, line, time, line text, comment` split
+/// by tabs.
+fn comments_text(comments: &[Comment]) -> String {
+    comments.iter().map(|c| {
+        let side = if c.at.side == diff::Side::Old { "o" } else { "n" };
+        format!("{}\t{side}\t{}\t{}\t{}\t{}\n", escape(&c.at.path), c.at.line, c.time, escape(&c.at.text), escape(&c.body))
+    }).collect()
+}
+
+fn parse_comments(text: &str) -> Vec<Comment> {
+    text.lines().filter_map(|l| {
+        let f: Vec<&str> = l.split('\t').collect();
+        let [path, side, line, time, text, body] = f[..] else { return None };
+        let side = if side == "o" { diff::Side::Old } else { diff::Side::New };
+        Some(Comment { at: diff::Anchor { path: unescape(path), side, line: line.parse().ok()?, text: unescape(text) }, body: unescape(body), time: time.parse().ok()? })
+    }).collect()
+}
+
+fn load_comments() -> Vec<Comment> {
+    project_data("comments").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| parse_comments(&t)).unwrap_or_default()
+}
+
+fn save_comments(comments: &[Comment]) -> Result<(), String> {
+    // Tests run against throwaway repositories; they leave the reader's comments alone.
+    if cfg!(test) {
+        return Ok(());
+    }
+    let path = project_data("comments").ok_or("no project is open")?;
+    path.parent().map(std::fs::create_dir_all).transpose().map_err(|e| e.to_string())?;
+    std::fs::write(&path, comments_text(comments)).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// `~/Library/Application Support/Collate/projects`: one repository path per line, most
@@ -1971,7 +2116,11 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
 /// A hunk header's controls: its likely action, Discard after it with less weight (it asks
 /// first), and Pick Words when one line pair is selected.
 fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
-    let r = row().gap(2.0).items_center();
+    let mut r = row().gap(2.0).items_center();
+    // A comment, in any view, on the lines picked in this hunk.
+    if s.picked(f, h).is_some() || s.diff.selection().is_some_and(|sel| sel.file == f && s.diff.current_hunk() == Some((f, h))) {
+        r = r.child(action(k, "comment", "Comment…", "Comment on the selected line (c)", false, |s| s.ask_comment()));
+    }
     if s.scope.read_only() {
         return r;
     }
@@ -2117,11 +2266,12 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         };
         col().key("empty").w_full().grow(1.0).min_h(0.0).child(summary(s, k, layer)).child(message(k, if s.hidden > 0 { "Only low-signal files changed" } else { "No changes" }, why))
     } else {
-        let (fk, hk, ik) = (k.clone(), k.clone(), k.clone());
+        let (fk, hk, ik, ck) = (k.clone(), k.clone(), k.clone(), k.clone());
         // Images draw again as each finishes decoding.
         let decoded = s.images.values().filter(|i| i.is_ready()).count() as u64;
         let diff = DiffView::new(|s: &Collate| &s.diff, |s: &mut Collate| &mut s.diff)
             .images(decoded * 4096 + s.images.len() as u64, move |s: &Collate, f| image_row(s, &ik, f))
+            .comments(s.comments_version, move |s: &Collate, n| comment_row(s, &ck, n))
             .header_actions(move |s: &Collate, f| file_actions(s, &fk, f))
             .hunk_actions(move |s: &Collate, f, h| hunk_actions(s, &hk, f, h))
             .dim(|s: &Collate, f| s.is_viewed(f))
@@ -2155,6 +2305,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("p", "With one line and its replacement picked: pick single word changes"),
             ("A  U  X", "Stage, unstage, discard the whole file in view"),
             ("v", "Mark the file viewed"),
+            ("c", "Comment on the selected line"),
             ("o", "Open the file in your editor"),
             ("⌘F", "Search the diff: type, ⏎ next match, ⇧⏎ previous, esc done"),
             ("n  N  ⌘G", "Next / previous search match"),
@@ -2264,6 +2415,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
+            Ask::Comment(_, None) => ("Comment", "Comments stay on this Mac. Copy them as Markdown from the summary to share them.", "Comment", "Write a comment"),
+            Ask::Comment(_, Some(_)) => ("Edit comment", "An empty comment is deleted.", "Save", "Write a comment"),
         };
         let field = TextInput::new(&s.prompt_text)
             .placeholder(placeholder)
@@ -2273,7 +2426,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k)
             .key("prompt-field")
             .w_full();
-        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_));
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None));
         let buttons = row()
             .key("prompt-buttons")
             .w_full()
@@ -2775,6 +2928,22 @@ fn avatar(k: &Kit, s: &Collate, c: &graph::Commit, size: f32) -> El {
         .child(text(if initials.is_empty() { "?".to_owned() } else { initials }).font(if size >= 40.0 { k.ty.text_small_medium } else if size >= 24.0 { k.ty.text_xsmall_medium } else { rune::TextStyle { size: 9.0, line_height: 12.0, ..k.ty.text_xsmall_medium } }).color(k.c.text_base))
 }
 
+/// A comment under its line: what it says, when, and the way to change or delete it.
+fn comment_row(s: &Collate, k: &Kit, n: usize) -> El {
+    let Some(c) = s.comments.get(n) else { return row() };
+    let head = row().w_full().gap(8.0).items_center()
+        .child(text("Comment".to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted))
+        .child(text(day(c.time)).font(k.ty.text_small).color(k.c.text_faint).grow(1.0))
+        .child(action(k, "edit", "Edit", "Change this comment", false, move |s| s.edit_comment(n)))
+        .child(action(k, "delete", "Delete", "Delete this comment", true, move |s| s.delete_comment(n)).mr(-GHOST_PAD));
+    let bubble = col().key("bubble").w_full().max_w(720.0).px(12.0).py(8.0).gap(4.0).radius(k.radius.md)
+        .border(1.0, k.c.border_weak).fill(k.alpha(k.c.text_accent, 0.06))
+        .child(head)
+        .child(text(c.body.clone()).font(k.ty.text_small).color(k.c.text_base).wrap().w_full());
+    // Under the code, past the line numbers.
+    row().w_full().pl(96.0).pr(EDGE).py(6.0).role("note").label(format!("Comment: {}", c.body)).child(bubble)
+}
+
 /// A changed image: before and after side by side, each at its own size up to what fits.
 fn image_row(s: &Collate, k: &Kit, f: usize) -> El {
     let Some(sides) = s.diff.files().get(f).and_then(|f| f.images.clone()) else { return row() };
@@ -3201,6 +3370,15 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
                 .child(col().size(8.0, 8.0).radius(2.0).fill(k.c.info.icon))
                 .child(text(format!("{moved} moved lines")).font(k.ty.text_small).color(k.c.text_muted)),
         );
+    }
+    if !s.comments.is_empty() {
+        any = true;
+        let (n, away) = (s.comments.len(), s.comments_shown.iter().filter(|&&on| !on).count());
+        let mut note = format!("{n} comment{}", if n == 1 { "" } else { "s" });
+        if away > 0 {
+            note.push_str(&format!(" - {away} on lines not in this view"));
+        }
+        notes = notes.child(chip(k, "comments", &note, "Copy as Markdown", "Copy every comment, with its file, line and the line's text", |s: &mut Collate, tx: &mut Tx| s.copy_comments(tx)));
     }
     if s.settings.ignore_whitespace {
         any = true;
@@ -3640,6 +3818,10 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         "o" => {
             s.open_file(file);
+            true
+        }
+        "c" => {
+            s.ask_comment();
             true
         }
         "v" => {
@@ -4848,6 +5030,39 @@ mod tests {
             s.find();
         });
         assert!(rt.state.search_error.is_some() && rt.state.hits.is_empty(), "a bad pattern says so and finds nothing");
+    }
+
+    #[test]
+    fn a_comment_goes_under_its_line_and_follows_it() {
+        let mut rt = loaded();
+        rt.on_key = Some(on_key);
+        // The first file's changed line 43 (new side), picked as a click on its number does.
+        rt.update(|s, _| s.diff.set_selection(Some(diff::LineRange::line(0, LineRef::new(diff::Side::New, 43)))));
+        rt.key(KeyEvent { key: Key::Text("c".into()), mods: Default::default() });
+        rt.frame(1.0 / 60.0);
+        assert!(matches!(rt.state.prompt, Some(Ask::Comment(_, None))), "c asks for the comment");
+        assert!(rt.find("prompt-field").is_some());
+        rt.update(|s, _| {
+            s.prompt_text = TextEdit::new("Why also?\nSecond line");
+            s.answer_prompt();
+        });
+        assert_eq!(rt.state.comments.len(), 1);
+        assert_eq!(rt.state.comments[0].at.text, "    let value_40 = also changed(40);");
+        assert_eq!(rt.state.comments_shown, [true]);
+        let row = rt.state.diff.rows.iter().position(|r| matches!(r, diff::Row::Comment { .. })).expect("a comment row");
+        assert!(matches!(rt.state.diff.rows[row - 1], diff::Row::Line { .. }), "right under its line");
+        // Lines added above it move it down; it stays with its text.
+        let mut moved = rt.state.comments[0].at.clone();
+        moved.line = 30;
+        rt.update(|s, _| {
+            s.comments[0].at = moved;
+            s.place_comments();
+        });
+        assert_eq!(rt.state.comments_shown, [true], "found by its text near the old number");
+        let text = comments_text(&rt.state.comments);
+        assert_eq!(parse_comments(&text), rt.state.comments, "saved and read back the same, breaks and all");
+        rt.update(|s, _| s.delete_comment(0));
+        assert!(rt.state.diff.rows.iter().all(|r| !matches!(r, diff::Row::Comment { .. })));
     }
 
     #[test]

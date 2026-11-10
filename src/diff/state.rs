@@ -51,6 +51,16 @@ impl LineRange {
     }
 }
 
+/// Where a comment is anchored: a line by its file, side and number, and the line's text, so
+/// it follows the line when edits above move it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub path: String,
+    pub side: Side,
+    pub line: u32,
+    pub text: String,
+}
+
 /// Which way an unchanged range between hunks opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expand {
@@ -93,6 +103,8 @@ impl Default for Style {
 pub(crate) const HEADER_H: f32 = 44.0;
 pub(crate) const GAP_H: f32 = 32.0;
 pub(crate) const NOTE_H: f32 = 40.0;
+/// A comment's row, as estimated before it's laid out.
+const COMMENT_H: f32 = 64.0;
 /// A changed image's row: both sides drawn.
 pub const IMAGE_H: f32 = 280.0;
 
@@ -108,6 +120,8 @@ pub(crate) enum Row {
     Gap { f: u32, gap: u32 },
     /// An unchanged line revealed from a range, by its old and new numbers.
     Ctx { f: u32, old: u32, new: u32 },
+    /// Comment `n` (in the order [`DiffState::set_comments`] took them), under its line.
+    Comment { f: u32, n: u32 },
     /// Line `i` of hunk `h`. In split mode, one without a partner on the other side.
     Line { f: u32, h: u32, i: u32 },
     /// Split mode: removed line `del` beside added line `add`, both of hunk `h`.
@@ -117,7 +131,7 @@ pub(crate) enum Row {
 impl Row {
     pub(crate) fn file(self) -> usize {
         match self {
-            Row::File(f) | Row::Note(f) | Row::Gap { f, .. } | Row::Ctx { f, .. } | Row::Line { f, .. } | Row::Pair { f, .. } => f as usize,
+            Row::File(f) | Row::Note(f) | Row::Gap { f, .. } | Row::Ctx { f, .. } | Row::Comment { f, .. } | Row::Line { f, .. } | Row::Pair { f, .. } => f as usize,
         }
     }
 }
@@ -190,6 +204,9 @@ pub struct DiffState {
     sel_rows: std::cell::Cell<Option<SelRows>>,
     file_rows: Vec<u32>,
     hunk_rows: Vec<u32>,
+    /// Each comment's line as (file, hunk, line in hunk); `None` for one whose line isn't in
+    /// the diff.
+    comments: Vec<Option<(u32, u32, u32)>>,
     /// Bumped whenever the rows change, so built rows rebuild.
     pub(crate) rev: u64,
     /// Changes with `keys`, unique across states so a swapped-in state never matches.
@@ -248,6 +265,7 @@ impl DiffState {
             sel_rows: std::cell::Cell::new(None),
             file_rows: Vec::new(),
             hunk_rows: Vec::new(),
+            comments: Vec::new(),
             rev: 0,
             keys_rev: 0,
             visible_rows: 0..0,
@@ -853,6 +871,7 @@ impl DiffState {
             Row::Note(f) if self.files[f as usize].images.is_some() => IMAGE_H,
             Row::Note(_) => NOTE_H,
             Row::Gap { .. } => GAP_H,
+            Row::Comment { .. } => COMMENT_H,
             _ => self.style.line_h,
         }
     }
@@ -924,10 +943,49 @@ impl DiffState {
         }
     }
 
+    /// Puts comments under their lines: each under the line of that file and side with the
+    /// same text, at the number given or the nearest one to it, so edits above a line don't
+    /// lose its comment. One whose line isn't in the diff (or is folded out of a hunk) isn't
+    /// shown. Returns which ones are.
+    pub fn set_comments(&mut self, anchors: &[Anchor]) -> Vec<bool> {
+        let placed: Vec<Option<(u32, u32, u32)>> = anchors.iter().map(|a| self.anchor(a)).collect();
+        let shown = placed.iter().map(Option::is_some).collect();
+        if placed != self.comments {
+            self.comments = placed;
+            self.rebuild();
+        }
+        shown
+    }
+
+    fn anchor(&self, a: &Anchor) -> Option<(u32, u32, u32)> {
+        let f = self.file_index(&a.path)?;
+        let mut best: Option<(u32, usize, usize)> = None;
+        for (h, hunk) in self.files[f].hunks.iter().enumerate() {
+            for (i, l) in hunk.lines.iter().enumerate() {
+                let Some(n) = l.number(a.side) else { continue };
+                if l.text == a.text && best.is_none_or(|(d, ..)| n.abs_diff(a.line) < d) {
+                    best = Some((n.abs_diff(a.line), h, i));
+                }
+            }
+        }
+        best.map(|(_, h, i)| (f as u32, h as u32, i as u32))
+    }
+
     /// Lay the rows out again from the files, modes and expanded ranges.
     fn rebuild(&mut self) {
         self.rev += 1;
         self.nav = None;
+        let mut under: std::collections::HashMap<(u32, u32, u32), Vec<u32>> = Default::default();
+        for (n, at) in self.comments.iter().enumerate() {
+            if let Some(at) = at {
+                under.entry(*at).or_default().push(n as u32);
+            }
+        }
+        let comments = |rows: &mut Vec<Row>, f: u32, h: u32, lines: &[u32]| {
+            for i in lines {
+                rows.extend(under.get(&(f, h, *i)).into_iter().flatten().map(|&n| Row::Comment { f, n }));
+            }
+        };
         let mut rows = Vec::new();
         self.file_rows.clear();
         self.hunk_rows.clear();
@@ -974,15 +1032,18 @@ impl DiffState {
                         }
                         let (nd, na) = (add - del, i - add);
                         for k in 0..nd.max(na) {
-                            rows.push(match (k < nd, k < na) {
-                                (true, true) => Row::Pair { f: fu, h: hu, del: (del + k) as u32, add: (add + k) as u32 },
-                                (true, false) => Row::Line { f: fu, h: hu, i: (del + k) as u32 },
-                                _ => Row::Line { f: fu, h: hu, i: (add + k) as u32 },
-                            });
+                            let (row, lines) = match (k < nd, k < na) {
+                                (true, true) => (Row::Pair { f: fu, h: hu, del: (del + k) as u32, add: (add + k) as u32 }, vec![(del + k) as u32, (add + k) as u32]),
+                                (true, false) => (Row::Line { f: fu, h: hu, i: (del + k) as u32 }, vec![(del + k) as u32]),
+                                _ => (Row::Line { f: fu, h: hu, i: (add + k) as u32 }, vec![(add + k) as u32]),
+                            };
+                            rows.push(row);
+                            comments(&mut rows, fu, hu, &lines);
                         }
                         continue;
                     }
                     rows.push(Row::Line { f: fu, h: hu, i: i as u32 });
+                    comments(&mut rows, fu, hu, &[i as u32]);
                     i += 1;
                 }
             }
@@ -1025,6 +1086,7 @@ impl DiffState {
         match r {
             Row::File(f) => key(f, "", None),
             Row::Note(f) => key(f, ".note", None),
+            Row::Comment { f, n } => key(f, ".k", Some(n)),
             Row::Gap { f, gap } => key(f, ".g", Some(gap)),
             Row::Ctx { f, old, .. } => key(f, ".c", Some(old)),
             Row::Line { f, h, i } => {
@@ -1100,6 +1162,7 @@ mod tests {
             .map(|&r| match r {
                 Row::File(_) => "file".into(),
                 Row::Note(_) => "note".into(),
+                Row::Comment { n, .. } => format!("comment{n}"),
                 Row::Gap { gap, .. } => format!("gap{gap}:{}", s.hidden(0, gap as usize).unwrap()),
                 Row::Ctx { old, new, .. } => format!("{old}={new}"),
                 Row::Line { .. } | Row::Pair { .. } => {
