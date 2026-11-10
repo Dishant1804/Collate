@@ -9,6 +9,7 @@
 
 mod agent;
 mod avatars;
+mod checkpoints;
 mod comments;
 mod diff;
 mod git;
@@ -221,6 +222,8 @@ enum Risky {
     DeleteTag(String, bool),
     /// `git push --force-with-lease` of the current branch.
     ForcePush,
+    /// Put the working tree back as a checkpoint (its commit and time) had it.
+    RestoreCheckpoint(String, i64),
 }
 
 struct Notice {
@@ -1020,6 +1023,7 @@ impl Collate {
                 r.delete_tag(&name, remote).map(|_| if remote { format!("Deleted {name} here and from origin") } else { format!("Deleted {name}") })
             }),
             Some(Risky::DeleteBranch(name, _)) => self.act_bg("Deleting the branch…", move |r| r.delete_branch(&name).map(|_| format!("Deleted {name}"))),
+            Some(Risky::RestoreCheckpoint(sha, _)) => self.restore_checkpoint(sha),
             None => {}
         }
     }
@@ -1370,6 +1374,7 @@ impl Collate {
             .separator()
             .item(PopupItem::new("comments", format!("Copy {} Comment{} as Markdown", self.comments.len(), if self.comments.len() == 1 { "" } else { "s" })).enabled(!self.comments.is_empty()))
             .submenu("Ask Agent", self.agent_menu())
+            .item(PopupItem::new("checkpoints", "Checkpoints…"))
             .separator()
             .item(PopupItem::new("reread", "Reread Repository"))
             .item(PopupItem::new("add", "Add Local Project…"))
@@ -1389,6 +1394,7 @@ impl Collate {
             Some("add") => s.add_project(),
             Some("keys") => s.show_help = true,
             Some("settings") => s.screen = Screen::Settings,
+            Some("checkpoints") => s.checkpoints_menu(),
             Some(id) => s.agent_menu_pick(id),
             None => {}
         });
@@ -2876,6 +2882,11 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Risky::DeleteTag(name, false) => (format!("Delete {name}?"), "Only here: a pushed tag stays on origin.".to_owned(), "Delete Tag"),
             Risky::DeleteTag(name, true) => (format!("Delete {name} here and from origin?"), "Anyone who fetched it keeps it until they delete it too.".to_owned(), "Delete Tag"),
             Risky::DeleteBranch(name, true) => (format!("Delete {name}?"), format!("Its commits are all in {} already, so nothing is lost.", s.branch), "Delete Branch"),
+            Risky::RestoreCheckpoint(_, time) => (
+                format!("Restore the checkpoint from {}?", day(*time)),
+                "Every file goes back to how it was then, and files made since are removed. Commits and what's staged stay. The files as they are now are saved as a checkpoint first, so you can come back.".to_owned(),
+                "Restore",
+            ),
             Risky::DeleteBranch(name, false) => (
                 format!("Delete {name}?"),
                 format!("It has commits that aren't in {}. Once it's deleted they're only in git's reflog, for a while.", s.branch),

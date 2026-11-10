@@ -233,23 +233,43 @@ impl Collate {
     }
 
     /// Starts the agent in a new terminal in the project's folder, with `prompt` as its first
-    /// message. The prompt goes through a file, so the shell neither echoes nor parses it.
+    /// message, after saving the working tree as a checkpoint to come back to. The prompt goes
+    /// through a file, so the shell neither echoes nor parses it.
     pub fn run_agent(&mut self, prompt: &str) {
         let Some(repo) = current_repo() else {
             self.say("Open a project first", true);
             return;
         };
+        if !self.terminals.ready() {
+            self.say("The terminal isn't ready yet", true);
+            return;
+        }
         let file = std::env::temp_dir().join(format!("collate-prompt-{}-{}.md", std::process::id(), self.terminals.next_id()));
         if let Err(e) = std::fs::write(&file, prompt) {
             self.say(format!("Couldn't write the prompt to {}: {e}", file.display()), true);
             return;
         }
         let agent = self.settings.agent;
-        let command = agent_command(agent.command(), &file);
-        match self.terminals.run(&repo.root, &command) {
-            Ok(()) => self.say(format!("Started {} in the terminal", agent.title()), false),
-            Err(e) => self.say(e, true),
-        }
+        let first = prompt.split(['.', '\n']).next().unwrap_or("").chars().take(60).collect::<String>();
+        let label = format!("Before {}: {first}", agent.title());
+        let start = move |s: &mut Collate, saved: Result<String, String>| {
+            if let Err(e) = saved {
+                return s.say(format!("Didn't start {}: couldn't save a checkpoint first: {e}", agent.title()), true);
+            }
+            match s.terminals.run(&repo.root, &agent_command(agent.command(), &file)) {
+                Ok(()) => s.say(format!("Started {} in the terminal; Checkpoints in the ⋯ menu go back to before it", agent.title()), false),
+                Err(e) => s.say(e, true),
+            }
+        };
+        let Some(app) = HANDLE.get().cloned() else {
+            let saved = current_repo().map_or(Err("no project".into()), |r| r.checkpoint(&label));
+            return start(self, saved);
+        };
+        let r = current_repo();
+        std::thread::spawn(move || {
+            let saved = r.map_or(Err("no project".into()), |r| r.checkpoint(&label));
+            app.update(move |s, _| start(s, saved));
+        });
     }
 
     /// The hunk header's Copy menu, anchored at its `copy-sel` button.

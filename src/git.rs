@@ -647,7 +647,13 @@ impl Repo {
 /// command and reports git's own message when it refuses.
 impl Repo {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+        self.run_env(args, stdin, &[])
+    }
+
+    /// [`Repo::run`] with environment variables set, as `GIT_INDEX_FILE`.
+    fn run_env(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &Path)]) -> Result<String, String> {
         let mut c = Command::new("git");
+        c.envs(env.iter().map(|(k, v)| (k, v)));
         // No terminal to ask on: a fetch or push that needs a password fails instead of waiting.
         // Nor an editor: continuing a merge or rebase keeps the message git prepared.
         c.arg("-C").arg(&self.root).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true").stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -792,6 +798,63 @@ impl Repo {
         }
         self.run(&args, Some(message))?;
         self.run(&["log", "-1", "--format=%h %s"], None)
+    }
+
+    /// The whole working tree as a commit on HEAD, untracked files too (not ignored ones),
+    /// without moving HEAD, the index or a file: it's staged into a throwaway copy of the index.
+    pub fn snapshot_tree(&self, message: &str) -> Result<String, String> {
+        let index = PathBuf::from(self.run(&["rev-parse", "--path-format=absolute", "--git-path", "index"], None)?);
+        let temp = index.with_file_name(format!("collate-index-{}-{:?}", std::process::id(), std::thread::current().id()));
+        // A copy, not an empty one: git trusts its saved file times and rereads only what changed.
+        if index.exists() {
+            std::fs::copy(&index, &temp).map_err(|e| format!("couldn't copy the index: {e}"))?;
+        }
+        let tree = self.run_env(&["add", "-A"], None, &[("GIT_INDEX_FILE", &temp)]).and_then(|_| self.run_env(&["write-tree"], None, &[("GIT_INDEX_FILE", &temp)]));
+        let _ = std::fs::remove_file(&temp);
+        let tree = tree?;
+        let mut args = vec!["commit-tree", tree.as_str(), "-m", message];
+        let head = self.run(&["rev-parse", "--verify", "-q", "HEAD"], None).ok();
+        if let Some(h) = &head {
+            args.extend(["-p", h.as_str()]);
+        }
+        self.run(&args, None)
+    }
+
+    /// Saves the working tree as a checkpoint named `label`, under `refs/collate/checkpoints`
+    /// so it outlives garbage collection; returns its commit.
+    pub fn checkpoint(&self, label: &str) -> Result<String, String> {
+        let sha = self.snapshot_tree(label)?;
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        self.run(&["update-ref", &format!("refs/collate/checkpoints/{secs}-{}", &sha[..12.min(sha.len())]), &sha], None)?;
+        Ok(sha)
+    }
+
+    /// The checkpoints, newest first: commit, seconds since 1970, label.
+    pub fn checkpoints(&self) -> Result<Vec<(String, i64, String)>, String> {
+        let out = self.run(&["for-each-ref", "--sort=-committerdate", "--format=%(objectname)%09%(committerdate:unix)%09%(subject)", "refs/collate/checkpoints"], None)?;
+        Ok(out.lines().filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            Some((f.next()?.to_owned(), f.next()?.parse().ok()?, f.next().unwrap_or("").to_owned()))
+        }).collect())
+    }
+
+    /// Puts the working tree back as checkpoint `sha` had it, after saving it as it is now as
+    /// another checkpoint (returned), so the restore can be undone. HEAD and the index stay:
+    /// what was staged shows as changed again if the files differ from it.
+    pub fn restore_checkpoint(&self, sha: &str) -> Result<String, String> {
+        let now = self.checkpoint("Before restoring a checkpoint")?;
+        // Files made since the checkpoint go; git restore only writes the checkpoint's own.
+        let added = self.run(&["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", sha, &now], None)?;
+        for path in added.split('\0').filter(|p| !p.is_empty()) {
+            match std::fs::remove_file(self.root.join(path)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("couldn't remove {path}: {e}")),
+                _ => {}
+            }
+        }
+        if !self.run(&["ls-tree", "-r", "--name-only", sha], None)?.is_empty() {
+            self.run(&["restore", "--source", sha, "--worktree", "--", ":/"], None)?;
+        }
+        Ok(now)
     }
 
     /// What a commit would record: the staged diff against HEAD, or with `amend` against the
@@ -1222,6 +1285,50 @@ mod tests {
         assert_eq!((e[0].index, e[0].worktree), (b'.', b'M'));
         assert_eq!((e[1].index, e[1].worktree), (b'A', b'.'));
         assert!(e[2].untracked);
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_the_tree_and_restoring_it_puts_it_back() {
+        let dir = std::env::temp_dir().join(format!("collate-checkpoint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["config", "commit.gpgsign", "false"]] {
+            git(args);
+        }
+        std::fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "init"]);
+        // Mine: an edit, staged, and a new file git doesn't track yet.
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        git(&["add", "a.txt"]);
+        std::fs::write(dir.join("new.txt"), "mine\n").unwrap();
+        std::fs::write(dir.join("ignored.txt"), "keep\n").unwrap();
+        let repo = Repo::open(&dir).unwrap();
+        let (head, status) = (git(&["rev-parse", "HEAD"]), git(&["status", "--porcelain"]));
+        let cp = repo.checkpoint("Before the agent").unwrap();
+        assert_eq!((git(&["rev-parse", "HEAD"]), git(&["status", "--porcelain"])), (head.clone(), status.clone()), "nothing moved");
+        assert_eq!(repo.checkpoints().unwrap(), [(cp.clone(), repo.checkpoints().unwrap()[0].1, "Before the agent".to_owned())]);
+        assert_eq!(git(&["show", &format!("{cp}:new.txt")]), "mine\n", "untracked files are kept");
+        assert!(Command::new("git").arg("-C").arg(&dir).args(["cat-file", "-e", &format!("{cp}:ignored.txt")]).output().unwrap().status.code() != Some(0), "ignored ones aren't");
+        // The agent's: edits, a deletion, a file of its own.
+        std::fs::write(dir.join("a.txt"), "agent\n").unwrap();
+        std::fs::remove_file(dir.join("new.txt")).unwrap();
+        std::fs::write(dir.join("made.txt"), "agent\n").unwrap();
+        let before = repo.restore_checkpoint(&cp).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "two\n");
+        assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), "mine\n");
+        assert!(!dir.join("made.txt").exists(), "what came after is gone");
+        assert!(dir.join("ignored.txt").exists());
+        assert_eq!((git(&["rev-parse", "HEAD"]), git(&["status", "--porcelain"])), (head, status), "the index as it was, so the status too");
+        assert_eq!(git(&["show", &format!("{before}:made.txt")]), "agent\n", "the restore saved what it replaced");
+        assert_eq!(repo.checkpoints().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

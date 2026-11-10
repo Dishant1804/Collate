@@ -160,6 +160,11 @@ impl Terminals {
         self.list.get(self.active)
     }
 
+    /// Whether shells can start: the app has connected their events.
+    pub fn ready(&self) -> bool {
+        self.sink.is_some()
+    }
+
     /// The id the next shell will have: unique for this run of the app.
     pub fn next_id(&self) -> u64 {
         self.next

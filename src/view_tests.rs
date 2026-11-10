@@ -1363,6 +1363,25 @@ fn the_agent_writes_a_commit_message_only_for_what_is_staged() {
 }
 
 #[test]
+fn checkpoints_are_in_the_more_menu_and_restoring_one_asks_first() {
+    let mut rt = loaded();
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "more");
+    assert!(rt.popup_menu().expect("the more menu").find("checkpoints").is_some());
+    rt.resolve_popup(None).unwrap();
+    rt.update(|s, _| s.risky = Some(Risky::RestoreCheckpoint("0123456789".into(), 1_700_000_000)));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("risky-ok").is_some());
+    rt.update(|s, _| s.risky = None);
+    // Without a terminal the agent doesn't start, so no checkpoint is saved for it.
+    rt.update(|s, _| s.run_agent("Fix it."));
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error));
+    assert!(rt.state.terminals.list.is_empty());
+}
+
+#[test]
 fn a_changed_png_is_drawn_not_called_binary() {
     // A 1×1 PNG, then another.
     let png = |byte: u8| -> Vec<u8> {
