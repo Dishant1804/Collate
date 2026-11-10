@@ -472,6 +472,22 @@ fn remotes_give_their_web_pages() {
 }
 
 #[test]
+fn blame_names_the_commit_of_each_line() {
+    let (dir, r) = repo("blame", &[("a.txt", "one\ntwo\n")]);
+    write(&dir, "a.txt", "one\nTWO\nthree\n");
+    sh(&dir, &["commit", "-qam", "second"]);
+    write(&dir, "a.txt", "one\nTWO\nthree\nfour\n");
+    let at_head = r.blame("a.txt", Some("HEAD")).unwrap();
+    assert_eq!(at_head.iter().map(|b| (b.summary.as_str(), b.text.as_str())).collect::<Vec<_>>(), [("init", "one"), ("second", "TWO"), ("second", "three")]);
+    assert_eq!(at_head[0].author, "t");
+    let now = r.blame("a.txt", None).unwrap();
+    assert_eq!(now.len(), 4);
+    assert!(now[3].id.bytes().all(|b| b == b'0'), "an uncommitted line has no commit");
+    let log = r.file_log("a.txt").unwrap();
+    assert_eq!(log.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["second", "init"]);
+}
+
+#[test]
 fn a_range_shows_what_changed_between_two_commits() {
     let (dir, r) = repo("range", &[("a.txt", "one\n"), ("b.txt", "same\n")]);
     let first = r.resolve("HEAD").unwrap();

@@ -116,6 +116,42 @@ pub struct Repo {
     pub root: PathBuf,
 }
 
+/// One line of a blame: the commit that last changed it, and the line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Blamed {
+    pub id: String,
+    pub author: String,
+    /// Seconds since 1970.
+    pub time: i64,
+    pub summary: String,
+    pub text: String,
+}
+
+/// `git blame --porcelain`: each line follows a header naming its commit, and a commit's
+/// details come once, after its first header.
+fn parse_blame(out: &str) -> Vec<Blamed> {
+    let mut known: std::collections::HashMap<String, (String, i64, String)> = Default::default();
+    let mut lines = Vec::new();
+    let mut id = String::new();
+    for l in out.lines() {
+        if let Some(text) = l.strip_prefix('\t') {
+            let (author, time, summary) = known.get(&id).cloned().unwrap_or_default();
+            lines.push(Blamed { id: id.clone(), author, time, summary, text: text.to_owned() });
+            continue;
+        }
+        let (key, value) = l.split_once(' ').unwrap_or((l, ""));
+        match key {
+            "author" => known.entry(id.clone()).or_default().0 = value.to_owned(),
+            "author-time" => known.entry(id.clone()).or_default().1 = value.parse().unwrap_or(0),
+            "summary" => known.entry(id.clone()).or_default().2 = value.to_owned(),
+            // A header: the commit's id (SHA-1 or SHA-256), then line numbers.
+            k if matches!(k.len(), 40 | 64) && k.bytes().all(|b| b.is_ascii_hexdigit()) => id = k.to_owned(),
+            _ => {}
+        }
+    }
+    lines
+}
+
 /// One entry of `git stash list`.
 #[derive(Clone, Debug)]
 pub struct Stash {
@@ -767,6 +803,21 @@ impl Repo {
         let tags = self.run(&["tag", "--sort=-creatordate"], None).unwrap_or_default();
         all.extend(tags.lines().filter(|t| !t.is_empty()).map(str::to_owned));
         all
+    }
+
+    /// The commits that changed `path`, following it through renames, newest first.
+    pub fn file_log(&self, path: &str) -> Result<Vec<crate::graph::Commit>, String> {
+        let format = format!("--format={}", crate::graph::FORMAT);
+        let out = self.run(&["log", "--follow", "-n", "2000", "--date=format-local:%d %b %Y %H:%M", &format, "--", path], None)?;
+        Ok(crate::graph::parse(&out))
+    }
+
+    /// Who last changed each line of `path`: as of commit `at`, or in the working tree.
+    pub fn blame(&self, path: &str, at: Option<&str>) -> Result<Vec<Blamed>, String> {
+        let mut args = vec!["blame", "--porcelain"];
+        args.extend(at);
+        args.extend(["--", path]);
+        Ok(parse_blame(&self.run(&args, None)?))
     }
 
     /// Settles a conflicted file with one side's version, `ours` or `theirs`, and stages it.

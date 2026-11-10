@@ -430,6 +430,9 @@ struct Collate {
     refs: Vec<String>,
     /// The names of the two ends of the range History shows, when it shows one.
     compared: Option<(String, String)>,
+    /// A file's blame, and a file's history, while shown.
+    blame: Option<(String, Vec<git::Blamed>)>,
+    file_log: Option<(String, Vec<graph::Commit>)>,
     /// ⌘F was pressed: typing goes to the search (Rune can't move keyboard focus from code,
     /// so the app takes the keys itself) until Escape.
     searching: bool,
@@ -514,6 +517,8 @@ fn init() -> Collate {
         compare: None,
         refs: Vec::new(),
         compared: None,
+        blame: None,
+        file_log: None,
     };
     s.viewed = load_viewed();
     if s.scope == Scope::History {
@@ -817,6 +822,49 @@ impl Collate {
         }
     }
 
+    /// Reads something from the repository off the UI thread, and hands it to `done` here.
+    /// Without a window (tests) it reads right away.
+    fn read_bg<T: Send + 'static>(&mut self, read: impl FnOnce(&Repo) -> T + Send + 'static, done: impl FnOnce(&mut Collate, T) + Send + 'static) {
+        let Some(repo) = current_repo() else { return };
+        match HANDLE.get().cloned() {
+            Some(app) => {
+                std::thread::spawn(move || {
+                    let v = read(&repo);
+                    app.update(move |s, _| done(s, v));
+                });
+            }
+            None => {
+                let v = read(&repo);
+                done(self, v);
+            }
+        }
+    }
+
+    /// Who last changed each line of file `f`: as of the commit shown in History, else in the
+    /// working tree.
+    fn show_blame(&mut self, f: usize) {
+        let Some((file, _)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        let at = match (self.scope, self.commit.as_deref()) {
+            (Scope::History, Some(c)) => Some(c.split_once("..").map_or(c, |(_, b)| b).to_owned()),
+            _ => None,
+        };
+        self.read_bg(move |r| (path.clone(), r.blame(&path, at.as_deref())), |s, (path, result)| match result {
+            Ok(lines) => s.blame = Some((path, lines)),
+            Err(e) => s.say(format!("Couldn't blame {path}: {e}"), true),
+        });
+    }
+
+    /// The commits that changed file `f`.
+    fn show_file_log(&mut self, f: usize) {
+        let Some((file, _)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        self.read_bg(move |r| (path.clone(), r.file_log(&path)), |s, (path, result)| match result {
+            Ok(commits) => s.file_log = Some((path, commits)),
+            Err(e) => s.say(format!("Couldn't read the history of {path}: {e}"), true),
+        });
+    }
+
     /// Opens the compare dialog, from the base to this branch to begin with.
     fn start_compare(&mut self) {
         let Some(r) = current_repo() else { return };
@@ -1042,7 +1090,10 @@ impl Collate {
         menu = menu
             .item(PopupItem::new("open", "Open in Editor").enabled(file.new_path.is_some()))
             .item(PopupItem::new("copy", "Copy Path"))
-            .item(PopupItem::new("viewed", "Viewed").checked(self.is_viewed(f)));
+            .item(PopupItem::new("viewed", "Viewed").checked(self.is_viewed(f)))
+            .separator()
+            .item(PopupItem::new("blame", "Blame").enabled(file.new_path.is_some()))
+            .item(PopupItem::new("log", "File History"));
         if matches!(self.scope, Scope::Uncommitted | Scope::Unstaged) {
             menu = menu.separator().item(PopupItem::new("discard", "Discard Changes…"));
         }
@@ -1055,6 +1106,8 @@ impl Collate {
                 s.say(format!("Copied {path}"), false);
             }
             Some("viewed") => s.toggle_viewed(f, tx),
+            Some("blame") => s.show_blame(f),
+            Some("log") => s.show_file_log(f),
             Some("discard") => s.ask_discard(f, None),
             _ => {}
         });
@@ -2264,6 +2317,13 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k, layer);
     }
 
+    if let Some((path, lines)) = &s.blame {
+        blame_dialog(k, path, lines.len(), layer);
+    }
+    if let Some((path, commits)) = &s.file_log {
+        file_log_dialog(k, path, commits.len(), layer);
+    }
+
     if let Some(r) = &s.risky {
         let (title, what, button) = match r {
             Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
@@ -2310,6 +2370,92 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .child(arrow(&BACK_ICON, true, "Back", "⌘["))
         .child(arrow(&FORWARD_ICON, false, "Forward", "⌘]"));
     col().key("window").w_full().h_full().child(split).child(arrows)
+}
+
+/// Seconds since 1970 as a day, `2026-11-10`, in UTC.
+fn day(time: i64) -> String {
+    // Howard Hinnant's days-to-civil.
+    let z = time.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y}-{m:02}-{d:02}")
+}
+
+/// A blame row's height.
+const BLAME_ROW: f32 = 20.0;
+
+/// Who last changed each line of a file, the commit named once at the top of each run of
+/// lines it owns; a commit opens its diff.
+fn blame_dialog(k: &Kit, path: &str, n: usize, layer: &mut Vec<El>) {
+    let kit = k.clone();
+    let rows = col().key("blame-rows").growth(rune::GrowthSpec::default()).w_full().virtual_rows(n, BLAME_ROW, |_: &Collate, i| format!("b{i}").into(), move |s: &Collate, i| {
+        let k = &kit;
+        let Some((_, lines)) = &s.blame else { return row() };
+        let b = &lines[i];
+        let mono = rune::TextStyle { size: 11.5, line_height: BLAME_ROW, ..k.ty.mono };
+        let first = i == 0 || lines[i - 1].id != b.id;
+        let committed = !b.id.bytes().all(|c| c == b'0');
+        let mut who = row().w(300.0).h(BLAME_ROW).gap(8.0).items_center();
+        if first {
+            let id = b.id.clone();
+            let hash = text(if committed { abbrev(&b.id) } else { "-------".to_owned() }).font(mono).color(if committed { k.c.text_accent } else { k.c.text_faint }).w(56.0);
+            let hash = if committed {
+                hash.cursor(Cursor::Pointer).role("link").label(format!("Open commit {}", abbrev(&id))).help(b.summary.clone()).on_press(move |s: &mut Collate| {
+                    s.blame = None;
+                    s.open_commit(&id);
+                })
+            } else { hash };
+            let author = if committed { b.author.clone() } else { "Not committed yet".to_owned() };
+            who = who.child(hash).child(text(author).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0));
+            if committed {
+                who = who.child(text(day(b.time)).font(k.ty.text_small).color(k.c.text_faint));
+            }
+        }
+        row().w_full().h(BLAME_ROW).gap(12.0).items_center()
+            .child(who)
+            .child(text(format!("{}", i + 1)).font(mono).color(k.c.text_faint).w(40.0))
+            .child(text(b.text.replace('\t', "    ")).font(mono).color(k.c.text_base).truncate().min_w(0.0).grow(1.0))
+    });
+    Dialog::new("blame", format!("Blame - {path}"))
+        .open(true)
+        .width(1000.0)
+        .on_close(|s: &mut Collate| s.blame = None)
+        .child(col().key("blame-scroll").w_full().h(560.0).px(16.0).pb(16.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows))
+        .build(k, layer);
+}
+
+/// The commits that changed a file, newest first; one opens its diff.
+fn file_log_dialog(k: &Kit, path: &str, n: usize, layer: &mut Vec<El>) {
+    let kit = k.clone();
+    let rows = col().key("log-rows").growth(rune::GrowthSpec::default()).w_full().virtual_rows(n, GRAPH_ROW, |s: &Collate, i| format!("log-{}", s.file_log.as_ref().map_or("", |l| l.1[i].id.as_str())).into(), move |s: &Collate, i| {
+        let k = &kit;
+        let Some((_, commits)) = &s.file_log else { return row() };
+        let c = &commits[i];
+        let mono = rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono };
+        let id = c.id.clone();
+        row().w_full().h(GRAPH_ROW).px(8.0).gap(12.0).items_center().radius(k.radius.sm)
+            .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button").label(format!("Open commit {}: {}", abbrev(&c.id), c.subject))
+            .on_press(move |s: &mut Collate| {
+                s.file_log = None;
+                s.open_commit(&id);
+            })
+            .child(text(abbrev(&c.id)).font(mono).color(k.c.text_muted).w(HASH_W))
+            .child(text(c.subject.clone()).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0).grow(1.0))
+            .child(text(c.author.clone()).font(k.ty.text_small).color(k.c.text_muted).truncate().w(AUTHOR_W))
+            .child(text(c.date.clone()).font(k.ty.text_small).color(k.c.text_faint).w(DATE_W))
+    });
+    let body = if n == 0 {
+        col().key("log-empty").w_full().px(24.0).pb(20.0).child(text("No commits have changed this file yet.").font(k.ty.text_small).color(k.c.text_muted))
+    } else {
+        col().key("log-scroll").w_full().h(480.0).px(16.0).pb(16.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows)
+    };
+    Dialog::new("file-log", format!("History - {path}")).open(true).width(820.0).fit().on_close(|s: &mut Collate| s.file_log = None).child(body).build(k, layer);
 }
 
 /// The back and forward buttons' width together.
@@ -3316,7 +3462,7 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return false;
     }
     // A dialog takes its own keys (Escape closes it); nothing else acts behind it.
-    if s.confirm.is_some() || s.words.is_some() || s.prompt.is_some() || s.risky.is_some() || s.compare.is_some() {
+    if s.confirm.is_some() || s.words.is_some() || s.prompt.is_some() || s.risky.is_some() || s.compare.is_some() || s.blame.is_some() || s.file_log.is_some() {
         return false;
     }
     if s.show_help {
@@ -4722,6 +4868,27 @@ mod tests {
         assert!(file_diff(&added, 3, false).images.as_ref().is_some_and(|s| s[0].is_none()), "an added image has no before");
         let against_binary = Change { old: Some(Blob::Binary), ..c };
         assert!(file_diff(&against_binary, 3, false).images.is_none(), "an image against other bytes stays a note");
+    }
+
+    #[test]
+    fn dialogs_for_names_compares_and_risky_changes_open_and_close() {
+        let mut rt = loaded();
+        rt.update(|s, _| s.ask(Ask::Branch(None)));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("prompt-field").is_some() && rt.find("prompt-ok").is_some());
+        rt.update(|s, _| s.prompt = None);
+        rt.update(|s, _| s.compare = Some(("main".into(), "develop".into())));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("compare-from").is_some() && rt.find("compare-ok").is_some());
+        rt.update(|s, _| s.compare = None);
+        rt.update(|s, _| s.risky = Some(Risky::ResetHard("0123456789".into())));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("risky-ok").is_some());
+        rt.update(|s, _| s.risky = None);
+        rt.update(|s, _| s.blame = Some(("a.rs".into(), vec![git::Blamed { id: "a".repeat(40), author: "Ada".into(), time: 1_700_000_000, summary: "Add a".into(), text: "fn a() {}".into() }])));
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("blame-rows").is_some());
+        assert_eq!(day(1_700_000_000), "2023-11-14");
     }
 
     #[test]
