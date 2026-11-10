@@ -48,6 +48,8 @@ pub enum Staged {
 pub enum Blob {
     Text(String),
     Binary,
+    /// A PNG or JPEG, which the app can draw.
+    Image(std::sync::Arc<[u8]>),
     TooLarge(usize),
 }
 
@@ -716,6 +718,9 @@ fn same(a: &Option<Blob>, b: &Option<Blob>) -> bool {
 }
 
 fn classify(bytes: Vec<u8>) -> Blob {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Blob::Image(bytes.into());
+    }
     if bytes[..bytes.len().min(8000)].contains(&0) {
         return Blob::Binary;
     }
@@ -730,6 +735,7 @@ fn hash_blob(b: &Option<Blob>, h: &mut DefaultHasher) {
         None => 0u8.hash(h),
         Some(Blob::Text(t)) => (1u8, t).hash(h),
         Some(Blob::Binary) => 2u8.hash(h),
+        Some(Blob::Image(b)) => (4u8, &b[..]).hash(h),
         Some(Blob::TooLarge(n)) => (3u8, n).hash(h),
     }
 }

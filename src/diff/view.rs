@@ -65,6 +65,7 @@ pub struct DiffView<S> {
     dim: Option<Rc<dyn Fn(&S, usize) -> bool>>,
     hunk: Option<Rc<dyn Fn(&S, usize, usize) -> El>>,
     on_visible_file: Option<Rc<dyn Fn(&mut S, usize)>>,
+    images: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
 }
 
 impl<S: 'static> DiffView<S> {
@@ -77,6 +78,7 @@ impl<S: 'static> DiffView<S> {
             dim: None,
             hunk: None,
             on_visible_file: None,
+            images: None,
         }
     }
 
@@ -100,6 +102,13 @@ impl<S: 'static> DiffView<S> {
 
     /// Called when the file at the top of the view changes as it scrolls, to follow it in a
     /// file tree.
+    /// Draws a changed image's row (a file with [`FileDiff::images`](super::FileDiff)),
+    /// [`IMAGE_H`](super::IMAGE_H) high; `version` changes whenever what it draws does.
+    pub fn images(mut self, version: u64, f: impl Fn(&S, usize) -> El + 'static) -> Self {
+        self.images = Some((version, Rc::new(f)));
+        self
+    }
+
     pub fn on_visible_file(mut self, f: impl Fn(&mut S, usize) + 'static) -> Self {
         self.on_visible_file = Some(Rc::new(f));
         self
@@ -355,7 +364,13 @@ impl<S: 'static> View<S> {
         let key = &st.row_key(i);
         match r {
             Row::File(f) => self.file_header(s, st, f as usize, false),
-            Row::Note(f) => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.note(st, f as usize)),
+            Row::Note(f) => {
+                let images = self.d.images.as_ref().filter(|_| st.files()[f as usize].images.is_some());
+                match images {
+                    Some((version, draw)) => memo(key, (self.look.version, st.rev, st.view_width().to_bits(), *version), || draw(s, f as usize)),
+                    None => memo(key, (self.look.version, st.rev, st.view_width().to_bits(), 0u64), || self.note(st, f as usize)),
+                }
+            }
             // A hunk's actions read app state, so those rows build every commit; there are few.
             Row::Gap { f, gap } if self.d.hunk.is_some() => self.gap(s, st, f as usize, gap as usize),
             Row::Gap { f, gap } => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.gap(s, st, f as usize, gap as usize)),

@@ -66,6 +66,12 @@ impl Avatars {
         self.images.insert(email, image);
     }
 
+    /// Decodes other pictures (a changed image in the diff) on the same cache; `None` without
+    /// one (headless tests).
+    pub fn load(&self, bytes: std::sync::Arc<[u8]>) -> Option<Image> {
+        self.cache.as_ref().map(|c| c.load(bytes))
+    }
+
     /// The picture for `email`, once it's decoded.
     pub fn get(&self, email: &str) -> Option<&Image> {
         self.images.get(email)?.as_ref().filter(|i| i.is_ready() && i.error().is_none())

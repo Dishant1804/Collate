@@ -99,6 +99,9 @@ impl Hunk {
     }
 }
 
+/// One side of a changed image: the hash of its bytes, and the bytes.
+pub type ImageSide = (u64, Arc<[u8]>);
+
 /// What happened to a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FileStatus {
@@ -125,6 +128,9 @@ pub struct FileDiff {
     pub new_mode: Option<String>,
     /// The patch says the file is binary, so it has no lines.
     pub binary: bool,
+    /// For a changed image (PNG or JPEG on a side): each side's bytes and their hash, drawn
+    /// in place of the "binary" note. Set by the app.
+    pub images: Option<[Option<ImageSide>; 2]>,
     /// Shared, not copied, between the watcher's cache and the view: built once, then only
     /// read.
     pub hunks: Arc<Vec<Hunk>>,
@@ -190,6 +196,7 @@ impl FileDiff {
             old_mode: None,
             new_mode: None,
             binary: false,
+            images: None,
             hunks: Arc::new(Vec::new()),
             moves: std::collections::HashMap::new(),
             old_text: None,

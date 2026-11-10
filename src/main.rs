@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
 
-use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, LineKind, LineRef, Query, WordEdit, apply_edits, mark_moved, parse, word_edits};
+use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, IMAGE_H, LineKind, LineRef, Query, WordEdit, apply_edits, mark_moved, parse, word_edits};
 use git::{Blob, Change, Repo, Scope, Snapshot, Staged};
 use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::shell::{self, PaneState, Sidebar, SidebarRow, SidebarSection, SplitView, Toolbar};
@@ -379,6 +379,8 @@ struct Collate {
     web: Option<String>,
     /// Commit authors' GitHub pictures, by email.
     avatars: avatars::Avatars,
+    /// Changed images in the diff, decoded, by the hash of their bytes.
+    images: HashMap<u64, rune::Image>,
     /// The repository map, shown in place of the diff while open.
     map: map_view::MapState,
     /// Where back and forward go.
@@ -466,6 +468,7 @@ fn init() -> Collate {
         history_diff: false,
         web: None,
         avatars: avatars::Avatars::default(),
+        images: HashMap::new(),
         map: map_view::MapState::default(),
         nav: nav::Nav::default(),
         commit_body: String::new(),
@@ -1222,6 +1225,14 @@ impl Collate {
                 folded.contains(&c.path) || (self.settings.collapse_viewed && viewed) || (first_sight && large)
             })
             .collect();
+        // Decode the changed images in the diff; ones no longer in it go.
+        let mut images = HashMap::new();
+        for (hash, bytes) in files.iter().filter_map(|f| f.images.as_ref()).flatten().flatten() {
+            if let Some(img) = self.images.remove(hash).or_else(|| self.avatars.load(bytes.clone())) {
+                images.insert(*hash, img);
+            }
+        }
+        self.images = images;
         self.diff.set_files_folded(files, &folded);
         self.build_lists(&changes);
         // The map's sizes and imports follow the working tree.
@@ -1418,7 +1429,8 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
             FileDiff::between_opts(old_path, new_path, t(&c.old), t(&c.new), context, ignore_whitespace)
         }
         _ => {
-            // Binary or too large on either side: let the patch parser make a binary entry.
+            // Binary or too large on either side: let the patch parser make a binary entry,
+            // with an image's bytes to draw when that's what it is.
             let a = old_path.as_ref().map_or("/dev/null".to_owned(), |p| format!("a/{p}"));
             let b = new_path.as_ref().map_or("/dev/null".to_owned(), |p| format!("b/{p}"));
             let mut patch = format!("diff --git a/{} b/{}\n", old_path.as_ref().unwrap_or(&c.path), c.path);
@@ -1429,7 +1441,23 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
                 patch.push_str("deleted file mode 100644\n");
             }
             patch.push_str(&format!("Binary files {a} and {b} differ\n"));
-            parse(&patch).into_iter().next().unwrap_or_else(|| FileDiff::between(old_path, new_path, "", ""))
+            let mut f = parse(&patch).into_iter().next().unwrap_or_else(|| FileDiff::between(old_path, new_path, "", ""));
+            let image = |b: &Option<Blob>| match b {
+                Some(Blob::Image(bytes)) => {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    std::hash::Hash::hash(&bytes[..], &mut h);
+                    Some((std::hash::Hasher::finish(&h), bytes.clone()))
+                }
+                _ => None,
+            };
+            let sides = [image(&c.old), image(&c.new)];
+            // Drawn only when every side there is an image: an image against a non-image (or a
+            // too-large one) stays a note.
+            let drawable = [&c.old, &c.new].iter().zip(&sides).all(|(b, i)| b.is_none() || i.is_some());
+            if drawable && sides.iter().any(Option::is_some) {
+                f.images = Some(sides);
+            }
+            f
         }
     }
 }
@@ -1760,8 +1788,11 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         };
         col().key("empty").w_full().grow(1.0).min_h(0.0).child(summary(s, k, layer)).child(message(k, if s.hidden > 0 { "Only low-signal files changed" } else { "No changes" }, why))
     } else {
-        let (fk, hk) = (k.clone(), k.clone());
+        let (fk, hk, ik) = (k.clone(), k.clone(), k.clone());
+        // Images draw again as each finishes decoding.
+        let decoded = s.images.values().filter(|i| i.is_ready()).count() as u64;
         let diff = DiffView::new(|s: &Collate| &s.diff, |s: &mut Collate| &mut s.diff)
+            .images(decoded * 4096 + s.images.len() as u64, move |s: &Collate, f| image_row(s, &ik, f))
             .header_actions(move |s: &Collate, f| file_actions(s, &fk, f))
             .hunk_actions(move |s: &Collate, f, h| hunk_actions(s, &hk, f, h))
             .dim(|s: &Collate, f| s.is_viewed(f))
@@ -2239,6 +2270,49 @@ fn avatar(k: &Kit, s: &Collate, c: &graph::Commit, size: f32) -> El {
     let tint = lane_color(hue);
     row().size(size, size).center().radius(size / 2.0).fill(k.alpha(tint, 0.22)).border(1.0, k.alpha(tint, 0.6))
         .child(text(if initials.is_empty() { "?".to_owned() } else { initials }).font(if size >= 40.0 { k.ty.text_small_medium } else if size >= 24.0 { k.ty.text_xsmall_medium } else { rune::TextStyle { size: 9.0, line_height: 12.0, ..k.ty.text_xsmall_medium } }).color(k.c.text_base))
+}
+
+/// A changed image: before and after side by side, each at its own size up to what fits.
+fn image_row(s: &Collate, k: &Kit, f: usize) -> El {
+    let Some(sides) = s.diff.files().get(f).and_then(|f| f.images.clone()) else { return row() };
+    let (max_w, max_h) = (440.0, IMAGE_H - 24.0 - 26.0);
+    let pane = |key: &str, label: &str, side: &Option<diff::ImageSide>, tint: rune::Color, missing: &str| {
+        let img = side.as_ref().and_then(|(h, _)| s.images.get(h));
+        let size = img.and_then(|i| i.size());
+        let detail = match (size, side) {
+            (Some([w, h]), Some((_, b))) => format!("{w} × {h} - {}", file_size(b.len())),
+            (None, Some((_, b))) => file_size(b.len()),
+            _ => String::new(),
+        };
+        let head = row().gap(8.0).items_center()
+            .child(text(label.to_owned()).font(k.ty.text_xsmall_medium).color(tint))
+            .child(text(detail).font(k.ty.text_small).color(k.c.text_faint));
+        let body = match (img, size) {
+            (Some(i), Some([w, h])) if i.error().is_none() => {
+                let scale = (max_w / w as f32).min(max_h / h as f32).min(1.0);
+                row().size((w as f32 * scale).max(1.0), (h as f32 * scale).max(1.0)).border(1.0, k.alpha(tint, 0.6)).pixels_fit(i.pixels(), rune::SurfaceFit::Fit)
+                    .role("img").label(format!("{label} image"))
+            }
+            (Some(i), _) if i.error().is_some() => text("Can't decode this image".to_owned()).font(k.ty.text_small).color(k.c.text_muted),
+            (Some(_), _) => text("Loading…".to_owned()).font(k.ty.text_small).color(k.c.text_muted),
+            (None, _) if side.is_none() => text(missing.to_owned()).font(k.ty.text_small).color(k.c.text_muted),
+            (None, _) => text("Binary file not shown".to_owned()).font(k.ty.text_small).color(k.c.text_muted),
+        };
+        col().key(key.to_owned()).grow(1.0).min_w(0.0).h_full().gap(8.0).items_center().child(head).child(col().grow(1.0).min_h(0.0).center().child(body))
+    };
+    row().w_full().h(IMAGE_H).px(EDGE).py(12.0).gap(16.0)
+        .child(pane("before", "Before", &sides[0], k.c.danger.fg, "Not there before"))
+        .child(col().w(1.0).h_full().fill(k.c.border_weak))
+        .child(pane("after", "After", &sides[1], k.c.success.fg, "Deleted"))
+}
+
+/// A file's size as Finder gives it: `840 bytes`, `12.4 KB`, `3.1 MB`.
+fn file_size(n: usize) -> String {
+    match n {
+        0..1_000 => format!("{n} bytes"),
+        1_000..1_000_000 => format!("{:.1} KB", n as f64 / 1_000.0),
+        _ => format!("{:.1} MB", n as f64 / 1_000_000.0),
+    }
 }
 
 fn open_url(url: &str) {
@@ -4237,6 +4311,26 @@ mod tests {
             s.find();
         });
         assert!(rt.state.search_error.is_some() && rt.state.hits.is_empty(), "a bad pattern says so and finds nothing");
+    }
+
+    #[test]
+    fn a_changed_png_is_drawn_not_called_binary() {
+        // A 1×1 PNG, then another.
+        let png = |byte: u8| -> Vec<u8> {
+            let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
+            b.extend([0, 0, 0, 13, b'I', b'H', b'D', b'R', 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, byte]);
+            b
+        };
+        let blob = |b: Vec<u8>| Some(Blob::Image(b.into()));
+        let c = Change { path: "icon.png".into(), old_path: None, old: blob(png(1)), new: blob(png(2)), hash: 1, staged: Staged::No, untracked: false, new_hash: 2, generated: false, reused: false, conflicted: false };
+        let f = file_diff(&c, 3, false);
+        assert!(f.binary);
+        let sides = f.images.as_ref().expect("both sides are images");
+        assert!(sides[0].is_some() && sides[1].is_some() && sides[0].as_ref().unwrap().0 != sides[1].as_ref().unwrap().0);
+        let added = Change { old: None, ..c.clone() };
+        assert!(file_diff(&added, 3, false).images.as_ref().is_some_and(|s| s[0].is_none()), "an added image has no before");
+        let against_binary = Change { old: Some(Blob::Binary), ..c };
+        assert!(file_diff(&against_binary, 3, false).images.is_none(), "an image against other bytes stays a note");
     }
 
     #[test]

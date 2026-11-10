@@ -93,6 +93,8 @@ impl Default for Style {
 pub(crate) const HEADER_H: f32 = 44.0;
 pub(crate) const GAP_H: f32 = 32.0;
 pub(crate) const NOTE_H: f32 = 40.0;
+/// A changed image's row: both sides drawn.
+pub const IMAGE_H: f32 = 280.0;
 
 /// One row of the virtual list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -848,6 +850,7 @@ impl DiffState {
     fn estimate(&self, r: usize) -> f32 {
         match self.rows[r] {
             Row::File(_) => HEADER_H,
+            Row::Note(f) if self.files[f as usize].images.is_some() => IMAGE_H,
             Row::Note(_) => NOTE_H,
             Row::Gap { .. } => GAP_H,
             _ => self.style.line_h,
