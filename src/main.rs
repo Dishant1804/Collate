@@ -36,7 +36,7 @@ use rune_kit::{
     Checkbox, Button, ButtonVariant, ControlSize, Dialog, FileNode, FileTree, IconButton, IconButtonVariant, Kit, Placement, Popover, SegmentedControl, Select, Switch, TextInput, Tree,
     TreeItem, TreeModel,
 };
-use settings::{CONTEXT_LINES, Density, Editor, FOLD_LARGE, FONT_SIZES, REFRESH_MS, Settings, Theme};
+use settings::{CONTEXT_LINES, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
 
 /// The open project; `None` before one is chosen. Swapped when the reader switches project.
 static REPO: std::sync::RwLock<Option<std::sync::Arc<Repo>>> = std::sync::RwLock::new(None);
@@ -2127,6 +2127,8 @@ fn kit(s: &Collate, cx: &Cx<Collate>) -> Kit {
 }
 
 fn view(s: &Collate, cx: &mut Cx<Collate>) -> El {
+    // Set on every commit: the clock keeps the last rate it was given.
+    cx.time_scale(s.settings.motion.speed());
     let k = kit(s, cx);
     let mut layer = Vec::new();
     // Settings float over the review, which stays where it was underneath.
@@ -3816,6 +3818,7 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let st = &s.settings;
     static THEMES: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
     static DENSITIES: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
+    static MOTIONS: [Motion; 2] = [Motion::Default, Motion::Reduced];
     static LAYOUTS: [DiffMode; 2] = [DiffMode::Unified, DiffMode::Split];
     static NUMBERS: [bool; 2] = [true, false];
     let tab = s.settings_tab.min(SETTINGS_TABS.len() - 1);
@@ -3824,6 +3827,7 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             setting(k, "theme", "Theme", &[], "", pick(k, &["System", "Light", "Dark"], &THEMES, st.theme, |c, v| c.theme = v)),
             setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(k, &["11", "12", "13", "14", "16"], &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
             setting(k, "density", "Line spacing", &[], "", pick(k, &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
+            setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(k, &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),
         ],
         1 => vec![
             setting(k, "layout", "Layout", &["S"], "Split shows old and new side by side", pick(k, &["Unified", "Split"], &LAYOUTS, st.layout, |c, v| c.layout = v)),
@@ -4937,6 +4941,19 @@ mod tests {
             rt.frame(1.0 / 60.0);
         }
         assert_eq!(rt.state.screen, Screen::Review, "Escape puts the panel away");
+    }
+
+    #[test]
+    fn reduced_motion_runs_the_clock_faster_and_default_puts_it_back() {
+        let mut rt = loaded();
+        assert_eq!(rt.time_scale, 1.0);
+        rt.update(|s, _| s.settings.motion = Motion::Reduced);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.time_scale, Motion::Reduced.speed());
+        assert!(rt.time_scale > 1.0, "reduced is shorter, not off");
+        rt.update(|s, _| s.settings.motion = Motion::Default);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.time_scale, 1.0);
     }
 
     #[test]

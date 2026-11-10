@@ -32,6 +32,27 @@ impl Density {
     }
 }
 
+/// How fast animations run. Reduced keeps every animation, only shorter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Default,
+    Reduced,
+}
+
+impl Motion {
+    /// The window's animation clock rate: Reduced runs it faster, so each spring and fade
+    /// finishes sooner but keeps its shape.
+    pub fn speed(self) -> f32 {
+        match self {
+            Motion::Default => 1.0,
+            Motion::Reduced => REDUCED_SPEED,
+        }
+    }
+}
+
+/// Reduced motion's clock rate.
+const REDUCED_SPEED: f32 = 2.0;
+
 /// Where "Open" sends a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Editor {
@@ -78,6 +99,7 @@ pub struct Settings {
     pub theme: Theme,
     pub font_size: f32,
     pub density: Density,
+    pub motion: Motion,
     pub layout: DiffMode,
     pub wrap: bool,
     /// One line-number column in unified view instead of old and new.
@@ -107,6 +129,7 @@ impl Default for Settings {
             theme: Theme::System,
             font_size: 12.0,
             density: Density::Comfortable,
+            motion: Motion::Default,
             layout: DiffMode::Unified,
             wrap: false,
             one_number: true,
@@ -194,6 +217,7 @@ impl Settings {
                         _ => Density::Comfortable,
                     }
                 }
+                "motion" => s.motion = if v == "reduced" { Motion::Reduced } else { Motion::Default },
                 "layout" => s.layout = if v == "split" { DiffMode::Split } else { DiffMode::Unified },
                 "default_scope" => {
                     s.default_scope = match v {
@@ -256,6 +280,7 @@ impl Settings {
             Density::Comfortable => "comfortable",
             Density::Spacious => "spacious",
         };
+        let motion = if self.motion == Motion::Reduced { "reduced" } else { "default" };
         let layout = if self.layout == DiffMode::Split { "split" } else { "unified" };
         let scope = match self.default_scope {
             Scope::Uncommitted => "all",
@@ -265,7 +290,7 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\n",
             self.font_size,
             self.wrap,
             self.one_number,
@@ -315,6 +340,7 @@ mod tests {
             theme: Theme::Dark,
             font_size: 14.0,
             density: Density::Spacious,
+            motion: Motion::Reduced,
             layout: DiffMode::Split,
             wrap: true,
             one_number: false,
