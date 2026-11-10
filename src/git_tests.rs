@@ -559,3 +559,37 @@ fn conflicts_settle_by_side_by_block_or_both() {
     assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "theirs\n");
     assert!(!snapshot(&r, Scope::Uncommitted)[0].conflicted, "staged, so resolved");
 }
+
+/// A repository whose `main` and `other` change the same line, so merging either way conflicts.
+fn diverged(name: &str) -> (PathBuf, Repo) {
+    let (dir, r) = repo(name, &[("a.txt", "one\n")]);
+    sh(&dir, &["switch", "-qc", "other"]);
+    write(&dir, "a.txt", "theirs\n");
+    sh(&dir, &["commit", "-qam", "theirs"]);
+    sh(&dir, &["switch", "-q", "main"]);
+    write(&dir, "a.txt", "ours\n");
+    sh(&dir, &["commit", "-qam", "ours"]);
+    (dir, r)
+}
+
+#[test]
+fn a_stopped_merge_or_rebase_is_seen_and_aborts() {
+    use crate::git::Operation;
+    let (dir, r) = diverged("operation");
+    assert_eq!(r.operation(), None);
+    assert!(Command::new("git").arg("-C").arg(&dir).args(["merge", "other"]).output().unwrap().status.code() != Some(0));
+    assert_eq!(r.operation(), Some(Operation::Merge));
+    let raw = r.status_raw().unwrap();
+    assert_eq!(r.snapshot(Scope::Uncommitted, &raw, None).unwrap().operation, Some(Operation::Merge));
+    r.resume(Operation::Merge, "abort").unwrap();
+    assert_eq!(r.operation(), None);
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "ours\n", "abort puts the file back");
+    assert!(Command::new("git").arg("-C").arg(&dir).args(["rebase", "other"]).output().unwrap().status.code() != Some(0));
+    assert_eq!(r.operation(), Some(Operation::Rebase));
+    // Settled in favour of theirs and staged, the rebase continues without an editor.
+    write(&dir, "a.txt", "theirs\n");
+    sh(&dir, &["add", "a.txt"]);
+    let done = r.resume(Operation::Rebase, "continue");
+    assert!(done.is_ok() || r.resume(Operation::Rebase, "skip").is_ok(), "{done:?}");
+    assert_eq!(r.operation(), None);
+}

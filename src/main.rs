@@ -88,7 +88,10 @@ fn relevant(path: &std::path::Path, root: &std::path::Path) -> bool {
     let Ok(rel) = path.strip_prefix(root) else { return true };
     let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy());
     match parts.next().as_deref() {
-        Some(".git") => matches!(parts.next().as_deref(), Some("index" | "HEAD" | "refs" | "packed-refs" | "MERGE_HEAD")),
+        Some(".git") => matches!(
+            parts.next().as_deref(),
+            Some("index" | "HEAD" | "refs" | "packed-refs" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge" | "rebase-apply")
+        ),
         _ => true,
     }
 }
@@ -458,6 +461,8 @@ struct Collate {
     amend: bool,
     /// Commits ahead of and behind the upstream.
     ahead_behind: Option<(usize, usize)>,
+    /// A merge, rebase, cherry-pick or revert waiting for its conflicts.
+    operation: Option<git::Operation>,
     /// A slow repository change (fetch, push, switch) running in the background, as it's named.
     busy: Option<String>,
     /// The name asked for, and what for.
@@ -587,6 +592,7 @@ fn init() -> Collate {
         commit_body: String::new(),
         amend: false,
         ahead_behind: None,
+        operation: None,
         busy: None,
         prompt: None,
         prompt_text: TextEdit::new(""),
@@ -1806,6 +1812,7 @@ impl Collate {
         self.unstaged = snap.unstaged;
         self.total = snap.total;
         self.ahead_behind = snap.ahead_behind;
+        self.operation = snap.operation;
         let shows_uncommitted = self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED);
         if self.scope == Scope::History && (self.total > 0) != shows_uncommitted {
             self.load_history();
@@ -2779,6 +2786,10 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     } else { body };
     let body = if s.has_project && s.map.open { map_view::map_view(s, k) } else { body };
     let body = if s.has_project && s.pulls.open { pulls::pulls_view(s, k) } else { body };
+    let body = match operation_bar(s, k) {
+        Some(bar) => col().key("with-operation").w_full().grow(1.0).min_h(0.0).child(bar).child(body),
+        None => body,
+    };
     let body = match status_bar(s, k) {
         Some(bar) => col().key("body").w_full().grow(1.0).min_h(0.0).child(body).child(bar),
         None => body,
@@ -3944,6 +3955,32 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
 
 /// Feedback after an action, at the bottom of the diff: what happened, and Undo for a
 /// discard. It goes by itself after a few seconds.
+/// A merge, rebase, cherry-pick or revert waiting on the reader: what to do, and the ways on.
+fn operation_bar(s: &Collate, k: &Kit) -> Option<El> {
+    let op = s.operation?;
+    let conflicts = s.info.iter().filter(|i| i.conflicted).count();
+    let say = if conflicts > 0 {
+        format!("{} - {conflicts} file{} with conflicts. Settle and stage them, then continue.", op.doing(), if conflicts == 1 { "" } else { "s" })
+    } else {
+        format!("{} - the conflicts are settled. Stage what's left, then continue.", op.doing())
+    };
+    let idle = s.busy.is_none();
+    let step = move |how: &'static str, done: &'static str| {
+        move |s: &mut Collate| s.act_bg(&format!("{}…", how[..1].to_uppercase() + &how[1..]), move |r| r.resume(op, how).map(|_| format!("{done} the {}", op.noun())))
+    };
+    let mut r = row().key("operation").w_full().h(40.0).px(EDGE).gap(8.0).items_center().fill(k.alpha(k.c.warning.icon, 0.10))
+        .role("status").label(say.clone())
+        .child(text(say).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0).grow(1.0))
+        .child(Button::new("Abort").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
+            .help(format!("Stop the {} and put everything back as it was", op.noun())).on_press(step("abort", "Aborted")).build(k).key("op-abort"));
+    if op == git::Operation::Rebase {
+        r = r.child(Button::new("Skip Commit").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
+            .help("Leave out the commit the rebase stopped at").on_press(step("skip", "Skipped a commit of")).build(k).key("op-skip"));
+    }
+    Some(r.child(Button::new("Continue").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!idle || conflicts > 0)
+        .help("Commit the settled files and go on").on_press(step("continue", "Continued")).build(k).key("op-continue")))
+}
+
 fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
     let note = s.notice.as_ref()?;
     let color = if note.error { k.c.danger.icon } else { k.c.text_muted };

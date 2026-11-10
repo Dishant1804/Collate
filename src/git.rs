@@ -110,6 +110,47 @@ pub struct Snapshot {
     pub changes: Vec<Change>,
     /// Commits ahead of and behind the upstream, when the branch has one.
     pub ahead_behind: Option<(usize, usize)>,
+    /// A merge, rebase, cherry-pick or revert git stopped in the middle of.
+    pub operation: Option<Operation>,
+}
+
+/// A multi-step operation git stopped in, waiting for its conflicts to be settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Operation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+impl Operation {
+    /// The git command that continues or aborts it.
+    fn command(self) -> &'static str {
+        match self {
+            Operation::Merge => "merge",
+            Operation::Rebase => "rebase",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+        }
+    }
+
+    pub fn noun(self) -> &'static str {
+        match self {
+            Operation::Merge => "merge",
+            Operation::Rebase => "rebase",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+        }
+    }
+
+    pub fn doing(self) -> &'static str {
+        match self {
+            Operation::Merge => "Merging",
+            Operation::Rebase => "Rebasing",
+            Operation::CherryPick => "Cherry-picking",
+            Operation::Revert => "Reverting",
+        }
+    }
 }
 
 pub struct Repo {
@@ -237,6 +278,37 @@ impl Repo {
         Ok(Repo { root: PathBuf::from(root) })
     }
 
+    /// The repository's git folder: `.git`, or where a worktree's `.git` file points.
+    fn git_dir(&self) -> PathBuf {
+        let dot = self.root.join(".git");
+        match std::fs::read_to_string(&dot) {
+            Ok(link) => link.strip_prefix("gitdir:").map_or(dot.clone(), |p| self.root.join(p.trim())),
+            Err(_) => dot,
+        }
+    }
+
+    /// The operation git is in the middle of, from the files it keeps while it waits.
+    pub fn operation(&self) -> Option<Operation> {
+        let d = self.git_dir();
+        Some(if d.join("rebase-merge").exists() || d.join("rebase-apply").exists() {
+            Operation::Rebase
+        } else if d.join("MERGE_HEAD").exists() {
+            Operation::Merge
+        } else if d.join("CHERRY_PICK_HEAD").exists() {
+            Operation::CherryPick
+        } else if d.join("REVERT_HEAD").exists() {
+            Operation::Revert
+        } else {
+            return None;
+        })
+    }
+
+    /// Carry on with `op` (`continue`), give it up (`abort`), or, in a rebase, drop the commit
+    /// it stopped at (`skip`).
+    pub fn resume(&self, op: Operation, how: &str) -> Result<String, String> {
+        self.run(&[op.command(), &format!("--{how}")], None)
+    }
+
     pub fn name(&self) -> String {
         self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.root.display().to_string())
     }
@@ -268,6 +340,8 @@ impl Repo {
         let mut h = DefaultHasher::new();
         raw.hash(&mut h);
         salt.hash(&mut h);
+        // Starting or finishing a merge can leave the status as it was.
+        self.operation().hash(&mut h);
         for e in parse_status(raw).2 {
             if let Ok(m) = std::fs::metadata(self.root.join(&e.path)) {
                 m.len().hash(&mut h);
@@ -358,7 +432,7 @@ impl Repo {
             changes.retain(|c| c.reused || !same(&c.old, &c.new));
         }
         let base = base.map(|(name, c)| (name.to_owned(), c.to_owned()));
-        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes, ahead_behind: ahead_behind(raw) })
+        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes, ahead_behind: ahead_behind(raw), operation: self.operation() })
     }
 
     /// The files commit `sha` changed, each against its first parent (nothing, for a root
@@ -575,7 +649,8 @@ impl Repo {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
         let mut c = Command::new("git");
         // No terminal to ask on: a fetch or push that needs a password fails instead of waiting.
-        c.arg("-C").arg(&self.root).args(args).env("GIT_TERMINAL_PROMPT", "0").stdout(Stdio::piped()).stderr(Stdio::piped());
+        // Nor an editor: continuing a merge or rebase keeps the message git prepared.
+        c.arg("-C").arg(&self.root).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true").stdout(Stdio::piped()).stderr(Stdio::piped());
         c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
         let mut child = c.spawn().map_err(|e| format!("can't run git: {e}"))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
