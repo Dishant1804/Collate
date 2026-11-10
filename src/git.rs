@@ -654,10 +654,20 @@ impl Repo {
         Ok(dir)
     }
 
-    /// Commits what's staged; returns git's one-line summary.
-    pub fn commit(&self, message: &str) -> Result<String, String> {
-        self.run(&["commit", "-q", "-F", "-"], Some(message))?;
+    /// Commits what's staged, or with `amend` rewrites the last commit with it; returns git's
+    /// one-line summary.
+    pub fn commit(&self, message: &str, amend: bool) -> Result<String, String> {
+        let mut args = vec!["commit", "-q", "-F", "-"];
+        if amend {
+            args.push("--amend");
+        }
+        self.run(&args, Some(message))?;
         self.run(&["log", "-1", "--format=%h %s"], None)
+    }
+
+    /// The last commit's whole message, to start an amend from.
+    pub fn last_message(&self) -> Option<String> {
+        self.run(&["log", "-1", "--format=%B"], None).ok()
     }
 
     /// Settles a conflicted file with one side's version, `ours` or `theirs`, and stages it.

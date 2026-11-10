@@ -397,6 +397,8 @@ struct Collate {
     has_project: bool,
     /// The settings panel's section.
     settings_tab: usize,
+    /// The next commit rewrites the last one.
+    amend: bool,
     /// ⌘F was pressed: typing goes to the search (Rune can't move keyboard focus from code,
     /// so the app takes the keys itself) until Escape.
     searching: bool,
@@ -472,6 +474,7 @@ fn init() -> Collate {
         map: map_view::MapState::default(),
         nav: nav::Nav::default(),
         commit_body: String::new(),
+        amend: false,
     };
     s.viewed = load_viewed();
     if s.scope == Scope::History {
@@ -1062,26 +1065,42 @@ impl Collate {
 
     fn commit(&mut self) {
         let msg = self.message.text.trim().to_owned();
-        if msg.is_empty() || self.staged == 0 || self.committing {
+        let amend = self.amend;
+        if msg.is_empty() || (self.staged == 0 && !amend) || self.committing {
             return;
         }
         let (Some(repo_handle), Some(repo)) = (HANDLE.get().cloned(), current_repo()) else { return };
         self.committing = true;
         // Hooks can take a while; the window stays live.
         std::thread::spawn(move || {
-            let result = repo.commit(&msg);
+            let result = repo.commit(&msg, amend);
             repo_handle.update(move |s, _| {
                 s.committing = false;
                 match result {
                     Ok(summary) => {
                         s.message = TextEdit::new("");
-                        s.say(format!("Committed {summary}"), false);
+                        s.amend = false;
+                        s.say(format!("{} {summary}", if amend { "Amended" } else { "Committed" }), false);
+                        if s.scope == Scope::History {
+                            s.load_history();
+                        }
                     }
                     Err(e) => s.say(format!("Commit failed: {e}"), true),
                 }
                 refresh();
             });
         });
+    }
+
+    /// Amend on: start from the last commit's message, unless one is written already.
+    fn toggle_amend(&mut self) {
+        self.amend = !self.amend;
+        if self.amend
+            && self.message.text.trim().is_empty()
+            && let Some(m) = current_repo().and_then(|r| r.last_message())
+        {
+            self.message = TextEdit::new(m.trim_end());
+        }
     }
 
     /// Push settings into the diff and the watcher; `was` is the previous settings, to skip
@@ -2130,9 +2149,9 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
 /// The commit composer at the foot of the staging panel: a message and the screen's one
 /// prominent action, which commits what's staged.
 fn commit_box(s: &Collate, k: &Kit) -> El {
-    let ready = s.staged > 0 && !s.message.text.trim().is_empty() && !s.committing;
+    let ready = (s.staged > 0 || s.amend) && !s.message.text.trim().is_empty() && !s.committing;
     let field = TextInput::new(&s.message)
-        .placeholder(if s.staged == 0 { "Stage files to write a commit".to_owned() } else { "Summary".to_owned() })
+        .placeholder(if s.staged == 0 && !s.amend { "Stage files to write a commit".to_owned() } else { "Summary".to_owned() })
         .on_edit(|s: &mut Collate| &mut s.message)
         .on_key(|s: &mut Collate, ev: &KeyEvent, _: &mut Tx| {
             if ev.key == Key::Enter && ev.mods.cmd {
@@ -2147,13 +2166,20 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         // Fill the column exactly, not a field's default width.
         .w_full()
         .min_w(0.0);
-    let label = match (s.committing, s.staged) {
-        (true, _) => "Committing…".to_owned(),
-        (_, 0) => "Commit".to_owned(),
-        (_, 1) => "Commit 1 File".to_owned(),
-        (_, n) => format!("Commit {n} Files"),
+    let label = match (s.committing, s.amend, s.staged) {
+        (true, ..) => "Committing…".to_owned(),
+        (_, true, _) => "Amend Last Commit".to_owned(),
+        (_, _, 0) => "Commit".to_owned(),
+        (_, _, 1) => "Commit 1 File".to_owned(),
+        (_, _, n) => format!("Commit {n} Files"),
     };
-    let button = Button::new(label).variant(ButtonVariant::Contrast).shortcut("⌘↩").disabled(!ready).help(if s.staged == 0 { "Stage files first" } else { "Commit what's staged (⌘↩)" }).on_press(|s: &mut Collate| s.commit()).build(k).key("commit").w_full();
+    let help = match (s.amend, s.staged) {
+        (true, _) => "Rewrite the last commit with this message and what's staged (⌘↩)",
+        (_, 0) => "Stage files first",
+        _ => "Commit what's staged (⌘↩)",
+    };
+    let button = Button::new(label).variant(ButtonVariant::Contrast).shortcut("⌘↩").disabled(!ready).help(help).on_press(|s: &mut Collate| s.commit()).build(k).key("commit").w_full();
+    let amend = Checkbox::new(s.amend).label("Amend last commit").disabled(s.head.is_none() || s.committing).on_toggle(|s: &mut Collate| s.toggle_amend()).build(k).key("amend");
     col()
         .key("commit-box")
         .w_full()
@@ -2164,6 +2190,7 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         .child(col().key("rule").w_full().h(1.0).fill(k.c.border_weak))
         .child(text("Commit").font(k.ty.text_small).color(k.c.text_base))
         .child(field)
+        .child(amend)
         .child(button)
 }
 
@@ -4188,7 +4215,7 @@ mod tests {
         // Commit what's staged.
         reread(&mut rt);
         rt.update(|s, _| s.message = TextEdit::new("Spell out five"));
-        let summary = repo.commit("Spell out five").unwrap();
+        let summary = repo.commit("Spell out five", false).unwrap();
         assert!(summary.ends_with("Spell out five"));
         reread(&mut rt);
         assert_eq!(rt.state.diff.files().len(), 0, "nothing left to review");

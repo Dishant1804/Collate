@@ -182,11 +182,11 @@ fn committing_takes_what_is_staged() {
     write(&dir, "a.txt", "a2\n");
     write(&dir, "b.txt", "untracked\n");
     r.stage("a.txt").unwrap();
-    let summary = r.commit("Change a\n\nWith a body.").unwrap();
+    let summary = r.commit("Change a\n\nWith a body.", false).unwrap();
     assert!(summary.ends_with("Change a"), "{summary}");
     assert_eq!(sh(&dir, &["log", "-1", "--format=%B"]).trim(), "Change a\n\nWith a body.");
     assert_eq!(sh(&dir, &["status", "--porcelain"]), "?? b.txt\n");
-    assert!(r.commit("nothing staged").is_err());
+    assert!(r.commit("nothing staged", false).is_err());
 }
 
 #[test]
