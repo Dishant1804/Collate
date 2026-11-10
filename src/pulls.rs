@@ -215,6 +215,17 @@ impl Collate {
         });
     }
 
+    /// A failed call to GitHub: one that needs GitHub connected shows the Pull Requests
+    /// place asking for that, anything else is said.
+    fn github_failed(&mut self, e: String) {
+        if github::needs_connect(&e) {
+            self.pulls.list = Some(Err(e));
+            self.pulls.open = true;
+        } else {
+            self.say(e, true);
+        }
+    }
+
     /// Show the list, reading it if it isn't yet.
     pub fn open_pulls(&mut self) {
         self.map.open = false;
@@ -270,7 +281,7 @@ impl Collate {
                         s.pulls.pr = Some(d);
                         s.place_comments();
                     }
-                    Err(e) => s.say(e, true),
+                    Err(e) => s.github_failed(e),
                 }
             });
         });
@@ -299,7 +310,7 @@ impl Collate {
                 let ok = result.is_ok();
                 match result {
                     Ok(done) => s.say(done, false),
-                    Err(e) => s.say(e, true),
+                    Err(e) => s.github_failed(e),
                 }
                 if ok {
                     then(s);
