@@ -1865,6 +1865,10 @@ impl Collate {
         self.images = images;
         self.diff.set_files_folded(files, &folded);
         self.want_languages();
+        // Opened before the window could read it (a scene, a switch of project).
+        if self.pulls.open && self.pulls.list.is_none() {
+            self.load_pulls();
+        }
         self.place_comments();
         self.build_lists(&changes);
         // The map's sizes and imports follow the working tree.
@@ -4800,6 +4804,7 @@ fn main() {
             ("branch", |s: &mut Collate| s.set_scope(Scope::Branch)),
             ("history", |s: &mut Collate| s.set_scope(Scope::History)),
             ("map", |s: &mut Collate| s.open_map()),
+            ("pulls", |s: &mut Collate| s.pulls.open = true),
             ("history-diff", |s: &mut Collate| {
                 s.set_scope(Scope::History);
                 s.history_diff = true;
