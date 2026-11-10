@@ -4073,6 +4073,48 @@ fn setting(k: &Kit, key: &str, title: &str, keys: &[&str], detail: &str, control
     row().key(key.to_owned()).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().items_center().child(control))
 }
 
+/// The Languages section: whether to download grammars, what's built in, and every grammar on
+/// offer with how it stands and what to do with it.
+fn languages_settings(s: &Collate, k: &Kit) -> Vec<El> {
+    let mut rows = vec![
+        setting(k, "download", "Download languages", &[], "Fetch a language's grammar from GitHub the first time a diff shows it; building it needs Xcode's command line tools", switch(k, "Download languages", s.settings.download_languages, |c, v| c.download_languages = v)),
+        setting(k, "built-in", "Built in", &[], grammars::BUILT_IN, row()),
+    ];
+    for g in grammars::CATALOGUE {
+        let status = s.languages.status(g);
+        let files = g.files.iter().map(|f| if f.contains('.') || f.chars().next().is_some_and(char::is_uppercase) { (*f).to_owned() } else { format!(".{f}") }).collect::<Vec<_>>().join(", ");
+        let mut name = row().gap(8.0).items_center().child(text(g.title.to_owned()).font(k.ty.ui_medium).color(k.c.text_base));
+        let state = match status {
+            grammars::Status::Installed if s.languages.loaded.contains_key(g.id) => "In use",
+            grammars::Status::Installed => "Installed",
+            grammars::Status::Outdated => "Update available",
+            _ => "",
+        };
+        if !state.is_empty() {
+            name = name.child(text(state.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint));
+        }
+        let mut words = col().grow(1.0).min_w(0.0).gap(4.0).child(name).child(text(files).font(k.ty.text_small).color(k.c.text_muted).truncate());
+        if let grammars::Status::Failed(e) = &status {
+            words = words.child(text(e.clone()).font(k.ty.text_small).color(k.c.danger.icon).wrap());
+        }
+        let (label, help) = match status {
+            grammars::Status::Available => ("Install", "Fetch and build this grammar"),
+            grammars::Status::Installed => ("Remove", "Delete the grammar; its files draw plain until it's installed again"),
+            grammars::Status::Outdated => ("Update", "Build the version this Collate expects"),
+            grammars::Status::Working => ("Installing…", ""),
+            grammars::Status::Failed(_) => ("Retry", "Try fetching and building it again"),
+        };
+        let installed = status == grammars::Status::Installed;
+        let mut button = Button::new(label).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(status == grammars::Status::Working);
+        if !help.is_empty() {
+            button = button.help(help);
+        }
+        let button = button.on_press(move |s: &mut Collate| if installed { s.remove_language(g) } else { s.prepare_language(g) }).build(k);
+        rows.push(row().key(format!("lang-{}", g.id)).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().w(CONTROL_W).justify_end().child(button)));
+    }
+    rows
+}
+
 fn pick<T: Copy + PartialEq + 'static>(k: &Kit, labels: &[&str], values: &'static [T], current: T, set: fn(&mut Settings, T)) -> El {
     SegmentedControl::new(labels, values.iter().position(|v| *v == current))
         .fit()
@@ -4096,7 +4138,9 @@ fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
     Switch::new(on).standard().label(title.to_owned()).hide_label().on_toggle(move |s: &mut Collate| s.configure(|c| set(c, !on))).build(&kk)
 }
 
-const SETTINGS_TABS: [&str; 5] = ["Appearance", "Diff", "Review", "Projects", "Refresh"];
+const SETTINGS_TABS: [&str; 6] = ["Appearance", "Diff", "Languages", "Review", "Projects", "Refresh"];
+/// The Projects section, which has its own Add button.
+const PROJECTS_TAB: usize = 4;
 
 /// Settings as a floating panel over the review: sections down the left, the chosen one's
 /// settings on the right, on one surface. Esc, the close button or a click outside put it
@@ -4127,14 +4171,15 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             setting(k, "words", "Word highlights", &[], "Tint the words that changed within a line", switch(k, "Word highlights", st.word_diff, |c, v| c.word_diff = v)),
             setting(k, "syntax", "Syntax highlighting", &[], "", switch(k, "Syntax highlighting", st.syntax, |c, v| c.syntax = v)),
         ],
-        2 => vec![
+        2 => languages_settings(s, k),
+        3 => vec![
             setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "Pull Request Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
             setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
             setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
             setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
             setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
         ],
-        3 => {
+        PROJECTS_TAB => {
             let labels = project_labels(&s.projects);
             let mut rows: Vec<El> = s
                 .projects
@@ -4192,7 +4237,7 @@ fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         }
     }
     let mut content = col().key("settings-content").w_full().px(24.0).pb(16.0);
-    if tab == 3 {
+    if tab == PROJECTS_TAB {
         let add = Button::new(ADD_PROJECT).variant(ButtonVariant::Outline).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.add_project()).build(k).key("settings-add");
         content = content.child(row().key("projects-head").w_full().pt(12.0).pb(4.0).justify_end().child(add));
     }
