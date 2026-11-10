@@ -8,6 +8,9 @@ A git diff viewer for macOS, in Rust, on the Rune UI framework. One binary crate
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test` (needs nothing set up; view tests build their own repository in the temp folder)
 - `cargo run -- <repo>` to look at a change; `scripts/install.sh` installs the app.
+- Releases: bump `version` in `Cargo.toml`, then push a tag `v<version>`. The `Release`
+  workflow runs `scripts/package.sh` (universal DMG, zip, binary tarball) and publishes the
+  release with notes from `scripts/release-notes.sh`.
 
 Run all three checks before saying a change is done. Never run `cargo fmt`: the code is
 laid out by hand and `rustfmt.toml` disables the formatter.

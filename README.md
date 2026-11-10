@@ -33,6 +33,17 @@ change. You review, stage, discard and commit without leaving the diff.
 
 ## Install
 
+Download `Collate-<version>.dmg` from the
+[latest release](https://github.com/Dishant1804/Collate/releases/latest), open it and drag
+Collate to Applications. The app is signed ad hoc, not with an Apple Developer ID, so clear
+the download's quarantine once before the first launch:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Collate.app
+```
+
+Or build it from source:
+
 ```sh
 git clone <this repository>
 cd collate
@@ -47,7 +58,7 @@ collate            # open the repository in the current folder
 collate ~/code/app # open that one
 ```
 
-The app is signed ad hoc for the Mac that built it. There are no prebuilt downloads yet.
+A build from source is signed ad hoc for the Mac that built it.
 
 ## Run from source
 

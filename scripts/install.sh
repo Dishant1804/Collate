@@ -7,7 +7,6 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-here=$PWD
 apps=/Applications
 [[ -w $apps ]] || apps=$HOME/Applications
 bin=$HOME/.local/bin
@@ -20,44 +19,7 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 app=$work/Collate.app
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/collate "$app/Contents/MacOS/Collate"
-
-# The icon: the SVG rendered once at 1024, then every size macOS asks for.
-qlmanage -t -s 1024 -o "$work" assets/icon.svg >/dev/null 2>&1
-png=$work/icon.svg.png
-[[ -f $png ]] || { echo "install: couldn't render assets/icon.svg" >&2; exit 1; }
-set=$work/Collate.iconset
-mkdir -p "$set"
-for size in 16 32 128 256 512; do
-  sips -z $size $size "$png" --out "$set/icon_${size}x${size}.png" >/dev/null
-  sips -z $((size * 2)) $((size * 2)) "$png" --out "$set/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns "$set" -o "$app/Contents/Resources/Collate.icns"
-
-cat > "$app/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleName</key><string>Collate</string>
-  <key>CFBundleDisplayName</key><string>Collate</string>
-  <key>CFBundleIdentifier</key><string>local.collate.diff</string>
-  <key>CFBundleExecutable</key><string>Collate</string>
-  <key>CFBundleIconFile</key><string>Collate</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>$version</string>
-  <key>CFBundleVersion</key><string>$version</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
-  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-</dict>
-</plist>
-PLIST
-
-# Apple silicon runs only signed code; an ad-hoc signature is enough on this Mac.
-codesign --force --sign - "$app" >/dev/null
+scripts/bundle.sh target/release/collate "$work"
 
 # Replace an earlier install only after the new bundle is complete.
 if pgrep -x Collate >/dev/null; then
