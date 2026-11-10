@@ -259,6 +259,10 @@ impl Settings {
     }
 
     pub fn save(&self) -> Result<(), String> {
+        // Tests change settings through the app; the reader's own file stays as it was.
+        if cfg!(test) {
+            return Ok(());
+        }
         let path = Settings::path().ok_or("HOME is not set")?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
