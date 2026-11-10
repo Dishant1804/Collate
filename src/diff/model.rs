@@ -128,8 +128,9 @@ pub struct FileDiff {
     pub new_mode: Option<String>,
     /// The patch says the file is binary, so it has no lines.
     pub binary: bool,
-    /// For a changed image (PNG or JPEG on a side): each side's bytes and their hash, drawn
-    /// in place of the "binary" note. Set by the app.
+    /// For a changed image (PNG, JPEG, PDF or SVG on a side): each side's bytes to draw and
+    /// the hash of what was read, drawn in place of the "binary" note, or above an SVG's lines.
+    /// Set by the app.
     pub images: Option<[Option<ImageSide>; 2]>,
     /// Shared, not copied, between the watcher's cache and the view: built once, then only
     /// read.

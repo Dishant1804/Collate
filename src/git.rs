@@ -48,7 +48,7 @@ pub enum Staged {
 pub enum Blob {
     Text(String),
     Binary,
-    /// A PNG or JPEG, which the app can draw.
+    /// A PNG, JPEG or PDF, which the app can draw (a PDF by its first page).
     Image(std::sync::Arc<[u8]>),
     TooLarge(usize),
 }
@@ -883,7 +883,7 @@ fn same(a: &Option<Blob>, b: &Option<Blob>) -> bool {
 }
 
 fn classify(bytes: Vec<u8>) -> Blob {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.starts_with(&[0xFF, 0xD8, 0xFF]) || bytes.starts_with(b"%PDF-") {
         return Blob::Image(bytes.into());
     }
     if bytes[..bytes.len().min(8000)].contains(&0) {

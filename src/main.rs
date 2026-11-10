@@ -2286,11 +2286,9 @@ fn file_diff(c: &Change, context: u32, ignore_whitespace: bool) -> FileDiff {
             patch.push_str(&format!("Binary files {a} and {b} differ\n"));
             let mut f = parse(&patch).into_iter().next().unwrap_or_else(|| FileDiff::between(old_path, new_path, "", ""));
             let image = |b: &Option<Blob>| match b {
-                Some(Blob::Image(bytes)) => {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    std::hash::Hash::hash(&bytes[..], &mut h);
-                    Some((std::hash::Hasher::finish(&h), bytes.clone()))
-                }
+                // Keyed by the PDF's own bytes, so the same PDF is the same picture.
+                Some(Blob::Image(bytes)) if bytes.starts_with(b"%PDF-") => Some((hash_bytes(bytes), pdf_page(bytes).map_or_else(|_| bytes.clone(), Into::into))),
+                Some(Blob::Image(bytes)) => Some((hash_bytes(bytes), bytes.clone())),
                 _ => None,
             };
             let sides = [image(&c.old), image(&c.new)];
@@ -2309,6 +2307,26 @@ fn hash_bytes(b: &[u8]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(b, &mut h);
     std::hash::Hasher::finish(&h)
+}
+
+/// A PDF's first page as a JPEG, by macOS's `sips`, at 72 points per inch: about 80 ms a page, on
+/// the watcher thread. JPEG rather than PNG because it has no transparency: the page comes out
+/// white, not the diff's background. On failure the PDF's own bytes stay, and the view says it
+/// can't decode them.
+fn pdf_page(pdf: &[u8]) -> Result<Vec<u8>, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let base = std::env::temp_dir().join(format!("collate-pdf-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let (src, out) = (base.with_extension("pdf"), base.with_extension("jpg"));
+    let result = std::fs::write(&src, pdf).map_err(|e| e.to_string()).and_then(|()| {
+        let o = std::process::Command::new("sips").args(["-s", "format", "jpeg", "-s", "formatOptions", "90"]).arg(&src).arg("--out").arg(&out).output().map_err(|e| format!("can't run sips: {e}"))?;
+        if !o.status.success() {
+            return Err(String::from_utf8_lossy(&o.stderr).trim().to_owned());
+        }
+        std::fs::read(&out).map_err(|e| e.to_string())
+    });
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    result
 }
 
 fn tree(changes: &[Change], files: &[FileDiff], viewed: &HashMap<String, u64>, keep: fn(&Change) -> bool) -> TreeModel<FileNode<Stat>> {
@@ -6021,6 +6039,26 @@ mod tests {
         assert!(st.rows.len() > 2);
         let plain = Change { path: "notes.txt".into(), ..c };
         assert!(file_diff(&plain, 3, false).images.is_none());
+    }
+
+    #[test]
+    fn a_changed_pdf_is_drawn_by_its_first_page() {
+        // A blank 100 × 50 page, with the cross-reference table readers need.
+        let objects = ["<</Type/Catalog/Pages 2 0 R>>", "<</Type/Pages/Kids[3 0 R]/Count 1>>", "<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 50]>>"];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut xref = String::from("xref\n0 4\n0000000000 65535 f \n");
+        for (i, o) in objects.iter().enumerate() {
+            xref.push_str(&format!("{:010} 00000 n \n", pdf.len()));
+            pdf.push_str(&format!("{} 0 obj\n{o}\nendobj\n", i + 1));
+        }
+        let at = pdf.len();
+        pdf.push_str(&format!("{xref}trailer\n<</Size 4/Root 1 0 R>>\nstartxref\n{at}\n%%EOF\n"));
+        let pdf = pdf.into_bytes();
+        let c = Change { path: "doc.pdf".into(), old_path: None, old: None, new: Some(Blob::Image(pdf.clone().into())), hash: 1, staged: Staged::No, untracked: false, new_hash: 2, generated: false, reused: false, conflicted: false };
+        let f = file_diff(&c, 3, false);
+        let (hash, page) = f.images.as_ref().and_then(|s| s[1].clone()).expect("a PDF is a picture");
+        assert!(page.starts_with(&[0xFF, 0xD8, 0xFF]), "rendered to a JPEG");
+        assert_eq!(hash, hash_bytes(&pdf), "keyed by the PDF, not the rendering");
     }
 
     #[test]
