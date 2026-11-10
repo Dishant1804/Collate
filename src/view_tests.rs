@@ -3,8 +3,11 @@
 
 use super::*;
 use crate::comments::{comments_text, parse_comments};
+use crate::diff::mark_moved;
+use crate::git::{Blob, Snapshot};
 use crate::history_view::ref_labels;
 use crate::settings::Motion;
+use crate::watcher::{DiffCache, file_diff, prepare, relevant};
 use rune::{Env, Runtime};
 
 #[test]
