@@ -413,6 +413,8 @@ struct Collate {
     settings_tab: usize,
     /// The next commit rewrites the last one.
     amend: bool,
+    /// Commits ahead of and behind the upstream.
+    ahead_behind: Option<(usize, usize)>,
     /// A slow repository change (fetch, push, switch) running in the background, as it's named.
     busy: Option<String>,
     /// The name asked for, and what for.
@@ -501,6 +503,7 @@ fn init() -> Collate {
         nav: nav::Nav::default(),
         commit_body: String::new(),
         amend: false,
+        ahead_behind: None,
         busy: None,
         prompt: None,
         prompt_text: TextEdit::new(""),
@@ -1053,14 +1056,21 @@ impl Collate {
     }
 
     /// The toolbar's "⋯" menu: how the diff is drawn, and the app's less frequent commands.
-    /// The title bar's branch menu: the branch as a pull request against its base, and the
-    /// bases to choose from (local branches and `origin`'s).
+    /// The title bar's branch menu: sync with the remote, the branch as a pull request against
+    /// its base, and the bases to choose from (local branches and `origin`'s).
     fn branch_menu(&mut self, tx: &mut Tx) {
         if let Some(r) = current_repo() {
             self.branches = r.branches();
         }
         let base = self.base.clone().unwrap_or_default();
+        let (ahead, behind) = self.ahead_behind.unwrap_or((0, 0));
+        let count = |verb: &str, n: usize| if n == 0 { verb.to_owned() } else { format!("{verb} {n} Commit{}", if n == 1 { "" } else { "s" }) };
+        let idle = self.busy.is_none();
         let mut menu = PopupMenu::new()
+            .item(PopupItem::new("fetch", "Fetch").enabled(idle))
+            .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
+            .item(PopupItem::new("push", count("Push", ahead)).enabled(idle))
+            .separator()
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
             .separator();
         let candidates: Vec<&String> = self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(20).collect();
@@ -1069,6 +1079,9 @@ impl Collate {
         }
         menu = menu.separator().item(PopupItem::new("compare", "Compare Branches or Tags…"));
         tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| match picked {
+            Some("fetch") => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
+            Some("pull") => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
+            Some("push") => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
             Some("preview") => {
                 s.map.open = false;
                 s.set_scope(Scope::Branch);
@@ -1385,6 +1398,7 @@ impl Collate {
         self.staged_shown = if opts.hide_low_signal { snap.working.iter().filter(|(p, s, _)| *s && !settings::low_signal(p)).count() } else { snap.staged };
         self.unstaged = snap.unstaged;
         self.total = snap.total;
+        self.ahead_behind = snap.ahead_behind;
         let shows_uncommitted = self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED);
         if self.scope == Scope::History && (self.total > 0) != shows_uncommitted {
             self.load_history();
@@ -1930,8 +1944,17 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         if let Some(b) = base {
             r = r.child(part("base-branch", &MERGE_ICON, b, false)).child(text("/".to_owned()).font(k.ty.ui).color(k.c.text_faint));
         }
-        r.child(part("current-branch", &BRANCH_ICON, s.branch.clone(), true))
-            .child(icon(k.glyph.chevron_down, 12.0).color(k.c.icon_faint))
+        r = r.child(part("current-branch", &BRANCH_ICON, s.branch.clone(), true));
+        // What a push or pull would move, or the one running, as GitHub Desktop shows it.
+        let sync = match (&s.busy, s.ahead_behind) {
+            (Some(doing), _) => doing.clone(),
+            (None, Some((a, b))) if a + b > 0 => [(a, "↑"), (b, "↓")].iter().filter(|(n, _)| *n > 0).map(|(n, arrow)| format!("{arrow}{n}")).collect::<Vec<_>>().join(" "),
+            _ => String::new(),
+        };
+        if !sync.is_empty() {
+            r = r.child(text(sync).key("sync").font(k.ty.text_small).color(k.c.text_muted));
+        }
+        r.child(icon(k.glyph.chevron_down, 12.0).color(k.c.icon_faint))
     };
     // The switcher's label, not its hover box, starts on the content's 16-point edge below
     // (the toolbar pads 12; the trigger pads its label 8).

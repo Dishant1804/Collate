@@ -108,6 +108,8 @@ pub struct Snapshot {
     /// changes: for counts that leave out what the view hides.
     pub working: Vec<(String, bool, bool)>,
     pub changes: Vec<Change>,
+    /// Commits ahead of and behind the upstream, when the branch has one.
+    pub ahead_behind: Option<(usize, usize)>,
 }
 
 pub struct Repo {
@@ -312,7 +314,7 @@ impl Repo {
             changes.retain(|c| c.reused || !same(&c.old, &c.new));
         }
         let base = base.map(|(name, c)| (name.to_owned(), c.to_owned()));
-        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes })
+        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes, ahead_behind: ahead_behind(raw) })
     }
 
     /// The files commit `sha` changed, each against its first parent (nothing, for a root
@@ -528,10 +530,9 @@ impl Repo {
 impl Repo {
     fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
         let mut c = Command::new("git");
-        c.arg("-C").arg(&self.root).args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-        if stdin.is_some() {
-            c.stdin(Stdio::piped());
-        }
+        // No terminal to ask on: a fetch or push that needs a password fails instead of waiting.
+        c.arg("-C").arg(&self.root).args(args).env("GIT_TERMINAL_PROMPT", "0").stdout(Stdio::piped()).stderr(Stdio::piped());
+        c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
         let mut child = c.spawn().map_err(|e| format!("can't run git: {e}"))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
             pipe.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
@@ -679,6 +680,26 @@ impl Repo {
         self.run(&["log", "-1", "--format=%B"], None).ok()
     }
 
+    /// Fetches every remote, dropping branches deleted there.
+    pub fn fetch(&self) -> Result<String, String> {
+        self.run(&["fetch", "--all", "--prune", "-q"], None)
+    }
+
+    /// Pulls the upstream, only when that needs no merge.
+    pub fn pull(&self) -> Result<String, String> {
+        self.run(&["pull", "--ff-only", "-q"], None)
+    }
+
+    /// Pushes the branch to its upstream; a branch without one goes to `origin` under its own
+    /// name and tracks it from then on.
+    pub fn push(&self) -> Result<String, String> {
+        if self.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], None).is_ok() {
+            self.run(&["push", "-q"], None)
+        } else {
+            self.run(&["push", "-q", "-u", "origin", "HEAD"], None)
+        }
+    }
+
     /// Makes branch `name` at `at` (HEAD when `None`) and, with `switch`, moves onto it.
     pub fn new_branch(&self, name: &str, at: Option<&str>, switch: bool) -> Result<String, String> {
         let mut args = if switch { vec!["switch", "-q", "-c", name] } else { vec!["branch", name] };
@@ -793,6 +814,14 @@ fn hash_blob(b: &Option<Blob>, h: &mut DefaultHasher) {
         Some(Blob::Image(b)) => (4u8, &b[..]).hash(h),
         Some(Blob::TooLarge(n)) => (3u8, n).hash(h),
     }
+}
+
+/// The status's `# branch.ab +1 -2` line: commits ahead of and behind the upstream.
+fn ahead_behind(raw: &[u8]) -> Option<(usize, usize)> {
+    let text = String::from_utf8_lossy(raw);
+    let ab = text.split('\0').find_map(|r| r.strip_prefix("# branch.ab "))?;
+    let mut n = ab.split(' ').map(|n| n.trim_start_matches(['+', '-']).parse().ok());
+    Some((n.next()??, n.next()??))
 }
 
 /// Parses `git status --porcelain=v2 -z --branch` into the branch name and the changed entries.
