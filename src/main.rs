@@ -3073,8 +3073,9 @@ fn file_section(s: &Collate, k: &Kit, (key, title): (&'static str, &str), count:
         // Set as the sidebar sets "Working Copy", so the two columns' titles read as one kind.
         .child(text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).a11y_hidden())
         .child(text(count.to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint).a11y_hidden())
-        // The file tree's chevron, turned as it turns its folders'.
-        .child(icon(k.glyph.chevron_down, 16.0).key("disclosure").color(k.c.icon_faint).icon_rotation(if folded { -std::f32::consts::FRAC_PI_2 } else { 0.0 }).motion(k.motion.control).a11y_hidden());
+        // The file tree's chevron, turned as it turns its folders'. Its glyph sits mid-box:
+        // pulled in so it's as far from the count as the count is from the title.
+        .child(icon(k.glyph.chevron_down, 16.0).key("disclosure").ml(-4.0).color(k.c.icon_faint).icon_rotation(if folded { -std::f32::consts::FRAC_PI_2 } else { 0.0 }).motion(k.motion.control).a11y_hidden());
     let mut head = row()
         .key(format!("{key}-head"))
         .w_full()
@@ -3169,16 +3170,18 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     let all = s.info.len();
     // Everything in the panel hangs off one 12 pt inset: the filter's edge, the list titles,
     // the rows' chevrons and the trailing buttons.
-    let mut p = col().key("staging").w_full().h_full().pt(COLUMN_TOP).gap(4.0);
+    // No gap between the panel's parts: each title's own 28 pt band spaces it, so every title
+    // sits as far below what's above it (the filter, a hairline) as the next.
+    let mut p = col().key("staging").w_full().h_full().pt(COLUMN_TOP);
     // History leads with the chosen commit; its files follow, as in Zed's commit view.
     if s.scope == Scope::History
         && let Some(card) = commit_card(s, k)
     {
-        p = p.child(card);
+        p = p.child(card.mb(4.0));
     }
     // The first list title follows the filter with no gap, as the sidebar's first row follows
     // its section title: both second rows then sit on one line too.
-    p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).mb(-4.0).child(filter.w_full()));
+    p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).child(filter.w_full()));
     // A list that shows files takes the room above the commit box; with none showing (folded
     // or empty), a spacer does, so the box stays at the foot either way.
     let shows = |key: &str, n: usize| n > 0 && !s.folded_lists.contains(key);
@@ -3242,18 +3245,16 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
     };
     let button = Button::new(label).variant(ButtonVariant::Contrast).shortcut("⌘↩").disabled(!ready).help(help).on_press(|s: &mut Collate| s.commit()).build(k).key("commit").w_full();
     let amend = Checkbox::new(s.amend).label("Amend last commit").disabled(s.head.is_none() || s.committing).on_toggle(|s: &mut Collate| s.toggle_amend()).build(k).key("amend");
+    // Set as the lists above are: an edge-to-edge hairline, as between them, then a 28 pt title
+    // right under it.
+    let head = row().key("commit-head").w_full().h(28.0).px(PANEL_INSET).items_center()
+        .child(text("Commit").font(k.ty.text_xsmall_medium).color(k.c.text_muted));
     col()
         .key("commit-box")
         .w_full()
-        .px(PANEL_INSET)
-        .pt(10.0)
-        .pb(12.0)
-        .gap(8.0)
         .child(col().key("rule").w_full().h(1.0).fill(k.c.border_weak))
-        .child(text("Commit").font(k.ty.text_small).color(k.c.text_base))
-        .child(field)
-        .child(amend)
-        .child(button)
+        .child(head)
+        .child(col().key("commit-body").w_full().px(PANEL_INSET).pb(PANEL_INSET).gap(8.0).child(field).child(amend).child(button))
 }
 
 /// What the diff is, above it: the count, what it's measured against, the totals and how much
@@ -5195,6 +5196,16 @@ mod tests {
             rt.frame(1.0 / 60.0);
         }
         assert!(foot(&rt) < 1.0, "and stays there with both lists folded: {} off", foot(&rt));
+        // One rhythm down the panel: both hairlines run edge to edge, and each title's band
+        // starts right under what's above it, the filter or a hairline.
+        let at = |key: &str| rt.presented(key).unwrap_or_else(|| panic!("{key} is drawn")).0;
+        let (between, rule) = (at("between"), at("rule"));
+        assert!(between[0] == rule[0] && between[2] == rule[2], "the two hairlines span alike: {between:?} vs {rule:?}");
+        assert_eq!(at("staged-head")[1] - between[1], at("commit-head")[1] - rule[1], "and sit alike over their titles");
+        assert_eq!(at("staged-head")[3], at("commit-head")[3]);
+        let (filter, unstaged) = (at("filter"), at("unstaged-head"));
+        assert_eq!(unstaged[1] - (filter[1] + filter[3]), at("staged-head")[1] - (between[1] + between[3]), "the filter and the hairline sit alike over their titles");
+        assert_eq!(between[1], unstaged[1] + unstaged[3], "and the hairline right under the title above it");
         let field = rt.presented("message").expect("the commit box").0;
         assert!(field[3] >= 140.0, "the message is a box, not a line: {} tall", field[3]);
     }
