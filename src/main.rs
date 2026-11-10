@@ -3425,7 +3425,7 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         .items_center()
         .child(what)
         .child(row().grow(1.0))
-        .child(text(format!("{viewed}/{n} viewed")).key("viewed-count").font(k.ty.text_small).color(k.c.text_muted));
+        .child(text(progress(s.diff.visible_file(), n, viewed)).key("viewed-count").font(k.ty.text_small).color(k.c.text_muted));
     // Row 2, only when there's something to say about how the diff is drawn.
     // A 28 pt band right under the first, as the sidebar's and the panel's second rows are, so
     // all three second rows centre on one line.
@@ -3474,6 +3474,15 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         c = c.child(notes);
     }
     c
+}
+
+/// Where the reader is in the review: the file at the top of the diff and how many are
+/// viewed, so a long review shows its progress without counting ticks.
+fn progress(at: usize, files: usize, viewed: usize) -> String {
+    match files {
+        0 | 1 => format!("{viewed}/{files} viewed"),
+        n => format!("File {} of {n} - {viewed} viewed", at.min(n - 1) + 1),
+    }
 }
 
 /// Feedback after an action, at the bottom of the diff: what happened, and Undo for a

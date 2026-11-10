@@ -382,6 +382,24 @@ fn clicking_files_in_the_sidebar_brings_each_to_the_top() {
 }
 
 #[test]
+fn the_summary_says_which_file_is_in_view_and_how_many_are_viewed() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    let shown = |rt: &Runtime<Collate>| rt.elements().into_iter().find(|e| e.key.as_deref() == Some("viewed-count")).and_then(|e| e.text).expect("the progress text");
+    let n = rt.state.diff.files().len();
+    assert_eq!(shown(&rt), format!("File 1 of {n} - 0 viewed"));
+    for key in ["]", "v"] {
+        rt.key(KeyEvent { key: Key::Text(key.into()), mods: Default::default() });
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+    }
+    assert_eq!(shown(&rt), format!("File 2 of {n} - 1 viewed"), "] moved to the second file and v marked it");
+    assert_eq!(progress(0, 1, 1), "1/1 viewed", "one file has nowhere to be in");
+    assert_eq!(progress(40, 3, 0), "File 3 of 3 - 0 viewed", "never past the last file");
+}
+
+#[test]
 fn shortcuts_work_after_clicking_a_file_in_the_sidebar() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);
