@@ -498,7 +498,22 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
     if !p.checks.is_empty() {
         let failed = p.checks.iter().filter(|c| c.state == CheckState::Failed).count();
         let passed = p.checks.iter().filter(|c| c.state == CheckState::Passed).count();
-        card = card.child(section("pr-checks-title", &format!("Checks - {passed} passed{}", if failed > 0 { format!(", {failed} failed") } else { String::new() })));
+        let title = section("pr-checks-title", &format!("Checks - {passed} passed{}", if failed > 0 { format!(", {failed} failed") } else { String::new() }));
+        // Failed GitHub Actions runs, each once: those can be run again from here.
+        let mut runs: Vec<u64> = p.checks.iter().filter(|c| c.state == CheckState::Failed).filter_map(github::Check::run_id).collect();
+        runs.sort_unstable();
+        runs.dedup();
+        if runs.is_empty() || !open {
+            card = card.child(title);
+        } else {
+            let n = p.number;
+            let rerun = Button::new("Re-run Failed").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(s.busy.is_some())
+                .help("Run the failed GitHub Actions jobs again").on_press(move |s: &mut Collate| {
+                    let runs = runs.clone();
+                    s.pr_act("Re-running…", move |gh| gh.rerun_failed(&runs).map(|_| format!("Re-running the failed checks of #{n}")), |_| {});
+                }).build(k).key("pr-rerun");
+            card = card.child(row().w_full().items_center().child(title.grow(1.0)).child(rerun.mr(-GHOST_PAD)));
+        }
         let mut checks: Vec<&github::Check> = p.checks.iter().collect();
         // Failures first: they're what needs looking at.
         checks.sort_by_key(|c| match c.state {

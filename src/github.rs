@@ -63,6 +63,14 @@ pub fn overall(checks: &[Check]) -> Option<CheckState> {
     })
 }
 
+impl Check {
+    /// The GitHub Actions run behind the check, from its link: only those can be run again.
+    pub fn run_id(&self) -> Option<u64> {
+        let (_, rest) = self.url.split_once("/actions/runs/")?;
+        rest.split('/').next()?.parse().ok()
+    }
+}
+
 /// A comment in the conversation, a review's summary, or one comment of a thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Post {
@@ -307,6 +315,14 @@ impl Gh {
         self.run(&args, None).map(|_| ())
     }
 
+    /// Run the failed jobs of these workflow runs again.
+    pub fn rerun_failed(&self, runs: &[u64]) -> Result<(), String> {
+        for id in runs {
+            self.run(&["run", "rerun", &id.to_string(), "--failed"], None)?;
+        }
+        Ok(())
+    }
+
     /// Change the title and description.
     pub fn retitle(&self, number: u32, title: &str, body: &str) -> Result<(), String> {
         self.run(&["pr", "edit", &number.to_string(), "--title", title, "--body-file", "-"], Some(body)).map(|_| ())
@@ -513,6 +529,14 @@ mod tests {
         assert_eq!(overall(&[]), None);
         let g = group(std::slice::from_ref(&p), "me");
         assert_eq!((g[0].1.len(), g[1].1.len(), g[2].1.len()), (1, 0, 0));
+    }
+
+    #[test]
+    fn only_actions_checks_have_a_run_to_repeat() {
+        let check = |url: &str| Check { name: "test".into(), state: CheckState::Failed, url: url.into() };
+        assert_eq!(check("https://github.com/o/r/actions/runs/42766795004/job/129665059298").run_id(), Some(42766795004));
+        assert_eq!(check("https://app.circleci.com/pipelines/x").run_id(), None);
+        assert_eq!(check("").run_id(), None);
     }
 
     #[test]
