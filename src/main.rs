@@ -3179,17 +3179,25 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     // The first list title follows the filter with no gap, as the sidebar's first row follows
     // its section title: both second rows then sit on one line too.
     p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).mb(-4.0).child(filter.w_full()));
+    // A list that shows files takes the room above the commit box; with none showing (folded
+    // or empty), a spacer does, so the box stays at the foot either way.
+    let shows = |key: &str, n: usize| n > 0 && !s.folded_lists.contains(key);
+    let foot = |p: El, lists_grow: bool| (if lists_grow { p } else { p.child(row().key("foot-spacer").w_full().grow(1.0)) }).child(commit_box(s, k));
     p = match s.scope {
         Scope::Uncommitted => p
             .child(file_section(s, k, ("unstaged", "Unstaged Files"), unstaged_n, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged"))
             .child(col().key("between").w_full().h(1.0).fill(k.c.border_weak))
-            .child(file_section(s, k, ("staged", "Staged Files"), staged_n, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged yet"))
-            .child(commit_box(s, k)),
-        Scope::Unstaged => p.child(file_section(s, k, ("unstaged", "Unstaged Files"), all, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged")).child(commit_box(s, k)),
-        Scope::Staged => p.child(file_section(s, k, ("staged", "Staged Files"), all, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged")).child(commit_box(s, k)),
-        Scope::Branch | Scope::History => p.child(file_section(s, k, ("changed", "Changed Files"), all, None, file_list(s, k, false, None), "No files changed")),
+            .child(file_section(s, k, ("staged", "Staged Files"), staged_n, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged yet")),
+        Scope::Unstaged => p.child(file_section(s, k, ("unstaged", "Unstaged Files"), all, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged")),
+        Scope::Staged => p.child(file_section(s, k, ("staged", "Staged Files"), all, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged")),
+        Scope::Branch | Scope::History => return p.child(file_section(s, k, ("changed", "Changed Files"), all, None, file_list(s, k, false, None), "No files changed")),
     };
-    p
+    let lists_grow = match s.scope {
+        Scope::Uncommitted => shows("unstaged", unstaged_n) || shows("staged", staged_n),
+        Scope::Unstaged => shows("unstaged", all),
+        _ => shows("staged", all),
+    };
+    foot(p, lists_grow)
 }
 
 /// The commit message box's height: near square at the panel's default width.
@@ -5177,6 +5185,16 @@ mod tests {
         assert!((tall(&rt, "unstaged") - 28.0).abs() < 0.5, "and it's its title alone");
         click(&mut rt, "unstaged-toggle");
         assert!(rt.find("src/chevron").is_some(), "a second click opens it again");
+        let foot = |rt: &Runtime<Collate>| {
+            let (panel, commit) = (rt.presented("staging").unwrap().0, rt.presented("commit-box").unwrap().0);
+            (panel[1] + panel[3] - (commit[1] + commit[3])).abs()
+        };
+        assert!(foot(&rt) < 1.0, "the commit box sits at the foot");
+        rt.update(|s, _| s.folded_lists.extend(["unstaged", "staged"]));
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(foot(&rt) < 1.0, "and stays there with both lists folded: {} off", foot(&rt));
         let field = rt.presented("message").expect("the commit box").0;
         assert!(field[3] >= 140.0, "the message is a box, not a line: {} tall", field[3]);
     }
