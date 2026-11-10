@@ -1270,6 +1270,35 @@ fn a_comment_goes_under_its_line_and_follows_it() {
 }
 
 #[test]
+fn the_selection_copies_as_a_reference_or_as_lines_for_an_agent() {
+    let mut rt = loaded();
+    let path = rt.state.diff.files()[0].path().to_owned();
+    // Line 13 changed (`original(10)` to `changed(10)`); 12 and 14 are its context.
+    rt.update(|s, _| s.diff.set_selection(Some(diff::LineRange { file: 0, start: LineRef::new(diff::Side::New, 12), end: LineRef::new(diff::Side::New, 14) })));
+    assert_eq!(rt.state.selection_reference().as_deref(), Some(format!("{path}#L12-L14").as_str()));
+    let agent = rt.state.selection_for_agent().unwrap();
+    assert!(agent.starts_with(&format!("`{path}#L12-L14`, in the uncommitted changes (HEAD to the working tree):\n\n```diff\n")), "{agent}");
+    let lines: Vec<&str> = agent.lines().skip(3).take_while(|l| *l != "```").collect();
+    assert_eq!(lines.len(), 4, "{agent}");
+    assert!(lines[0].starts_with(" ") && lines[3].starts_with(" "), "context either side: {agent}");
+    assert_eq!((lines[1], lines[2]), ("-    let value_10 = original(10);", "+    let value_10 = changed(10);"), "removed before added");
+    rt.update(|s, _| s.diff.set_selection(Some(diff::LineRange::line(0, LineRef::new(diff::Side::Old, 13)))));
+    assert_eq!(rt.state.selection_reference().as_deref(), Some(format!("{path}#L13 (before the change)").as_str()));
+    // The hunk header offers both, in a menu, beside Comment.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "copy-sel");
+    let menu = rt.popup_menu().expect("the Copy menu");
+    assert!(menu.find("ref").is_some() && menu.find("agent").is_some());
+    rt.resolve_popup(Some("ref")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.text.contains("#L13")), "says what it copied");
+    rt.update(|s, _| s.diff.set_selection(None));
+    assert_eq!(rt.state.selection_reference(), None);
+}
+
+#[test]
 fn a_changed_png_is_drawn_not_called_binary() {
     // A 1×1 PNG, then another.
     let png = |byte: u8| -> Vec<u8> {

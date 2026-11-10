@@ -523,6 +523,58 @@ impl DiffState {
         Some(out.join("\n"))
     }
 
+    /// The selection's side (the one it started on) and its first and last line numbers on
+    /// that side: what a reference to the selection names.
+    pub fn selected_span(&self) -> Option<(Side, u32, u32)> {
+        let sel = self.selection?;
+        let side = sel.start.side;
+        let (a, b) = self.selected_rows(&sel)?;
+        let mut lines = (a..=b).filter_map(|r| self.row_line(self.rows[r as usize], side));
+        let first = lines.next()?;
+        Some((side, first, lines.last().unwrap_or(first)))
+    }
+
+    /// The selected rows as a unified diff body: both sides, ` `, `-` and `+` markers, the
+    /// removed lines of each change before its added ones (as split mode's pairs aren't), and
+    /// `@@` where a hidden range falls between. For handing the lines to an agent.
+    pub fn selected_diff(&self) -> Option<String> {
+        let sel = self.selection?;
+        let (a, b) = self.selected_rows(&sel)?;
+        let file = &self.files[sel.file];
+        let line = |h: u32, i: u32| &file.hunks[h as usize].lines[i as usize];
+        let (mut out, mut added) = (Vec::new(), Vec::new());
+        for r in a..=b {
+            match self.rows[r as usize] {
+                Row::Ctx { old, .. } => {
+                    out.append(&mut added);
+                    out.push(format!(" {}", self.side_line(sel.file, Side::Old, old).unwrap_or_default()));
+                }
+                Row::Line { h, i, .. } => {
+                    let l = line(h, i);
+                    match l.kind {
+                        LineKind::Added => added.push(format!("+{}", l.text)),
+                        LineKind::Removed => out.push(format!("-{}", l.text)),
+                        LineKind::Context => {
+                            out.append(&mut added);
+                            out.push(format!(" {}", l.text));
+                        }
+                    }
+                }
+                Row::Pair { h, del, add, .. } => {
+                    out.push(format!("-{}", line(h, del).text));
+                    added.push(format!("+{}", line(h, add).text));
+                }
+                Row::Gap { .. } => {
+                    out.append(&mut added);
+                    out.push("@@".into());
+                }
+                Row::File(_) | Row::Note(_) | Row::Comment { .. } => {}
+            }
+        }
+        out.append(&mut added);
+        Some(out.join("\n"))
+    }
+
     /// The selection's first and last rows.
     fn selected_rows(&self, sel: &LineRange) -> Option<(u32, u32)> {
         if let Some((s, rev, rows)) = self.sel_rows.get()

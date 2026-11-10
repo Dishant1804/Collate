@@ -208,6 +208,10 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
             s.ask_comment();
             true
         }
+        "y" | "Y" => {
+            s.copy_selection(t == "Y", tx);
+            true
+        }
         "v" => {
             s.toggle_viewed(file, tx);
             true

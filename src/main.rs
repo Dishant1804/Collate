@@ -7,6 +7,7 @@
 //! it viewed, `o` opens it; `s` unified/split, `w` wrap, `1`–`4` all/staged/unstaged/pull request preview,
 //! `r` refresh, ⌘↩ commit, ⌘, settings, ⇧⌘B sidebar.
 
+mod agent;
 mod avatars;
 mod comments;
 mod diff;
@@ -2464,6 +2465,8 @@ fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
     // A comment, in any view, on the lines picked in this hunk.
     if s.picked(f, h).is_some() || s.diff.selection().is_some_and(|sel| sel.file == f && s.diff.current_hunk() == Some((f, h))) {
         r = r.child(action(k, "comment", "Comment…", "Comment on the selected line (c)", false, |s| s.ask_comment()));
+        let copy = Button::new("Copy…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Copy the selected lines' reference (y), or the lines for an agent (Y)");
+        r = r.child(copy.on_press_tx(|s: &mut Collate, tx: &mut Tx| s.copy_menu(tx)).build(k).key("copy-sel"));
     }
     if s.scope.read_only() {
         return r;
@@ -2656,6 +2659,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("A  U  X", "Stage, unstage, discard the whole file in view"),
             ("v", "Mark the file viewed"),
             ("c", "Comment on the selected line"),
+            ("y  Y", "Copy the selected lines' reference (path#L10-L25), or the lines as a diff for an agent"),
             ("o", "Open the file in your editor"),
             ("⌘F  ⌘K", "Search this view: the diff (⏎ next match, ⇧⏎ previous), the Map's files, History's commits and branches"),
             ("⌘P", "Go to a file: type part of its path; add :line for a line"),
