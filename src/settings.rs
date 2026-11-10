@@ -107,6 +107,8 @@ pub struct Settings {
     pub markers: bool,
     pub word_diff: bool,
     pub syntax: bool,
+    /// Fetch and build a grammar the first time a diff shows a language without one.
+    pub download_languages: bool,
     pub context: u32,
     pub default_scope: Scope,
     /// Marking a file viewed folds it away.
@@ -136,6 +138,7 @@ impl Default for Settings {
             markers: true,
             word_diff: true,
             syntax: true,
+            download_languages: true,
             context: 3,
             default_scope: Scope::Uncommitted,
             collapse_viewed: true,
@@ -256,6 +259,7 @@ impl Settings {
                         "markers" => s.markers = b,
                         "word_diff" => s.word_diff = b,
                         "syntax" => s.syntax = b,
+                        "download_languages" => s.download_languages = b,
                         "collapse_viewed" => s.collapse_viewed = b,
                         "hide_low_signal" => s.hide_low_signal = b,
                         "auto_refresh" => s.auto_refresh = b,
@@ -290,13 +294,14 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\n",
             self.font_size,
             self.wrap,
             self.one_number,
             self.markers,
             self.word_diff,
             self.syntax,
+            self.download_languages,
             self.context,
             self.collapse_viewed,
             self.hide_low_signal,
@@ -347,6 +352,7 @@ mod tests {
             markers: false,
             word_diff: false,
             syntax: false,
+            download_languages: false,
             context: FULL_FILE,
             default_scope: Scope::Branch,
             collapse_viewed: false,

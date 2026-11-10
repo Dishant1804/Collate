@@ -24,7 +24,8 @@ mod git_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
@@ -447,6 +448,8 @@ struct Collate {
     has_project: bool,
     /// The settings panel's section.
     settings_tab: usize,
+    /// Downloaded grammars: loaded, being prepared, or failed.
+    languages: grammars::Languages,
     /// The next commit rewrites the last one.
     amend: bool,
     /// Commits ahead of and behind the upstream.
@@ -561,6 +564,7 @@ fn init() -> Collate {
         picking: false,
         has_project: current_repo().is_some(),
         settings_tab: 0,
+        languages: grammars::Languages::new(grammars::root().as_deref()),
         commit_ids: Vec::new(),
         graph_commits: Vec::new(),
         graph_rows: Vec::new(),
@@ -1608,19 +1612,105 @@ impl Collate {
         self.diff.set_style(s.style());
         self.diff.set_mode(s.layout);
         self.diff.set_wrap(s.wrap);
-        if was.is_none_or(|w| w.syntax != s.syntax) {
-            if s.syntax {
-                self.diff.set_highlighter(Highlighter::builtin(), rune_kit::syntax::known);
-            } else {
-                self.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"), |_| false);
-            }
-        }
+        let recolour = was.is_none_or(|w| w.syntax != s.syntax);
+        let fetch = was.is_some_and(|w| (!w.syntax && s.syntax) || (!w.download_languages && s.download_languages));
         REFRESH_EVERY.store(if s.auto_refresh { s.refresh_ms } else { 0 }, Ordering::Relaxed);
         *OPTS.lock().unwrap() = self.opts();
         if let Some(w) = was
             && (w.context != s.context || w.hide_low_signal != s.hide_low_signal || w.ignore_whitespace != s.ignore_whitespace || w.show_moved != s.show_moved)
         {
             self.reload();
+        }
+        if recolour {
+            self.set_colours();
+        }
+        if fetch {
+            self.want_languages();
+        }
+    }
+
+    /// Colour the diff with the built-in scanners and the grammars loaded so far, or not at
+    /// all with syntax highlighting off.
+    fn set_colours(&mut self) {
+        if !self.settings.syntax {
+            self.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"), |_| false);
+            return;
+        }
+        if self.languages.loaded.is_empty() {
+            self.diff.set_highlighter(Highlighter::builtin(), rune_kit::syntax::known);
+            return;
+        }
+        let loaded = Rc::new(self.languages.loaded.clone());
+        let mut ids: Vec<&str> = loaded.keys().copied().collect();
+        ids.sort_unstable();
+        let mine = loaded.clone();
+        // Keyed by the grammars it holds, so a newly loaded one doesn't reuse plain results.
+        let h = Highlighter::new(move |lang: Option<&str>, code: &str| match lang.and_then(grammars::for_language).and_then(|g| mine.get(g.id)) {
+            Some(c) => grammars::colour(c, code),
+            None => Vec::new(),
+        })
+        .key(ids);
+        self.diff.set_highlighter(h, move |lang| rune_kit::syntax::known(lang) || grammars::for_language(lang).is_some_and(|g| loaded.contains_key(g.id)));
+    }
+
+    /// Load the grammars the diff's files need, installing missing ones if the reader lets
+    /// Collate download them. One that failed waits until it's asked for in the settings.
+    fn want_languages(&mut self) {
+        if !self.settings.syntax {
+            return;
+        }
+        let mut wanted: Vec<&'static grammars::Grammar> = Vec::new();
+        for g in self.diff.files().iter().filter_map(|f| f.language().and_then(grammars::for_language)) {
+            if !wanted.iter().any(|w| w.id == g.id) {
+                wanted.push(g);
+            }
+        }
+        for g in wanted {
+            let l = &self.languages;
+            if l.loaded.contains_key(g.id) || l.working.contains(&g.id) || l.failed.contains_key(g.id) {
+                continue;
+            }
+            if self.settings.download_languages || l.status(g) == grammars::Status::Installed {
+                self.prepare_language(g);
+            }
+        }
+    }
+
+    /// Install `g` if it's missing or outdated, then load it, off the UI thread.
+    fn prepare_language(&mut self, g: &'static grammars::Grammar) {
+        let (Some(root), Some(app)) = (grammars::root(), HANDLE.get().cloned()) else { return };
+        self.languages.failed.remove(g.id);
+        self.languages.working.push(g.id);
+        std::thread::spawn(move || {
+            let result = grammars::prepare(&root, g).map(Arc::new);
+            app.update(move |s, _| s.language_ready(g, result));
+        });
+    }
+
+    fn language_ready(&mut self, g: &'static grammars::Grammar, result: Result<Arc<grammars::Config>, String>) {
+        self.languages.working.retain(|id| *id != g.id);
+        self.languages.rescan(grammars::root().as_deref());
+        match result {
+            Ok(c) => {
+                self.languages.loaded.insert(g.id, c);
+                self.set_colours();
+            }
+            Err(e) => {
+                self.say(format!("No colours for {}: {e}", g.title), true);
+                self.languages.failed.insert(g.id, e);
+            }
+        }
+    }
+
+    fn remove_language(&mut self, g: &'static grammars::Grammar) {
+        let Some(root) = grammars::root() else { return };
+        if let Err(e) = grammars::remove(&root, g) {
+            self.say(format!("Couldn't remove {}: {e}", g.title), true);
+        }
+        self.languages.failed.remove(g.id);
+        self.languages.rescan(Some(&root));
+        if self.languages.loaded.remove(g.id).is_some() {
+            self.set_colours();
         }
     }
 
@@ -1756,6 +1846,7 @@ impl Collate {
         }
         self.images = images;
         self.diff.set_files_folded(files, &folded);
+        self.want_languages();
         self.place_comments();
         self.build_lists(&changes);
         // The map's sizes and imports follow the working tree.
