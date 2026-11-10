@@ -679,6 +679,29 @@ impl Repo {
         self.run(&["log", "-1", "--format=%B"], None).ok()
     }
 
+    /// Makes branch `name` at `at` (HEAD when `None`) and, with `switch`, moves onto it.
+    pub fn new_branch(&self, name: &str, at: Option<&str>, switch: bool) -> Result<String, String> {
+        let mut args = if switch { vec!["switch", "-q", "-c", name] } else { vec!["branch", name] };
+        args.extend(at);
+        self.run(&args, None)
+    }
+
+    /// Applies commit `id`'s change on top of HEAD as a new commit.
+    pub fn cherry_pick(&self, id: &str) -> Result<String, String> {
+        self.run(&["cherry-pick", id], None)
+    }
+
+    /// Commits the inverse of commit `id`.
+    pub fn revert(&self, id: &str) -> Result<String, String> {
+        self.run(&["revert", "--no-edit", id], None)
+    }
+
+    /// Moves the branch to `id`: `how` is "soft" (keep the changes staged), "mixed" (keep them
+    /// unstaged) or "hard" (throw them away).
+    pub fn reset(&self, how: &str, id: &str) -> Result<String, String> {
+        self.run(&["reset", "-q", &format!("--{how}"), id], None)
+    }
+
     /// Local branches, remote branches and tags: what a compare can start or end at.
     pub fn refs(&self) -> Vec<String> {
         let mut all = self.branches();

@@ -295,6 +295,20 @@ struct Discard {
     path: String,
 }
 
+/// What the name typed into the prompt dialog is for.
+#[derive(Clone, Debug, PartialEq)]
+enum Ask {
+    /// A new branch at a commit (HEAD when `None`), switched to.
+    Branch(Option<String>),
+}
+
+/// A repository change that throws work away, waiting for the reader to confirm it.
+#[derive(Clone, Debug, PartialEq)]
+enum Risky {
+    /// `git reset --hard` to a commit.
+    ResetHard(String),
+}
+
 struct Notice {
     text: String,
     error: bool,
@@ -399,6 +413,12 @@ struct Collate {
     settings_tab: usize,
     /// The next commit rewrites the last one.
     amend: bool,
+    /// A slow repository change (fetch, push, switch) running in the background, as it's named.
+    busy: Option<String>,
+    /// The name asked for, and what for.
+    prompt: Option<Ask>,
+    prompt_text: TextEdit,
+    risky: Option<Risky>,
     /// The compare dialog's two ends (branches, remote branches, tags) while it's open, and
     /// the refs to pick from.
     compare: Option<(String, String)>,
@@ -481,6 +501,10 @@ fn init() -> Collate {
         nav: nav::Nav::default(),
         commit_body: String::new(),
         amend: false,
+        busy: None,
+        prompt: None,
+        prompt_text: TextEdit::new(""),
+        risky: None,
         compare: None,
         refs: Vec::new(),
         compared: None,
@@ -727,6 +751,45 @@ impl Collate {
         refresh();
     }
 
+    /// Run a change that can be slow (the network, hooks) or that moves branches, off the UI
+    /// thread; then report it and reread the files, the branches and the history. One at a
+    /// time. Without a window (tests) it runs here.
+    fn act_bg(&mut self, doing: &str, f: impl FnOnce(&Repo) -> Result<String, String> + Send + 'static) {
+        let Some(repo) = current_repo() else { return };
+        if self.busy.is_some() {
+            self.say(format!("Wait for {} to finish", self.busy.as_deref().unwrap_or_default().trim_end_matches('…').to_lowercase()), true);
+            return;
+        }
+        let Some(app) = HANDLE.get().cloned() else {
+            let result = f(&repo);
+            self.landed(result);
+            return;
+        };
+        self.busy = Some(doing.to_owned());
+        std::thread::spawn(move || {
+            let result = f(&repo);
+            app.update(move |s, _| {
+                s.busy = None;
+                s.landed(result);
+            });
+        });
+    }
+
+    /// How a change from [`Collate::act_bg`] went, and what it may have moved.
+    fn landed(&mut self, result: Result<String, String>) {
+        match result {
+            Ok(done) => self.say(done, false),
+            Err(e) => self.say(e, true),
+        }
+        if let Some(r) = current_repo() {
+            self.branches = r.branches();
+        }
+        if self.scope == Scope::History {
+            self.load_history();
+        }
+        refresh();
+    }
+
     /// Show commit `id`'s diff against its parent (or a range, `a..b`), from any view.
     fn open_commit(&mut self, id: &str) {
         self.compared = None;
@@ -734,6 +797,17 @@ impl Collate {
         self.set_scope(Scope::History);
         self.set_commit(id);
         self.history_diff = true;
+    }
+
+    /// The name typed into the prompt: make the branch or the stash.
+    fn answer_prompt(&mut self) {
+        let Some(ask) = self.prompt.take() else { return };
+        let name = self.prompt_text.text.trim().to_owned();
+        self.prompt_text = TextEdit::new("");
+        match ask {
+            Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
+            Ask::Branch(at) => self.act_bg("Creating the branch…", move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
+        }
     }
 
     /// Opens the compare dialog, from the base to this branch to begin with.
@@ -772,6 +846,59 @@ impl Collate {
             }
             (Err(e), _) | (_, Err(e)) => self.say(e, true),
         }
+    }
+
+    fn ask(&mut self, what: Ask) {
+        self.prompt = Some(what);
+        self.prompt_text = TextEdit::new("");
+    }
+
+    fn confirm_risky(&mut self) {
+        match self.risky.take() {
+            Some(Risky::ResetHard(id)) => self.act_bg("Resetting…", move |r| r.reset("hard", &id).map(|_| format!("Reset to {} and threw the changes away", abbrev(&id)))),
+            None => {}
+        }
+    }
+
+    /// The chosen commit's "⋯" menu in History: build on it, undo it, or move the branch to it.
+    fn commit_menu(&mut self, anchor: &str, tx: &mut Tx) {
+        let Some(id) = self.commit.clone().filter(|c| c != graph::UNCOMMITTED && !c.contains("..")) else { return };
+        let on = if self.branch == "HEAD" { "HEAD".to_owned() } else { self.branch.clone() };
+        let is_head = self.head.as_deref() == Some(id.as_str());
+        let reset = PopupMenu::new()
+            .item(PopupItem::new("reset-soft", "Soft: Keep Changes Staged"))
+            .item(PopupItem::new("reset-mixed", "Mixed: Keep Changes Unstaged"))
+            .item(PopupItem::new("reset-hard", "Hard: Discard Changes…"));
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("copy", "Copy Hash"))
+            .item(PopupItem::new("branch", "New Branch Here…"))
+            .separator()
+            .item(PopupItem::new("pick", format!("Cherry-Pick onto {on}")).enabled(!is_head))
+            .item(PopupItem::new("revert", "Revert Commit"))
+            .item(PopupItem::new("compare", format!("Compare with {on}")).enabled(!is_head && self.head.is_some()))
+            .submenu_enabled(format!("Reset {on} to Here"), reset, !is_head);
+        tx.popup_menu(menu, anchor.to_owned(), move |s: &mut Collate, picked, tx| {
+            let id = id.clone();
+            let short_id = abbrev(&id);
+            match picked {
+                Some("copy") => {
+                    tx.copy(id);
+                    s.say("Copied the commit hash", false);
+                }
+                Some("branch") => s.ask(Ask::Branch(Some(id))),
+                Some("pick") => s.act_bg("Cherry-picking…", move |r| r.cherry_pick(&id).map(|_| format!("Cherry-picked {short_id}"))),
+                Some("revert") => s.act_bg("Reverting…", move |r| r.revert(&id).map(|_| format!("Reverted {short_id}"))),
+                Some("reset-soft") => s.act_bg("Resetting…", move |r| r.reset("soft", &id).map(|_| format!("Reset to {short_id}; its later changes are staged"))),
+                Some("reset-mixed") => s.act_bg("Resetting…", move |r| r.reset("mixed", &id).map(|_| format!("Reset to {short_id}; its later changes are unstaged"))),
+                Some("reset-hard") => s.risky = Some(Risky::ResetHard(id)),
+                Some("compare") => {
+                    let (Some(head), on) = (s.head.clone(), if s.branch == "HEAD" { "HEAD".to_owned() } else { s.branch.clone() }) else { return };
+                    s.open_commit(&format!("{id}..{head}"));
+                    s.compared = Some((short_id, on));
+                }
+                _ => {}
+            }
+        });
     }
 
     fn file(&self, i: usize) -> Option<(&FileDiff, FileInfo)> {
@@ -2012,6 +2139,36 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k, layer);
     }
 
+    if let Some(ask) = &s.prompt {
+        let (title, what, button, placeholder) = match ask {
+            Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
+            Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
+        };
+        let field = TextInput::new(&s.prompt_text)
+            .placeholder(placeholder)
+            .on_edit(|s: &mut Collate| &mut s.prompt_text)
+            .on_submit(|s: &mut Collate, _: &mut Tx| s.answer_prompt())
+            .width(None)
+            .build(k)
+            .key("prompt-field")
+            .w_full();
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_));
+        let buttons = row()
+            .key("prompt-buttons")
+            .w_full()
+            .gap(8.0)
+            .justify_end()
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.prompt = None).build(k))
+            .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(empty).on_press(|s: &mut Collate| s.answer_prompt()).build(k).key("prompt-ok"));
+        Dialog::new("prompt", title)
+            .open(true)
+            .fit()
+            .description(what)
+            .on_close(|s: &mut Collate| s.prompt = None)
+            .child(col().key("prompt-body").w_full().gap(12.0).child(field).child(buttons))
+            .build(k, layer);
+    }
+
     if let Some((from, to)) = &s.compare {
         let end = |key: &'static str, label: &str, value: &str, to: bool| {
             let pick = Button::new(if value.is_empty() { "Choose…".to_owned() } else { value.to_owned() })
@@ -2037,6 +2194,20 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .on_close(|s: &mut Collate| s.compare = None)
             .child(col().key("compare-body").w_full().gap(10.0).child(end("compare-from", "From", from, false)).child(end("compare-to", "To", to, true)).child(buttons.pt(4.0)))
             .build(k, layer);
+    }
+
+    if let Some(r) = &s.risky {
+        let (title, what, button) = match r {
+            Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
+        };
+        let buttons = row()
+            .key("risky-buttons")
+            .w_full()
+            .gap(8.0)
+            .justify_end()
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.risky = None).build(k))
+            .child(Button::new(button).variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_risky()).build(k).key("risky-ok"));
+        Dialog::new("risky", title).open(true).fit().description(what).on_close(|s: &mut Collate| s.risky = None).child(buttons).build(k, layer);
     }
 
     let lights = cx.titlebar_inset();
@@ -2478,6 +2649,16 @@ fn commit_card(s: &Collate, k: &Kit) -> Option<El> {
         card = card.child(refs);
     }
     let sha = c.id.clone();
+    if c.id != graph::UNCOMMITTED {
+        let more = IconButton::new(&MORE_ICON)
+            .variant(IconButtonVariant::GhostMuted)
+            .label("More actions for this commit")
+            .help("Branch, cherry-pick, revert, reset")
+            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_menu("commit-more", tx))
+            .build(k)
+            .key("commit-more");
+        card = card.child(row().key("commit-actions").w_full().justify_end().child(more.mr(-4.0)));
+    }
     card = card
         .child(line("commit-email", "Email", text(c.email.clone()).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0)))
         .child(line("commit-sha", "Commit", text(c.id.clone()).font(mono).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0)
@@ -2528,13 +2709,21 @@ fn commit_header(s: &Collate, k: &Kit) -> El {
         let copy = Button::new("Copy SHA").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
             .help("Copy the commit's full hash")
             .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(sha.clone()); s.say("Copied the commit hash", false); }).build(k).key("copy-sha");
+        let more = IconButton::new(&MORE_ICON)
+            .variant(IconButtonVariant::GhostMuted)
+            .label("More actions for this commit")
+            .help("Branch, cherry-pick, revert, reset")
+            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_menu("commit-header-more", tx))
+            .build(k)
+            .key("commit-header-more");
         r = r.child(avatar(k, s, c, 32.0))
             .child(col().grow(1.0).min_w(0.0).gap(2.0)
                 .child(row().gap(8.0).items_center()
                     .child(text(c.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
                     .child(text(format!("{} - {}", c.date, c.email)).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0)))
                 .child(text(c.subject.clone()).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0)))
-            .child(copy.mr(-GHOST_PAD));
+            .child(copy)
+            .child(more.mr(-4.0));
     }
     col().w_full().child(r).child(col().w_full().h(1.0).fill(k.c.border_weak))
 }
@@ -3058,7 +3247,7 @@ fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return false;
     }
     // A dialog takes its own keys (Escape closes it); nothing else acts behind it.
-    if s.confirm.is_some() || s.words.is_some() || s.compare.is_some() {
+    if s.confirm.is_some() || s.words.is_some() || s.prompt.is_some() || s.risky.is_some() || s.compare.is_some() {
         return false;
     }
     if s.show_help {
