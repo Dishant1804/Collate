@@ -7,7 +7,9 @@ change. You review, stage, discard and commit without leaving the diff.
 
 ## What it does
 
-- Unified or split diffs with syntax colours and word-level changes.
+- Unified or split diffs with syntax colours and word-level changes. Fourteen languages
+  are built in; about forty more (C, C++, Java, Kotlin, Ruby, Prisma, ...) are fetched and
+  built the first time a diff shows one, or from Settings > Languages.
 - Stage, unstage or discard a file, a hunk, picked lines or single word changes.
 - Moved blocks shown apart from new code, with a key to jump between the two ends.
 - Views for all changes, staged, unstaged, a pull request preview against a base branch,
@@ -28,6 +30,7 @@ change. You review, stage, discard and commit without leaving the diff.
 
 - macOS 13 or newer.
 - `git` on your `PATH`.
+- For downloaded languages: Xcode's command line tools (`xcode-select --install`).
 - A stable Rust toolchain to build it. It is developed on Rust 1.98.
 - Optional: the GitHub CLI (`gh`), used for commit authors' pictures.
 
