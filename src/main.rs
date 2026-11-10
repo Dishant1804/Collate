@@ -1608,7 +1608,11 @@ impl Collate {
         self.diff.set_mode(s.layout);
         self.diff.set_wrap(s.wrap);
         if was.is_none_or(|w| w.syntax != s.syntax) {
-            self.diff.set_highlighter(if s.syntax { Highlighter::builtin() } else { Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off") });
+            if s.syntax {
+                self.diff.set_highlighter(Highlighter::builtin(), rune_kit::syntax::known);
+            } else {
+                self.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"), |_| false);
+            }
         }
         REFRESH_EVERY.store(if s.auto_refresh { s.refresh_ms } else { 0 }, Ordering::Relaxed);
         *OPTS.lock().unwrap() = self.opts();
@@ -4706,7 +4710,7 @@ mod tests {
         state.settings.layout = if split { DiffMode::Split } else { DiffMode::Unified };
         state.apply_settings(None);
         if arm == "off" {
-            state.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"));
+            state.diff.set_highlighter(Highlighter::new(|_: Option<&str>, _: &str| Vec::new()).key("off"), |_| false);
         }
         state.diff.set_files(vec![FileDiff::between_with_context(Some("app.ts".into()), Some("app.ts".into()), &old, &new, 25)]);
         drop((old, new));
