@@ -3504,7 +3504,15 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         if away > 0 {
             note.push_str(&format!(" - {away} on lines not in this view"));
         }
-        notes = notes.child(chip(k, "comments", &note, "Copy as Markdown", "Copy every comment, with its file, line and the line's text", |s: &mut Collate, tx: &mut Tx| s.copy_comments(tx)));
+        notes = notes.child(chip(k, "comments", &note, "Copy as Markdown", "Copy every comment, with its file, line and the line's text", |s: &mut Collate, tx: &mut Tx| s.copy_comments(tx)).child(
+            Button::new(format!("Send to {}", s.settings.agent.title()))
+                .variant(ButtonVariant::Ghost)
+                .control_size(ControlSize::Small)
+                .help("Start the coding agent in a terminal under the diff, asked to address every comment (Settings - Coding agent)")
+                .on_press(|s: &mut Collate| s.send_comments())
+                .build(k)
+                .key("send-comments"),
+        ));
     }
     if s.settings.ignore_whitespace {
         any = true;

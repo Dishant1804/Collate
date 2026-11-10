@@ -5,7 +5,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit, SegmentedControl
 
 use crate::diff::DiffMode;
 use crate::git::Scope;
-use crate::settings::{CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
+use crate::settings::{Agent, CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
 use crate::{ADD_PROJECT, ALL_ICON, Collate, Screen, current_repo, grammars, lucide, project_labels, tilde, update};
 
 /// The width every settings control is right-aligned in, so each description wraps at the
@@ -173,6 +173,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         3 => vec![
             setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "PR Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
             setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
+            setting(k, "agent", "Coding agent", &[], "Runs in the terminal under the diff when you send it comments", pick(k, &Agent::ALL.map(Agent::title), &Agent::ALL, st.agent, |c, v| c.agent = v)),
             setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
             setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
             setting(k, "notify", "Review requests", &[], "A notification when someone asks for your review, checked every few minutes", switch(k, "Review requests", st.notify_reviews, |c, v| c.notify_reviews = v)),

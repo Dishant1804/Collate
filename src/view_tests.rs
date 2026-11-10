@@ -1299,6 +1299,29 @@ fn the_selection_copies_as_a_reference_or_as_lines_for_an_agent() {
 }
 
 #[test]
+fn comments_go_to_the_agent_as_one_prompt() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.diff.set_selection(Some(diff::LineRange::line(0, LineRef::new(diff::Side::New, 43))));
+        s.ask_comment();
+        s.prompt_text = TextEdit::new("Name this better");
+        s.answer_prompt();
+        s.loaded = true;
+    });
+    let prompt = rt.state.comments_prompt();
+    assert!(prompt.starts_with("Address my review comments on the uncommitted changes (HEAD to the working tree)."), "{prompt}");
+    assert!(prompt.ends_with(&rt.state.comments_markdown()) && prompt.contains("Name this better"));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("send-comments").is_some(), "offered beside Copy as Markdown");
+    // The tests have no project open, so nothing starts; it says why instead.
+    click(&mut rt, "send-comments");
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text == "Open a project first"));
+    assert!(rt.state.terminals.list.is_empty());
+}
+
+#[test]
 fn a_changed_png_is_drawn_not_called_binary() {
     // A 1×1 PNG, then another.
     let png = |byte: u8| -> Vec<u8> {

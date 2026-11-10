@@ -86,6 +86,47 @@ impl Editor {
     }
 }
 
+/// The coding agent Collate hands work to, in a terminal under the diff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Agent {
+    Claude,
+    Codex,
+    Gemini,
+    Cursor,
+}
+
+impl Agent {
+    pub const ALL: [Agent; 4] = [Agent::Claude, Agent::Codex, Agent::Gemini, Agent::Cursor];
+
+    /// The command that starts it in a session, its prompt the argument that follows.
+    pub fn command(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::Gemini => "gemini -i",
+            Agent::Cursor => "cursor-agent",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude Code",
+            Agent::Codex => "Codex",
+            Agent::Gemini => "Gemini",
+            Agent::Cursor => "Cursor",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+            Agent::Gemini => "gemini",
+            Agent::Cursor => "cursor",
+        }
+    }
+}
+
 /// Where updates come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
@@ -131,6 +172,7 @@ pub struct Settings {
     pub auto_refresh: bool,
     pub refresh_ms: u64,
     pub editor: Editor,
+    pub agent: Agent,
     /// Compare lines without their whitespace, as `git diff -w`.
     pub ignore_whitespace: bool,
     /// Show lines that moved in their own colour instead of as removed and added.
@@ -166,6 +208,7 @@ impl Default for Settings {
             auto_refresh: true,
             refresh_ms: 1000,
             editor: Editor::System,
+            agent: Agent::Claude,
             ignore_whitespace: false,
             show_moved: true,
             fold_large: 1000,
@@ -260,6 +303,11 @@ impl Settings {
                         s.editor = e;
                     }
                 }
+                "agent" => {
+                    if let Some(a) = Agent::ALL.into_iter().find(|a| a.name() == v) {
+                        s.agent = a;
+                    }
+                }
                 "context" => {
                     if let Some(n) = v.parse::<u32>().ok().filter(|n| CONTEXT_LINES.contains(n)) {
                         s.context = n;
@@ -323,7 +371,7 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nagent = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
             self.font_size,
             self.wrap,
             self.one_number,
@@ -339,6 +387,7 @@ impl Settings {
             self.auto_refresh,
             self.refresh_ms,
             self.editor.name(),
+            self.agent.name(),
             self.ignore_whitespace,
             self.show_moved,
             self.fold_large,
@@ -410,6 +459,7 @@ mod tests {
             auto_refresh: false,
             refresh_ms: 5000,
             editor: Editor::Cursor,
+            agent: Agent::Gemini,
             ignore_whitespace: true,
             show_moved: false,
             fold_large: 300,

@@ -160,6 +160,11 @@ impl Terminals {
         self.list.get(self.active)
     }
 
+    /// The id the next shell will have: unique for this run of the app.
+    pub fn next_id(&self) -> u64 {
+        self.next
+    }
+
     fn by_id(&self, id: u64) -> Option<&Session> {
         self.list.iter().find(|t| t.id == id)
     }

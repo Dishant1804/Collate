@@ -60,10 +60,14 @@ impl Collate {
     }
 
     /// Every comment as Markdown, each under its file, line and the line's text, to paste
-    /// into a pull request or a message.
-    pub fn copy_comments(&mut self, tx: &mut Tx) {
+    /// into a pull request, a message or an agent.
+    pub fn comments_markdown(&self) -> String {
         let md: String = self.comments.iter().map(|c| format!("**{}:{}**\n\n> {}\n\n{}\n\n", c.at.path, c.at.line, c.at.text.trim(), c.body.trim())).collect();
-        tx.copy(md.trim_end().to_owned());
+        md.trim_end().to_owned()
+    }
+
+    pub fn copy_comments(&mut self, tx: &mut Tx) {
+        tx.copy(self.comments_markdown());
         let n = self.comments.len();
         self.say(format!("Copied {n} comment{} as Markdown", if n == 1 { "" } else { "s" }), false);
     }
