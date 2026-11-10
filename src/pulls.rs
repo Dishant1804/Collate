@@ -357,9 +357,7 @@ impl Collate {
 
     /// After a merge or a checkout moved branches: read them, and the working tree, again.
     fn reread(&mut self) {
-        if let Some(r) = current_repo() {
-            self.branches = r.branches();
-        }
+        self.load_branches();
         crate::refresh();
     }
 

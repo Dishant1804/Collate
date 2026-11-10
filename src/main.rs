@@ -659,10 +659,8 @@ impl Collate {
             self.scope = scope;
             self.loaded = false;
             self.error = None;
-            if scope == Scope::Branch
-                && let Some(r) = current_repo()
-            {
-                self.branches = r.branches();
+            if scope == Scope::Branch {
+                self.load_branches();
             }
             if scope == Scope::History {
                 self.load_history();
@@ -841,12 +839,19 @@ impl Collate {
         }
     }
 
-    /// Reads the recent commits, keeping the one shown if it's still there, else HEAD's.
+    /// Reads the recent commits off the UI thread, keeping the one shown if it's still there,
+    /// else HEAD's.
     fn load_history(&mut self) {
-        let Some(r) = current_repo() else { return };
-        let (commits, head) = r.graph(self.graph_limit, None);
-        self.web = r.web_url();
-        self.show_history(commits, head);
+        let limit = self.graph_limit;
+        self.read_bg(move |r| (r.graph(limit, None), r.web_url()), |s, ((commits, head), web)| {
+            s.web = web;
+            s.show_history(commits, head);
+        });
+    }
+
+    /// Reads the branches again, off the UI thread.
+    fn load_branches(&mut self) {
+        self.read_bg(Repo::branches, |s, branches| s.branches = branches);
     }
 
     /// Near the end of the list: reads the next page off the main thread, so the list keeps
@@ -895,10 +900,16 @@ impl Collate {
             return;
         }
         self.commit = Some(id.to_owned());
-        // A range has no one message.
-        let message = if id.contains("..") { String::new() } else { current_repo().map(|r| r.message(id)).unwrap_or_default() };
-        self.commit_body = message
-            .split_once('\n').map(|(_, rest)| rest.trim().to_owned()).unwrap_or_default();
+        self.commit_body.clear();
+        // A range has no one message. Read off the UI thread, so stepping through commits stays quick.
+        if !id.contains("..") {
+            let id = id.to_owned();
+            self.read_bg(move |r| (r.message(&id), id), |s, (message, id)| {
+                if s.commit.as_deref() == Some(id.as_str()) {
+                    s.commit_body = message.split_once('\n').map(|(_, rest)| rest.trim().to_owned()).unwrap_or_default();
+                }
+            });
+        }
         if self.scope == Scope::History {
             self.loaded = false;
         }
@@ -989,9 +1000,7 @@ impl Collate {
             Ok(done) => self.say(done, false),
             Err(e) => self.say(e, true),
         }
-        if let Some(r) = current_repo() {
-            self.branches = r.branches();
-        }
+        self.load_branches();
         if self.scope == Scope::History {
             self.load_history();
         }
@@ -1043,15 +1052,20 @@ impl Collate {
         }
     }
 
-    /// Reads something from the repository off the UI thread, and hands it to `done` here.
-    /// Without a window (tests) it reads right away.
+    /// Reads something from the repository off the UI thread, and hands it to `done` here,
+    /// unless the reader has switched projects meanwhile. Without a window (tests) it reads
+    /// right away.
     fn read_bg<T: Send + 'static>(&mut self, read: impl FnOnce(&Repo) -> T + Send + 'static, done: impl FnOnce(&mut Collate, T) + Send + 'static) {
         let Some(repo) = current_repo() else { return };
         match HANDLE.get().cloned() {
             Some(app) => {
                 std::thread::spawn(move || {
                     let v = read(&repo);
-                    app.update(move |s, _| done(s, v));
+                    app.update(move |s, _| {
+                        if current_repo().is_some_and(|r| r.root == repo.root) {
+                            done(s, v);
+                        }
+                    });
                 });
             }
             None => {
@@ -1088,11 +1102,12 @@ impl Collate {
 
     /// Opens the compare dialog, from the base to this branch to begin with.
     fn start_compare(&mut self) {
-        let Some(r) = current_repo() else { return };
-        self.refs = r.refs();
-        let to = if self.branch == "HEAD" { "HEAD".to_owned() } else { self.branch.clone() };
-        let from = self.base.clone().filter(|b| *b != to).or_else(|| self.refs.iter().find(|b| **b != to).cloned()).unwrap_or_default();
-        self.compare = Some((from, to));
+        self.read_bg(Repo::refs, |s, refs| {
+            s.refs = refs;
+            let to = if s.branch == "HEAD" { "HEAD".to_owned() } else { s.branch.clone() };
+            let from = s.base.clone().filter(|b| *b != to).or_else(|| s.refs.iter().find(|b| **b != to).cloned()).unwrap_or_default();
+            s.compare = Some((from, to));
+        });
     }
 
     /// Picks one end of the compare (`to`, else `from`) from the refs.
