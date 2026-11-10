@@ -710,6 +710,8 @@ impl Collate {
         self.viewed = load_viewed();
         self.comments = load_comments();
         self.pulls = pulls::PullsState::default();
+        self.pulls.list = current_repo().and_then(|r| pulls::cached(&r.root)).map(Ok);
+        self.load_pulls();
         self.place_comments();
         self.stale.clear();
         self.seen.clear();

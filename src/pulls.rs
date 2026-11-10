@@ -3,7 +3,8 @@
 //! checks, conversation and actions take the staging panel's top; its line threads sit under
 //! their lines with the reader's own comments, which a review sends as its line comments.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton, IconButtonVariant, Kit, Markdown, MarkdownStyle, TextArea, TextInput};
@@ -138,10 +139,15 @@ fn fresh_requests<'a>(seen: Option<&HashSet<u32>>, pulls: &'a [Pull], me: &str) 
 /// How often the review requests are read again.
 const REVIEWS_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Read the open pull requests again every few minutes, so a new review request notifies
-/// and the sidebar's count stays true.
+/// Read the pull requests at launch, so the list is there when it's opened, then again every
+/// few minutes, so a new review request notifies and the sidebar's count stays true.
 pub fn watch_reviews() {
     let Some(app) = HANDLE.get().cloned() else { return };
+    app.update(|s, _| {
+        if s.has_project {
+            s.load_pulls();
+        }
+    });
     std::thread::spawn(move || loop {
         std::thread::sleep(REVIEWS_EVERY);
         app.update(|s, _| {
@@ -150,6 +156,17 @@ pub fn watch_reviews() {
             }
         });
     });
+}
+
+/// The signed-in login and the pull requests.
+type List = (String, Vec<Pull>);
+
+/// Each project's last list, shown at once when it's opened again while a new one is read.
+static LISTS: std::sync::Mutex<Option<HashMap<PathBuf, List>>> = std::sync::Mutex::new(None);
+
+/// The last list read for the project at `root`.
+pub fn cached(root: &Path) -> Option<List> {
+    LISTS.lock().ok()?.as_ref()?.get(root).cloned()
 }
 
 /// How long Collate waits for the reader to finish connecting GitHub, looking every few seconds.
@@ -232,15 +249,14 @@ impl Collate {
         }
     }
 
-    /// Show the list, reading it if it isn't yet.
+    /// Show the list as last read, and read it again.
     pub fn open_pulls(&mut self) {
         self.map.open = false;
         self.pulls.open = true;
-        if self.pulls.list.is_none() {
-            self.load_pulls();
-        }
+        self.load_pulls();
     }
 
+    /// Read the list again, off the UI thread. Whatever list shows stays until it lands.
     pub fn load_pulls(&mut self) {
         let (Some(root), Some(app)) = (current_repo().map(|r| r.root.clone()), HANDLE.get().cloned()) else { return };
         if std::mem::replace(&mut self.pulls.loading, true) {
@@ -248,6 +264,9 @@ impl Collate {
         }
         std::thread::spawn(move || {
             let got = Gh::new(&root).list();
+            if let (Ok(list), Ok(mut lists)) = (&got, LISTS.lock()) {
+                lists.get_or_insert_default().insert(root.clone(), list.clone());
+            }
             app.update(move |s, _| {
                 // The reader switched projects meanwhile: this list was the last one's.
                 if current_repo().is_none_or(|r| r.root != root) {
