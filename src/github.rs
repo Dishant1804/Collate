@@ -307,6 +307,30 @@ impl Gh {
         self.run(&args, None).map(|_| ())
     }
 
+    /// Change the title and description.
+    pub fn retitle(&self, number: u32, title: &str, body: &str) -> Result<(), String> {
+        self.run(&["pr", "edit", &number.to_string(), "--title", title, "--body-file", "-"], Some(body)).map(|_| ())
+    }
+
+    /// Ask (`reviewer`) or label (`label`): `add` and `remove`, each a list of logins, teams
+    /// (`org/team`) or label names.
+    pub fn people(&self, number: u32, what: &str, add: &[String], remove: &[String]) -> Result<(), String> {
+        let n = number.to_string();
+        let (a, r) = (add.join(","), remove.join(","));
+        let (add_flag, remove_flag) = (format!("--add-{what}"), format!("--remove-{what}"));
+        let mut args = vec!["pr", "edit", n.as_str()];
+        if !add.is_empty() {
+            args.extend([add_flag.as_str(), a.as_str()]);
+        }
+        if !remove.is_empty() {
+            args.extend([remove_flag.as_str(), r.as_str()]);
+        }
+        if args.len() == 3 {
+            return Ok(());
+        }
+        self.run(&args, None).map(|_| ())
+    }
+
     /// Switch the working tree to the pull request's branch.
     pub fn checkout(&self, number: u32) -> Result<(), String> {
         self.run(&["pr", "checkout", &number.to_string()], None).map(|_| ())

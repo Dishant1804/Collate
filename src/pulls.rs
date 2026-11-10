@@ -21,6 +21,21 @@ pub enum Compose {
     Reply(usize),
     /// A new pull request from the current branch.
     Create,
+    /// The open pull request's title and description.
+    Edit,
+    /// Who's asked to review, as a list.
+    Reviewers,
+    Labels,
+}
+
+/// The names in a comma- or space-separated list, without an `@`.
+fn names(list: &str) -> Vec<String> {
+    list.split([',', ' ']).map(|n| n.trim().trim_start_matches('@').to_owned()).filter(|n| !n.is_empty()).collect()
+}
+
+/// What to add to and remove from `was` to make it `now`.
+fn changes(was: &[String], now: &[String]) -> (Vec<String>, Vec<String>) {
+    (now.iter().filter(|n| !was.contains(n)).cloned().collect(), was.iter().filter(|w| !now.contains(w)).cloned().collect())
 }
 
 pub struct PullsState {
@@ -210,6 +225,17 @@ impl Collate {
     pub fn start_compose(&mut self, c: Compose) {
         self.pulls.compose = Some(c);
         self.pulls.text = TextEdit::new("");
+        let pr = self.pulls.pr.as_ref();
+        match c {
+            Compose::Edit => {
+                self.pulls.title = TextEdit::new(pr.map_or("", |p| p.pull.title.as_str()));
+                self.pulls.text = TextEdit::new(pr.map_or("", |p| p.body.as_str()));
+            }
+            // A list to edit in place: the names as they are now.
+            Compose::Reviewers => self.pulls.title = TextEdit::new(pr.map(|p| p.reviewers.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()),
+            Compose::Labels => self.pulls.title = TextEdit::new(pr.map(|p| p.pull.labels.join(", ")).unwrap_or_default()),
+            _ => {}
+        }
         if c == Compose::Create {
             // The branch's last commit is the likeliest title.
             let subject = current_repo().and_then(|r| r.last_message()).and_then(|m| m.lines().next().map(str::to_owned)).unwrap_or_default();
@@ -249,6 +275,21 @@ impl Collate {
                 let Some(to) = self.pulls.pr.as_ref().and_then(|p| p.threads.get(t)).map(|t| t.reply_to) else { return };
                 self.pr_act("Replying…", move |gh| gh.reply(n, to, &body).map(|_| "Replied".to_owned()), |_| {});
             }
+            Compose::Edit => {
+                let title = self.pulls.title.text.trim().to_owned();
+                self.pr_act("Saving…", move |gh| gh.retitle(n, &title, &body).map(|_| format!("Saved #{n}")), |_| {});
+            }
+            Compose::Reviewers | Compose::Labels => {
+                let Some(pr) = &self.pulls.pr else { return };
+                let (what, was) = if c == Compose::Reviewers {
+                    ("reviewer", pr.reviewers.iter().map(|(w, _)| w.clone()).collect::<Vec<_>>())
+                } else {
+                    ("label", pr.pull.labels.clone())
+                };
+                let (add, remove) = changes(&was, &names(&self.pulls.title.text));
+                let done = if c == Compose::Reviewers { "Updated the reviewers" } else { "Updated the labels" };
+                self.pr_act("Saving…", move |gh| gh.people(n, what, &add, &remove).map(|_| done.to_owned()), |_| {});
+            }
             Compose::Create => {
                 let (title, draft) = (self.pulls.title.text.trim().to_owned(), self.pulls.draft);
                 let Some(base) = self.base.clone().map(|b| b.strip_prefix("origin/").map(str::to_owned).unwrap_or(b)) else {
@@ -287,12 +328,19 @@ impl Collate {
             .item(PopupItem::new("web", "Open on GitHub"))
             .item(PopupItem::new("reload", "Reload"))
             .separator()
+            .item(PopupItem::new("edit", "Edit Title and Description…").enabled(open))
+            .item(PopupItem::new("reviewers", "Reviewers…").enabled(open))
+            .item(PopupItem::new("labels", "Labels…").enabled(open))
+            .separator()
             .item(PopupItem::new("ready", if draft { "Ready for Review" } else { "Convert to Draft" }).enabled(open))
             .item(PopupItem::new("state", if open { "Close Pull Request" } else { "Reopen Pull Request" }));
         tx.popup_menu(menu, "pr-more", move |s: &mut Collate, picked, _| match picked {
             Some("checkout") => s.pr_act("Checking out…", move |gh| gh.checkout(n).map(|_| format!("Checked out #{n}")), Collate::reread),
             Some("web") => open_url(&url),
             Some("reload") => s.open_pull(n),
+            Some("edit") => s.start_compose(Compose::Edit),
+            Some("reviewers") => s.start_compose(Compose::Reviewers),
+            Some("labels") => s.start_compose(Compose::Labels),
             Some("ready") if draft => s.pr_act("Marking ready…", move |gh| gh.set(n, &["ready"]).map(|_| format!("#{n} is ready for review")), |_| {}),
             Some("ready") => s.pr_act("Converting…", move |gh| gh.set(n, &["ready", "--undo"]).map(|_| format!("#{n} is a draft")), |_| {}),
             Some("state") if open => s.pr_act("Closing…", move |gh| gh.set(n, &["close"]).map(|_| format!("Closed #{n}")), |_| {}),
@@ -592,7 +640,12 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             "Open Pull Request",
             "Describe the change (optional)",
         ),
+        Compose::Edit => (format!("Edit #{n}"), "Saved to GitHub.".to_owned(), "Save", "Description"),
+        Compose::Reviewers => (format!("Reviewers of #{n}"), "Logins or teams (org/team), separated by commas. Removing one takes back the request.".to_owned(), "Save", ""),
+        Compose::Labels => (format!("Labels of #{n}"), "Names of the repository's labels, separated by commas.".to_owned(), "Save", ""),
     };
+    // A list is one line, edited in the title field.
+    let list = matches!(c, Compose::Reviewers | Compose::Labels);
     let held = s.held();
     let what = match c {
         Compose::Review(_) if pending > 0 => format!("{what} Your {pending} line comment{} go with it.", if pending == 1 { "" } else { "s" }),
@@ -611,14 +664,22 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         || match c {
             Compose::Review(Verdict::Approve) => false,
             Compose::Review(Verdict::Comment) => pending == 0 && empty,
-            Compose::Create => s.pulls.title.text.trim().is_empty(),
+            Compose::Create | Compose::Edit => s.pulls.title.text.trim().is_empty(),
+            Compose::Reviewers | Compose::Labels => false,
             _ => empty,
         };
     let mut body = col().key("compose-body").w_full().gap(12.0);
-    if c == Compose::Create {
-        body = body.child(TextInput::new(&s.pulls.title).placeholder("Title").on_edit(|s: &mut Collate| &mut s.pulls.title).width(None).build(k).key("compose-title").w_full());
+    if matches!(c, Compose::Create | Compose::Edit) || list {
+        let hint = match c {
+            Compose::Reviewers => "ana, core/web",
+            Compose::Labels => "bug, needs review",
+            _ => "Title",
+        };
+        body = body.child(TextInput::new(&s.pulls.title).placeholder(hint).on_edit(|s: &mut Collate| &mut s.pulls.title).width(None).build(k).key("compose-title").w_full());
     }
-    body = body.child(area);
+    if !list {
+        body = body.child(area);
+    }
     let mut buttons = row().key("compose-buttons").w_full().gap(8.0).items_center();
     if c == Compose::Create {
         buttons = buttons.child(Checkbox::new(s.pulls.draft).label("Draft").on_toggle(|s: &mut Collate| s.pulls.draft ^= true).build(k).key("compose-draft"));
@@ -633,6 +694,14 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
 #[cfg(test)]
 mod tests {
     use super::preview;
+
+    #[test]
+    fn a_list_edit_adds_and_removes_only_what_changed() {
+        let was = super::names("ana, @bo");
+        assert_eq!(was, ["ana", "bo"]);
+        let (add, remove) = super::changes(&was, &super::names("bo core/web"));
+        assert_eq!((add, remove), (vec!["core/web".to_owned()], vec!["ana".to_owned()]));
+    }
 
     #[test]
     fn the_filter_wants_every_word_somewhere() {
