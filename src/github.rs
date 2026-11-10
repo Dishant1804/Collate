@@ -133,9 +133,12 @@ pub struct Detail {
     pub threads: Vec<Thread>,
     /// Where GitHub takes line comments: its own diff's hunks, three lines of context each, as
     /// (path, left side, first line, last line). Lines past them (context Collate shows more of)
-    /// can't be commented on. Filled by [`Gh::fetch`].
-    pub commentable: Vec<(String, bool, u32, u32)>,
+    /// can't be commented on. Filled by [`Gh::open`].
+    pub commentable: Vec<Hunk>,
 }
+
+/// A hunk of GitHub's diff: path, base side (`true`) or head, first line, last line.
+pub type Hunk = (String, bool, u32, u32);
 
 impl Detail {
     /// Whether GitHub accepts a comment on `line` of `path`'s base (`left`) or head side.
@@ -274,32 +277,47 @@ impl Gh {
         Ok((me, [nodes(&open), nodes(&done)].concat()))
     }
 
-    /// One pull request with its conversation, reviews, checks and line threads.
-    pub fn detail(&self, number: u32) -> Result<Detail, String> {
-        let n = number.to_string();
+    /// Pull request `n` with its conversation, reviews, checks and line threads, fetched; returns
+    /// the range to diff too. Its details, its threads and the fetch run at once: `known`, its
+    /// entry in the list, names the repository and base to fetch, so the fetch needn't wait.
+    pub fn open(&self, n: u32, known: Option<&Pull>) -> Result<(String, Detail), String> {
         let fields = format!("{LIST_FIELDS},body,state,mergeable,mergeStateStatus,headRefOid,reviews,comments,assignees,latestReviews");
-        let v = self.json(&["pr", "view", &n, "--json", &fields], None)?;
-        let threads = self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={number}"), "-f", &format!("query={THREADS}")], None)?;
-        Ok(detail(&v, &threads))
+        let joined = |e: &str| format!("{e} for #{n} stopped");
+        std::thread::scope(|t| {
+            let threads = t.spawn(|| self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={n}"), "-f", &format!("query={THREADS}")], None));
+            let early = known.map(|p| (p.base.as_str(), t.spawn(move || self.fetch(n, &p.url, &p.base))));
+            let v = self.json(&["pr", "view", &n.to_string(), "--json", &fields], None)?;
+            let threads = threads.join().map_err(|_| joined("Reading the threads"))??;
+            let mut d = detail(&v, &threads);
+            let (range, commentable) = match early {
+                Some((base, f)) => {
+                    let got = f.join().map_err(|_| joined("The fetch"))?;
+                    // The base changed since the list was read: fetch the new one.
+                    if base == d.pull.base { got? } else { self.fetch(n, &d.pull.url, &d.pull.base)? }
+                }
+                None => self.fetch(n, &d.pull.url, &d.pull.base)?,
+            };
+            d.commentable = commentable;
+            Ok((range, d))
+        })
     }
 
-    /// Fetch the pull request's head and base into `refs/collate/`, and note which lines GitHub
-    /// takes comments on; returns the range to diff, `<merge base>..<head>`.
-    pub fn fetch(&self, d: &mut Detail) -> Result<String, String> {
-        let url = self.run(&["repo", "view", "--json", "url", "--jq", ".url"], None)?.trim().to_owned();
-        let n = d.pull.number;
-        let (head, base) = (format!("refs/collate/pull/{n}/head"), format!("refs/collate/pull/{n}/base"));
+    /// Fetch pull request `n`'s head and `base` into `refs/collate/` from the repository its
+    /// address `url` is in; returns the range to diff, `<merge base>..<head>`, and which lines
+    /// GitHub takes comments on.
+    fn fetch(&self, n: u32, url: &str, base: &str) -> Result<(String, Vec<Hunk>), String> {
+        let repo = url.rsplit_once("/pull/").map(|(r, _)| r).ok_or_else(|| format!("#{n} has no GitHub address to fetch from"))?;
+        let (head, base_ref) = (format!("refs/collate/pull/{n}/head"), format!("refs/collate/pull/{n}/base"));
         let git = |args: &[&str]| -> Result<String, String> {
             let out = Command::new("git").args(args).current_dir(&self.root).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("can't run git: {e}"))?;
             if out.status.success() { Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
         };
-        git(&["fetch", "--no-tags", "--quiet", &url, &format!("+refs/pull/{n}/head:{head}"), &format!("+refs/heads/{}:{base}", d.pull.base)])
+        git(&["fetch", "--no-tags", "--quiet", repo, &format!("+refs/pull/{n}/head:{head}"), &format!("+refs/heads/{base}:{base_ref}")])
             .map_err(|e| format!("Couldn't fetch #{n}: {e}"))?;
-        let mb = git(&["merge-base", &base, &head]).map_err(|e| format!("#{n} has no common history with {}: {e}", d.pull.base))?;
+        let mb = git(&["merge-base", &base_ref, &head]).map_err(|e| format!("#{n} has no common history with {base}: {e}"))?;
         let tip = git(&["rev-parse", &head])?;
         let patch = git(&["diff", "--unified=3", "--no-color", "--no-ext-diff", &mb, &tip])?;
-        d.commentable = hunk_ranges(&patch);
-        Ok(format!("{mb}..{tip}"))
+        Ok((format!("{mb}..{tip}"), hunk_ranges(&patch)))
     }
 
     /// Submit a review: its verdict, a summary and comments on lines, in one go.
@@ -411,7 +429,7 @@ impl Gh {
 }
 
 /// Each hunk's lines on both sides, by the file's path (the new one, or the old for a deletion).
-fn hunk_ranges(patch: &str) -> Vec<(String, bool, u32, u32)> {
+fn hunk_ranges(patch: &str) -> Vec<Hunk> {
     let mut out = Vec::new();
     let (mut old, mut path) = (String::new(), String::new());
     for l in patch.lines() {

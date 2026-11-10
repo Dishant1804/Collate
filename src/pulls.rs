@@ -298,8 +298,10 @@ impl Collate {
             return;
         }
         self.pulls.fetching = Some(n);
+        let known = self.pulls.pr.as_ref().map(|d| &d.pull).filter(|p| p.number == n)
+            .or_else(|| self.pulls.list.as_ref()?.as_ref().ok()?.1.iter().find(|p| p.number == n)).cloned();
         std::thread::spawn(move || {
-            let got = gh.detail(n).and_then(|mut d| Ok((gh.fetch(&mut d)?, d)));
+            let got = gh.open(n, known.as_ref());
             app.update(move |s, _| {
                 s.pulls.fetching = None;
                 match got {
