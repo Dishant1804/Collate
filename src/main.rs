@@ -17,6 +17,7 @@ mod map;
 mod map_view;
 mod nav;
 mod patch;
+mod pulls;
 mod search;
 mod settings;
 mod terminal;
@@ -451,6 +452,8 @@ struct Collate {
     settings_tab: usize,
     /// Downloaded grammars: loaded, being prepared, or failed.
     languages: grammars::Languages,
+    /// The Pull Requests place and the pull request under review.
+    pulls: pulls::PullsState,
     /// The next commit rewrites the last one.
     amend: bool,
     /// Commits ahead of and behind the upstream.
@@ -566,6 +569,7 @@ fn init() -> Collate {
         has_project: current_repo().is_some(),
         settings_tab: 0,
         languages: grammars::Languages::new(grammars::root().as_deref()),
+        pulls: pulls::PullsState::default(),
         commit_ids: Vec::new(),
         graph_commits: Vec::new(),
         graph_rows: Vec::new(),
@@ -607,6 +611,8 @@ fn init() -> Collate {
 
 impl Collate {
     fn set_scope(&mut self, scope: Scope) {
+        // Any view of the changes leaves the pull request list.
+        self.pulls.open = false;
         if self.scope != scope {
             self.scope = scope;
             self.loaded = false;
@@ -661,6 +667,7 @@ impl Collate {
         self.info.clear();
         self.viewed = load_viewed();
         self.comments = load_comments();
+        self.pulls = pulls::PullsState::default();
         self.place_comments();
         self.stale.clear();
         self.seen.clear();
@@ -945,6 +952,8 @@ impl Collate {
     /// Show commit `id`'s diff against its parent (or a range, `a..b`), from any view.
     fn open_commit(&mut self, id: &str) {
         self.compared = None;
+        self.pulls.pr = None;
+        self.pulls.open = false;
         self.map.open = false;
         self.set_scope(Scope::History);
         self.set_commit(id);
@@ -2757,6 +2766,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         }
     } else { body };
     let body = if s.has_project && s.map.open { map_view::map_view(s, k) } else { body };
+    let body = if s.has_project && s.pulls.open { pulls::pulls_view(s, k) } else { body };
     let body = match status_bar(s, k) {
         Some(bar) => col().key("body").w_full().grow(1.0).min_h(0.0).child(body).child(bar),
         None => body,
@@ -3140,8 +3150,10 @@ const NAV_W: f32 = 24.0 * 2.0 + 2.0;
 /// isn't committed; Review is what is.
 fn views_sidebar(s: &Collate, k: &Kit) -> El {
     let place = |key: &str, label: &str, scope: Scope, badge: Option<usize>, detail: Option<String>| {
-        let mut r = SidebarRow::new(label.to_owned()).selected(s.scope == scope && !s.map.open).on_select(move |s: &mut Collate, _: &mut Tx| {
+        let elsewhere = s.map.open || s.pulls.open || s.pulls.pr.is_some();
+        let mut r = SidebarRow::new(label.to_owned()).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| {
             s.map.open = false;
+            s.pulls.open = false;
             s.set_scope(scope);
         });
         if let Some(n) = badge.filter(|&n| n > 0) {
@@ -3159,8 +3171,19 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
     ]);
     let review = SidebarSection::new("Review").rows([
         place("view-history", "Git Graph", Scope::History, None, None),
+        // The repository's open pull requests, and the one being reviewed.
+        {
+            let mut r = SidebarRow::new("Pull Requests").selected(s.pulls.open || s.pulls.pr.is_some()).on_select(|s: &mut Collate, _: &mut Tx| s.open_pulls());
+            if s.pulls.asked() > 0 {
+                r = r.badge(s.pulls.asked().to_string());
+            }
+            r.build(k).key("view-pulls")
+        },
         // The whole repository, with this view's changes on it.
-        SidebarRow::new("Map").selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| s.open_map()).build(k).key("view-map"),
+        SidebarRow::new("Map").selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
+            s.pulls.open = false;
+            s.open_map();
+        }).build(k).key("view-map"),
     ]);
     let apart = col().key("sections-apart").w_full().h(12.0).a11y_hidden();
     // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
