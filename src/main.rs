@@ -1580,7 +1580,7 @@ impl Collate {
         REFRESH_EVERY.store(if s.auto_refresh { s.refresh_ms } else { 0 }, Ordering::Relaxed);
         *OPTS.lock().unwrap() = self.opts();
         if let Some(w) = was
-            && (w.context != s.context || w.hide_low_signal != s.hide_low_signal || w.ignore_whitespace != s.ignore_whitespace || w.show_moved != s.show_moved)
+            && (w.context != s.context || w.hide_low_signal != s.hide_low_signal || w.source_first != s.source_first || w.ignore_whitespace != s.ignore_whitespace || w.show_moved != s.show_moved)
         {
             self.reload();
         }
@@ -1726,7 +1726,7 @@ impl Collate {
     /// The settings that shape the diffs the watcher builds.
     fn opts(&self) -> DiffOpts {
         let s = &self.settings;
-        DiffOpts { context: s.context, ignore_whitespace: s.ignore_whitespace, moved: s.show_moved, hide_low_signal: s.hide_low_signal && !self.show_low_signal }
+        DiffOpts { context: s.context, ignore_whitespace: s.ignore_whitespace, moved: s.show_moved, hide_low_signal: s.hide_low_signal && !self.show_low_signal, source_first: s.source_first }
     }
 
     #[cfg(test)]
@@ -3861,7 +3861,7 @@ mod sizes {
         let repo = Repo::open(std::path::Path::new(&dir)).unwrap();
         let raw = repo.status_raw().unwrap();
         let snap = repo.snapshot(Scope::Uncommitted, &raw, None).unwrap();
-        let p = prepare(snap, DiffOpts { context: 3, ignore_whitespace: false, moved: true, hide_low_signal: true }, &mut DiffCache::new()).unwrap();
+        let p = prepare(snap, DiffOpts { context: 3, ignore_whitespace: false, moved: true, hide_low_signal: true, source_first: true }, &mut DiffCache::new()).unwrap();
         let mut texts = 0usize;
         let (mut lines, mut line_text, mut changes) = (0usize, 0usize, 0usize);
         for f in &p.files {

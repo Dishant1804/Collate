@@ -77,9 +77,10 @@ pub struct DiffOpts {
     pub ignore_whitespace: bool,
     pub moved: bool,
     pub hide_low_signal: bool,
+    pub source_first: bool,
 }
 
-pub static OPTS: std::sync::Mutex<DiffOpts> = std::sync::Mutex::new(DiffOpts { context: 3, ignore_whitespace: false, moved: true, hide_low_signal: true });
+pub static OPTS: std::sync::Mutex<DiffOpts> = std::sync::Mutex::new(DiffOpts { context: 3, ignore_whitespace: false, moved: true, hide_low_signal: true, source_first: true });
 
 /// Built diffs by content hash and the settings that shape them, so a refresh rediffs only
 /// the files that changed.
@@ -93,9 +94,9 @@ pub struct Prepared {
     pub opts: DiffOpts,
 }
 
-/// Diff a snapshot's files, off the UI thread: low-signal files left out when hidden, each
-/// file diffed unless `cache` has it (new ones spread across cores), and moves marked across
-/// them all. `None` if a file the snapshot skipped as unchanged isn't in the cache: the
+/// Diff a snapshot's files, off the UI thread: low-signal files left out when hidden, source
+/// put before tests when asked, each file diffed unless `cache` has it (new ones spread across
+/// cores), and moves marked across them all. `None` if a file the snapshot skipped as unchanged isn't in the cache: the
 /// caller rereads everything.
 pub fn prepare(mut snap: Snapshot, opts: DiffOpts, cache: &mut DiffCache) -> Option<Prepared> {
     let total = snap.changes.len();
@@ -103,6 +104,10 @@ pub fn prepare(mut snap: Snapshot, opts: DiffOpts, cache: &mut DiffCache) -> Opt
         snap.changes.retain(|c| !(c.generated || settings::low_signal(&c.path)));
     }
     let hidden = total - snap.changes.len();
+    // Stable, so each rank keeps the tree's order.
+    if opts.source_first {
+        snap.changes.sort_by_key(|c| settings::review_rank(&c.path, c.generated));
+    }
     // The sidebar's counts leave out what's hidden, so they match the lists.
     if opts.hide_low_signal {
         let shown: Vec<&(String, bool, bool)> = snap.working.iter().filter(|(p, ..)| !settings::low_signal(p)).collect();

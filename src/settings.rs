@@ -124,6 +124,8 @@ pub struct Settings {
     pub collapse_viewed: bool,
     /// Hide lockfiles, minified bundles and snapshots until asked.
     pub hide_low_signal: bool,
+    /// Read source first, then tests, then lockfiles and generated files.
+    pub source_first: bool,
     /// A desktop notification when someone asks for the reader's review.
     pub notify_reviews: bool,
     pub auto_refresh: bool,
@@ -159,6 +161,7 @@ impl Default for Settings {
             default_scope: Scope::Uncommitted,
             collapse_viewed: true,
             hide_low_signal: true,
+            source_first: true,
             notify_reviews: true,
             auto_refresh: true,
             refresh_ms: 1000,
@@ -283,6 +286,7 @@ impl Settings {
                         "download_languages" => s.download_languages = b,
                         "collapse_viewed" => s.collapse_viewed = b,
                         "hide_low_signal" => s.hide_low_signal = b,
+                        "source_first" => s.source_first = b,
                         "notify_reviews" => s.notify_reviews = b,
                         "auto_refresh" => s.auto_refresh = b,
                         "ignore_whitespace" => s.ignore_whitespace = b,
@@ -319,7 +323,7 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
             self.font_size,
             self.wrap,
             self.one_number,
@@ -330,6 +334,7 @@ impl Settings {
             self.context,
             self.collapse_viewed,
             self.hide_low_signal,
+            self.source_first,
             self.notify_reviews,
             self.auto_refresh,
             self.refresh_ms,
@@ -363,6 +368,21 @@ pub fn low_signal(path: &str) -> bool {
     NAMES.contains(&name) || [".min.js", ".min.css", ".map", ".snap"].iter().any(|e| name.ends_with(e))
 }
 
+/// Where a file comes in a review read in order: 0 for source, 1 for tests, 2 for what a
+/// review usually skips. Tests are told by their folder or their name's convention.
+pub fn review_rank(path: &str, generated: bool) -> u8 {
+    if generated || low_signal(path) {
+        return 2;
+    }
+    let (dirs, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let stem = name.split('.').next().unwrap_or(name);
+    let in_tests = dirs.split('/').any(|d| matches!(d, "test" | "tests" | "__tests__" | "spec" | "specs" | "testdata"));
+    let named = stem.starts_with("test_")
+        || [".test.", ".spec.", "_test.", "_tests.", "_spec."].iter().any(|t| name.contains(t))
+        || ["Test", "Tests", "Spec"].iter().any(|t| stem.len() > t.len() && stem.ends_with(t));
+    u8::from(in_tests || named)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +405,7 @@ mod tests {
             default_scope: Scope::Branch,
             collapse_viewed: false,
             hide_low_signal: false,
+            source_first: false,
             notify_reviews: false,
             auto_refresh: false,
             refresh_ms: 5000,
@@ -403,6 +424,19 @@ mod tests {
     fn bad_values_keep_the_defaults() {
         let s = Settings::parse("font_size = 99\ncontext = abc\nwrap = maybe\nnonsense\nunknown = 1\n");
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn source_comes_before_tests_and_lockfiles_last() {
+        for p in ["src/main.rs", "src/latest.rs", "lib/contest.py", "app/Testing.swift", "web/spec.md"] {
+            assert_eq!(review_rank(p, false), 0, "{p}");
+        }
+        for p in ["tests/flow.rs", "src/view_tests.rs", "pkg/a_test.go", "test_api.py", "ui/Button.test.tsx", "ui/b.spec.ts", "src/__tests__/x.js", "Sources/AppTests.swift", "src/FooTest.java"] {
+            assert_eq!(review_rank(p, false), 1, "{p}");
+        }
+        assert_eq!(review_rank("Cargo.lock", false), 2);
+        assert_eq!(review_rank("tests/snapshots/a.snap", false), 2);
+        assert_eq!(review_rank("src/schema.rs", true), 2, "generated, by .gitattributes");
     }
 
     #[test]
