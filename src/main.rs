@@ -3887,6 +3887,10 @@ fn main() {
                 s.screen = Screen::Settings;
                 s.settings_tab = 1;
             }),
+            ("settings-agent", |s: &mut Collate| {
+                s.screen = Screen::Settings;
+                s.settings_tab = settings_view::AGENT_TAB;
+            }),
             ("settings-updates", |s: &mut Collate| {
                 s.screen = Screen::Settings;
                 s.settings_tab = SETTINGS_TABS.len() - 1;
