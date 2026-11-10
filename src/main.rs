@@ -1106,9 +1106,13 @@ impl Collate {
         self.place_comments();
     }
 
+    /// Put the reader's comments, then the open pull request's line threads, under their lines.
     fn place_comments(&mut self) {
-        let anchors: Vec<diff::Anchor> = self.comments.iter().map(|c| c.at.clone()).collect();
-        self.comments_shown = self.diff.set_comments(&anchors);
+        let mut anchors: Vec<diff::Anchor> = self.comments.iter().map(|c| c.at.clone()).collect();
+        anchors.extend(self.pulls.anchors());
+        let mut shown = self.diff.set_comments(&anchors);
+        shown.truncate(self.comments.len());
+        self.comments_shown = shown;
         self.comments_version += 1;
     }
 
@@ -3524,7 +3528,8 @@ fn avatar(k: &Kit, s: &Collate, c: &graph::Commit, size: f32) -> El {
 
 /// A comment under its line: what it says, when, and the way to change or delete it.
 fn comment_row(s: &Collate, k: &Kit, n: usize) -> El {
-    let Some(c) = s.comments.get(n) else { return row() };
+    // Past the reader's own: the pull request's threads.
+    let Some(c) = s.comments.get(n) else { return pulls::thread_row(s, k, n - s.comments.len()) };
     let head = row().w_full().gap(8.0).items_center()
         .child(text("Comment".to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted))
         .child(text(day(c.time)).font(k.ty.text_small).color(k.c.text_faint).grow(1.0))

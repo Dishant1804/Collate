@@ -34,6 +34,21 @@ impl Default for PullsState {
 }
 
 impl PullsState {
+    /// Where each line thread of the open pull request goes in the diff: by its line and that
+    /// line's text, as a comment is. An outdated thread has no line, and an anchor no line matches.
+    pub fn anchors(&self) -> Vec<diff::Anchor> {
+        let Some(pr) = &self.pr else { return Vec::new() };
+        pr.threads
+            .iter()
+            .map(|t| diff::Anchor {
+                path: t.path.clone(),
+                side: if t.left { diff::Side::Old } else { diff::Side::New },
+                line: t.line.unwrap_or(0),
+                text: if t.line.is_some() { t.text.clone() } else { "\0outdated".into() },
+            })
+            .collect()
+    }
+
     /// Pull requests asking the reader for a review.
     pub fn asked(&self) -> usize {
         match &self.list {
@@ -276,5 +291,21 @@ fn post_view(k: &Kit, key: &str, p: &github::Post) -> El {
         c = c.child(text(p.body.trim().to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap().w_full().max_lines(8));
     }
     c
+}
+
+/// A line thread of the open pull request, under its line: its comments, a reply, resolve.
+pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
+    let Some(th) = s.pulls.pr.as_ref().and_then(|p| p.threads.get(t)) else { return row() };
+    let head = row().w_full().gap(8.0).items_center()
+        .child(text(if th.resolved { "Resolved thread" } else { "Thread" }.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).grow(1.0))
+        ;
+    let mut bubble = col().key("bubble").w_full().max_w(720.0).px(12.0).py(8.0).gap(8.0).radius(k.radius.md)
+        .border(1.0, k.c.border_weak).fill(k.alpha(k.c.text_base, if th.resolved { 0.02 } else { 0.05 })).child(head);
+    // A resolved thread shows only where it started.
+    let shown = if th.resolved { 1 } else { th.comments.len() };
+    for (i, c) in th.comments.iter().take(shown).enumerate() {
+        bubble = bubble.child(post_view(k, &format!("c{i}"), c));
+    }
+    row().w_full().pl(96.0).pr(EDGE).py(6.0).role("note").label(format!("Review thread by {}", th.comments.first().map_or("", |c| c.author.as_str()))).child(bubble)
 }
 
