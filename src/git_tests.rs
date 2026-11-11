@@ -739,3 +739,33 @@ fn staged_changes_fix_up_an_earlier_commit() {
     r.stage("a.txt").unwrap();
     assert!(r.fixup(&side).is_err());
 }
+
+#[test]
+fn a_conflicted_file_merges_from_its_three_versions() {
+    let (dir, r) = repo("merge3", &[("m.txt", "a\nb\nc\nd\ne\n")]);
+    sh(&dir, &["checkout", "-qb", "side"]);
+    write(&dir, "m.txt", "a\nb\nc\nd\nE theirs\n");
+    sh(&dir, &["commit", "-qam", "side"]);
+    sh(&dir, &["checkout", "-q", "main"]);
+    write(&dir, "m.txt", "a\nB\nc\nd\nE ours\n");
+    sh(&dir, &["commit", "-qam", "main"]);
+    assert!(r.merge("side").is_err(), "the merge stops on the conflict");
+    let (base, ours, theirs) = r.merge_sides("m.txt").unwrap();
+    assert_eq!((base.as_str(), ours.as_str(), theirs.as_str()), ("a\nb\nc\nd\ne\n", "a\nB\nc\nd\nE ours\n", "a\nb\nc\nd\nE theirs\n"));
+    let mut m = crate::merge::Merge::new("m.txt".into(), &base, &ours, &theirs, None);
+    assert_eq!((m.auto_merged(), m.conflicts().len()), (1, 1));
+    m.take(0, crate::merge::Take::Theirs);
+    r.save_merge("m.txt", &m.text().unwrap()).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("m.txt")).unwrap(), "a\nB\nc\nd\nE theirs\n");
+    assert!(sh(&dir, &["diff", "--name-only", "--diff-filter=U"]).is_empty(), "staged, so resolved");
+    // A file one side deleted can't be merged by line.
+    sh(&dir, &["commit", "-qm", "merged"]);
+    sh(&dir, &["checkout", "-qb", "gone"]);
+    sh(&dir, &["rm", "-q", "m.txt"]);
+    sh(&dir, &["commit", "-qm", "gone"]);
+    sh(&dir, &["checkout", "-q", "main"]);
+    write(&dir, "m.txt", "changed\n");
+    sh(&dir, &["commit", "-qam", "changed"]);
+    assert!(r.merge("gone").is_err());
+    assert!(r.merge_sides("m.txt").unwrap_err().contains("deleted"));
+}

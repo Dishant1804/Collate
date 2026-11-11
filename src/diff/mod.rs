@@ -9,7 +9,7 @@
 
 mod find;
 mod model;
-mod myers;
+pub(crate) mod myers;
 mod state;
 mod view;
 

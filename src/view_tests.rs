@@ -698,6 +698,36 @@ fn the_minimap_shows_the_view_and_takes_it_where_its_pressed() {
 }
 
 #[test]
+fn the_merge_editor_settles_conflicts_by_side_by_line_and_by_key() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    let out = std::env::temp_dir().join(format!("collate-merged-{}.txt", std::process::id()));
+    let m = |s: &str| s.replace(' ', "\n") + "\n";
+    let merge = crate::merge::Merge::new("m.txt".into(), &m("a 1 b 2 c"), &m("a x b y c"), &m("a X b Y c"), Some(out.clone()));
+    rt.update(move |s, _| s.merge = Some(merge));
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("merge-save").is_some(), "the editor is open");
+    let w = |key: &str| rt.presented(key).map(|p| p.0[2]).unwrap_or_else(|| panic!("{key} is drawn"));
+    let (o, b, t) = (w("mo0"), w("mb0"), w("mt0"));
+    assert!(o > 300.0 && (o - b).abs() < 1.0 && (o - t).abs() < 1.0, "ours, base and theirs share the width: {o} {b} {t}");
+    // A line pressed is kept; the first conflict now has theirs' line.
+    click(&mut rt, "mt0-0");
+    // 1 takes ours for the conflict being read, the second.
+    rt.update(|s, _| s.merge.as_mut().unwrap().current = 1);
+    rt.key(KeyEvent { key: Key::Text("1".into()), mods: Default::default() });
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.merge.as_ref().unwrap().unsettled(), 0);
+    click(&mut rt, "merge-save");
+    assert!(rt.state.merge.is_none(), "saving closes it");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), m("a X b y c"));
+    let _ = std::fs::remove_file(out);
+}
+
+#[test]
 fn the_map_zooms_into_folders_and_opens_a_changed_file() {
     let mut rt = loaded();
     click(&mut rt, "view-map");

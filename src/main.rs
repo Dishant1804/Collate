@@ -20,6 +20,8 @@ mod history_view;
 mod keys;
 mod map;
 mod map_view;
+mod merge;
+mod merge_view;
 mod nav;
 mod patch;
 mod pulls;
@@ -381,6 +383,8 @@ struct Collate {
     comments_version: u64,
     /// A file's blame, and a file's history, while shown.
     blame: Option<(String, Vec<git::Blamed>)>,
+    /// The merge editor's file, while open.
+    merge: Option<merge::Merge>,
     file_log: Option<(String, Vec<graph::Commit>)>,
     /// ⌘P's palette is up: what's typed into it (a file, `file:line` or `:line`), and the
     /// match picked. Like ⌘F, the app takes the keys itself.
@@ -505,6 +509,7 @@ fn init() -> Collate {
         refs: Vec::new(),
         compared: None,
         blame: None,
+        merge: None,
         file_log: None,
         comments: Vec::new(),
         comments_shown: Vec::new(),
@@ -1555,6 +1560,42 @@ impl Collate {
         self.after_discard(result, format!("Discarded {path}"));
     }
 
+    /// Opens the merge editor on conflicted file `f`, from the index's base, ours and theirs.
+    fn open_merge(&mut self, f: usize) {
+        let Some((file, _)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        self.read_bg(move |r| (path.clone(), r.merge_sides(&path)), |s, (path, sides)| match sides {
+            Ok((base, ours, theirs)) => s.merge = Some(merge::Merge::new(path, &base, &ours, &theirs, None)),
+            Err(e) => s.say(e, true),
+        });
+    }
+
+    /// Writes the merge editor's result: over the file and staged, in this repository's merge,
+    /// or where `git mergetool` asked.
+    fn save_merge(&mut self) {
+        let Some(m) = &self.merge else { return };
+        let Some(text) = m.text() else {
+            self.say("Settle every conflict first", true);
+            return;
+        };
+        let path = m.path.clone();
+        match m.output.clone() {
+            Some(out) => match std::fs::write(&out, text) {
+                Ok(()) => {
+                    self.merge = None;
+                    self.say(format!("Merged {path}"), false);
+                }
+                Err(e) => self.say(format!("{}: {e}", out.display()), true),
+            },
+            None => {
+                let Some(repo) = current_repo() else { return };
+                self.merge = None;
+                let result = repo.save_merge(&path, &text);
+                self.after_discard(result, format!("Merged {path}"));
+            }
+        }
+    }
+
     /// Settles the conflicts of file `f` (those in hunk `h` alone, when given) by keeping one
     /// side or both. The working file is backed up first, and a file settled whole is staged,
     /// which marks it resolved.
@@ -2542,6 +2583,7 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
         r = r.child(row().key("conflict").h(20.0).px(6.0).mr(4.0).items_center().radius(4.0).fill(k.alpha(k.c.danger.fg, 0.14))
                 .help("A merge couldn't combine both sides' changes here. Keep a side, both, or edit it and mark it resolved.")
                 .child(text("Conflict").font(k.ty.text_xsmall_medium).color(k.c.danger.fg)))
+            .child(action(k, "merge-editor", "Merge…", "Settle each conflict side by side, line by line, in the merge editor", false, move |s| s.open_merge(f)))
             .child(keep("ours", "Use Ours", "Keep this branch's version of the whole file, and mark it resolved", patch::Keep::Ours))
             .child(keep("theirs", "Use Theirs", "Keep the incoming version of the whole file, and mark it resolved", patch::Keep::Theirs))
             .child(keep("both", "Use Both", "Keep both sides of every conflict, ours first, and mark it resolved", patch::Keep::Both))
@@ -2790,6 +2832,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("r", "Reread the repository"),
             ("⌘↩", "Commit what's staged"),
             ("⌘Z", "Undo the last commit, merge, rebase, pull, reset, cherry-pick, revert or switch"),
+            ("n p 1 2 3", "Merge editor: next or previous conflict, take ours, theirs or both"),
             ("⌘O", "Add a local project (the project menu, top left, switches)"),
             ("⌘,", "Settings"),
             ("⇧⌘B", "Show / hide the views sidebar"),
@@ -2970,6 +3013,9 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
 
     if let Some((path, lines)) = &s.blame {
         blame_dialog(k, path, lines.len(), layer);
+    }
+    if let Some(m) = &s.merge {
+        merge_view::merge_dialog(m, k, layer);
     }
     if let Some((path, commits)) = &s.file_log {
         file_log_dialog(k, path, commits.len(), layer);

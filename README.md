@@ -47,6 +47,7 @@ commit authors' pictures.
 | `1` to `5` | All changes, staged, unstaged, pull request preview, history |
 | `⌘↩` | Commit what's staged |
 | `⌘Z` | Undo the last commit, merge, rebase, pull, reset, cherry-pick, revert or switch |
+| `n` `p`, `1` `2` `3` | Merge editor: next / previous conflict, take ours, theirs or both |
 | `⌘O` | Add a project |
 | `r` | Read everything again |
 | `?` | Every key |

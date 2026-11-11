@@ -5,7 +5,8 @@ use rune_kit::shell;
 
 use crate::diff::DiffMode;
 use crate::git::{Scope, Staged};
-use crate::{Collate, Screen, refresh};
+use crate::merge::Take;
+use crate::{Collate, Screen, merge_view, refresh};
 
 pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.is_command(',') {
@@ -31,6 +32,21 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 s.jump_pick = 0;
             }
             _ => return ev.is_command('p') || ev.is_command('l'),
+        }
+        return true;
+    }
+    // The merge editor: n and p move between conflicts, 1, 2 and 3 take ours, theirs or both.
+    if s.merge.is_some() {
+        if ev.mods.cmd || ev.mods.ctrl || ev.mods.alt {
+            return false;
+        }
+        match &ev.key {
+            Key::Text(t) if t == "n" => merge_view::step(s, true, tx),
+            Key::Text(t) if t == "p" => merge_view::step(s, false, tx),
+            Key::Text(t) if t == "1" => merge_view::take(s, Take::Ours, tx),
+            Key::Text(t) if t == "2" => merge_view::take(s, Take::Theirs, tx),
+            Key::Text(t) if t == "3" => merge_view::take(s, Take::Both, tx),
+            _ => return false,
         }
         return true;
     }

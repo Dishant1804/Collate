@@ -1112,6 +1112,32 @@ impl Repo {
         Ok(parse_blame(&self.run(&args, None)?))
     }
 
+    /// A conflicted file's three versions from the index: the common base (empty when both
+    /// sides added the file), this branch's and the incoming one's.
+    pub fn merge_sides(&self, path: &str) -> Result<(String, String, String), String> {
+        let specs: Vec<String> = (1..=3).map(|n| format!(":{n}:{path}")).collect();
+        let mut sides = self.cat_files(&specs)?.into_iter().map(|b| match b {
+            None => Ok(None),
+            Some(Blob::Text(t)) => Ok(Some(t)),
+            Some(_) => Err(format!("{path} isn't text, so it can't be merged by line: keep a side")),
+        });
+        let mut next = || sides.next().unwrap_or(Ok(None));
+        let (base, ours, theirs) = (next()?, next()?, next()?);
+        match (ours, theirs) {
+            (Some(o), Some(t)) => Ok((base.unwrap_or_default(), o, t)),
+            _ => Err(format!("One side deleted {path}: keep a side")),
+        }
+    }
+
+    /// Writes a file's merged text and stages it, which marks it resolved. The file as it
+    /// was is backed up first; returns the backup.
+    pub fn save_merge(&self, path: &str, text: &str) -> Result<PathBuf, String> {
+        let backup = self.backup(path)?;
+        std::fs::write(self.root.join(path), text).map_err(|e| format!("{path}: {e}"))?;
+        self.stage(path)?;
+        Ok(backup)
+    }
+
     /// Settles a conflicted file with one side's version, `ours` or `theirs`, and stages it.
     pub fn take_side(&self, path: &str, side: &str) -> Result<(), String> {
         self.run(&["checkout", &format!("--{side}"), "--", path], None)?;
