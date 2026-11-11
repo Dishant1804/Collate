@@ -82,6 +82,27 @@ impl Check {
     }
 }
 
+/// A check's note on a line of the pull request's head, as a linter or compiler leaves on
+/// GitHub.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Annotation {
+    /// The check run that left it.
+    pub check: String,
+    pub path: String,
+    /// The last line it's on, in the head; it shows under that line.
+    pub line: u32,
+    pub level: Level,
+    pub title: String,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Notice,
+    Warning,
+    Failure,
+}
+
 /// A comment in the conversation, a review's summary, or one comment of a thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Post {
@@ -133,6 +154,9 @@ pub struct Detail {
     /// Comments and reviews with a summary, oldest first.
     pub conversation: Vec<Post>,
     pub threads: Vec<Thread>,
+    /// The checks' annotations on the head commit, or why they couldn't be read: that doesn't
+    /// keep the pull request from opening. Filled by [`Gh::open`].
+    pub annotations: Result<Vec<Annotation>, String>,
     /// Where GitHub takes line comments: its own diff's hunks, three lines of context each, as
     /// (path, left side, first line, last line). Lines past them (context Collate shows more of)
     /// can't be commented on. Filled by [`Gh::open`].
@@ -308,7 +332,9 @@ impl Gh {
         let fields = format!("{LIST_FIELDS},body,state,mergeable,mergeStateStatus,headRefOid,reviews,comments,assignees,latestReviews,commits");
         let joined = |e: &str| format!("{e} for #{n} stopped");
         std::thread::scope(|t| {
-            let threads = t.spawn(|| self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={n}"), "-f", &format!("query={THREADS}")], None));
+            let query = move |q: &str| self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={n}"), "-f", &format!("query={q}")], None);
+            let threads = t.spawn(move || query(THREADS));
+            let annotations = t.spawn(move || query(ANNOTATIONS));
             let early = known.map(|p| (p.base.as_str(), t.spawn(move || self.fetch(n, &p.url, &p.base))));
             let v = self.json(&["pr", "view", &n.to_string(), "--json", &fields], None)?;
             let threads = threads.join().map_err(|_| joined("Reading the threads"))??;
@@ -324,6 +350,7 @@ impl Gh {
             d.commentable = commentable;
             let (base, tip) = range.split_once("..").unwrap_or_default();
             (d.merge_base, d.head_oid) = (base.to_owned(), tip.to_owned());
+            d.annotations = annotations.join().map_err(|_| joined("Reading the annotations"))?.map(|v| annotations_of(&v, tip));
             Ok((range, d))
         })
     }
@@ -533,6 +560,34 @@ const DONE: &str = "query($owner:String!,$name:String!){repository(owner:$owner,
 
 const THREADS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated path line startLine originalLine diffSide comments(first:50){nodes{databaseId author{login} body createdAt diffHunk}}}}}}}";
 
+/// The annotations of every check run on the pull request's latest commit.
+const ANNOTATIONS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){commits(last:1){nodes{commit{oid checkSuites(first:50){nodes{checkRuns(first:50){nodes{name annotations(first:50){nodes{path title message annotationLevel location{end{line}}}}}}}}}}}}}}";
+
+/// The annotations in a reply to [`ANNOTATIONS`], when it's about `head`: a push since the
+/// diff was fetched leaves them on lines it doesn't show.
+fn annotations_of(v: &Value, head: &str) -> Vec<Annotation> {
+    let commit = &v["data"]["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"];
+    if commit["oid"].as_str() != Some(head) {
+        return Vec::new();
+    }
+    let nodes = |v: &Value, k: &str| v[k]["nodes"].as_array().cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for suite in nodes(commit, "checkSuites") {
+        for run in nodes(&suite, "checkRuns") {
+            for a in nodes(&run, "annotations") {
+                let Some(line) = a["location"]["end"]["line"].as_u64() else { continue };
+                let level = match a["annotationLevel"].as_str() {
+                    Some("FAILURE") => Level::Failure,
+                    Some("WARNING") => Level::Warning,
+                    _ => Level::Notice,
+                };
+                out.push(Annotation { check: s(&run, "name"), path: s(&a, "path"), line: line as u32, level, title: s(&a, "title"), message: s(&a, "message") });
+            }
+        }
+    }
+    out
+}
+
 fn s(v: &Value, k: &str) -> String {
     v[k].as_str().unwrap_or("").to_owned()
 }
@@ -661,6 +716,7 @@ fn detail(v: &Value, threads: &Value) -> Detail {
         assignees: v["assignees"].as_array().into_iter().flatten().map(login).collect(),
         conversation,
         threads: threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array().into_iter().flatten().filter_map(thread).collect(),
+        annotations: Ok(Vec::new()),
         commentable: Vec::new(),
         merge_base: String::new(),
         commits: v["commits"].as_array().into_iter().flatten().map(|c| (s(c, "oid"), s(c, "messageHeadline"))).collect(),
@@ -759,6 +815,19 @@ mod tests {
         assert_eq!((pulls[1].state, pulls[1].ci, pulls[2].state, pulls[2].author.as_str()), (PrState::Merged, None, PrState::Closed, "ghost"));
         let g = group(&pulls, "me");
         assert_eq!(g.iter().map(|g| g.1.iter().map(|p| p.number).collect::<Vec<_>>()).collect::<Vec<_>>(), [vec![7], vec![], vec![], vec![6], vec![5]], "a finished pull request asks nothing");
+    }
+
+    #[test]
+    fn annotations_read_from_every_check_run_on_the_head() {
+        let v = serde_json::json!({"data": {"repository": {"pullRequest": {"commits": {"nodes": [{"commit": {"oid": "c3", "checkSuites": {"nodes": [
+            {"checkRuns": {"nodes": [{"name": "clippy", "annotations": {"nodes": [
+                {"path": "src/a.rs", "title": "unused", "message": "unused variable `x`", "annotationLevel": "WARNING", "location": {"end": {"line": 12}}},
+                {"path": "src/b.rs", "title": "", "message": "no line", "annotationLevel": "NOTICE", "location": null}]}}]}},
+            {"checkRuns": {"nodes": [{"name": "test", "annotations": {"nodes": [
+                {"path": "src/c.rs", "title": "failed", "message": "assertion failed", "annotationLevel": "FAILURE", "location": {"end": {"line": 3}}}]}}]}}]}}}]}}}}});
+        let got = annotations_of(&v, "c3");
+        assert_eq!(got.iter().map(|a| (a.check.as_str(), a.path.as_str(), a.line, a.level)).collect::<Vec<_>>(), [("clippy", "src/a.rs", 12, Level::Warning), ("test", "src/c.rs", 3, Level::Failure)]);
+        assert!(annotations_of(&v, "d4").is_empty(), "another commit's lines");
     }
 
     #[test]

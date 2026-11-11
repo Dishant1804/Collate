@@ -52,7 +52,8 @@ impl Collate {
     /// Put the reader's comments, then the open pull request's line threads, under their lines.
     pub fn place_comments(&mut self) {
         let mut anchors: Vec<diff::Anchor> = self.comments.iter().map(|c| c.at.clone()).collect();
-        anchors.extend(self.pulls.anchors());
+        let diff = &self.diff;
+        anchors.extend(self.pulls.anchors(self.pr_whole(), |path, n| diff.side_line(diff.file_index(path)?, diff::Side::New, n).map(str::to_owned)));
         let mut shown = self.diff.set_comments(&anchors);
         shown.truncate(self.comments.len());
         self.comments_shown = shown;

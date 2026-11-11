@@ -1626,7 +1626,7 @@ fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
     rt.update(move |s, _| {
         let detail = github::Detail {
             pull: pull(7, "ana", &["me"]), body: "Why".into(), state: "OPEN".into(), mergeable: "MERGEABLE".into(), merge_state: "BLOCKED".into(),
-            head_oid: "c3".into(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![], commentable: vec![],
+            head_oid: "c3".into(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![], annotations: Ok(vec![]), commentable: vec![],
             merge_base: "m0".into(), commits: vec![("a1".into(), "First".into()), ("c3".into(), "Second".into())], reviewed: vec![("me".into(), "a1".into())],
         };
         s.pulls.open = false;
@@ -1676,6 +1676,44 @@ fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
     assert!(rt.state.pulls.rewrite.is_none());
     rt.update(|s, _| s.set_scope(Scope::Staged));
     assert!(rt.state.pulls.pr.is_none(), "another view leaves the pull request");
+}
+
+#[test]
+fn a_checks_annotation_shows_under_its_line_of_the_whole_pull_request() {
+    let mut rt = loaded();
+    let path = rt.state.diff.files()[0].path().to_owned();
+    let pull = github::Pull {
+        number: 7, title: "Change".into(), author: "ana".into(), head: "b7".into(), base: "main".into(), state: github::PrState::Open, draft: false,
+        decision: String::new(), requested: vec![], additions: 3, deletions: 1, updated: String::new(), labels: vec![], checks: vec![], ci: None, url: String::new(),
+    };
+    let note = |line: u32, level: github::Level| github::Annotation { check: "clippy".into(), path: path.clone(), line, level, title: "lint".into(), message: format!("on {line}") };
+    // Line 43 is a changed line; line 30 is in no hunk, so it has nowhere to go.
+    let annotations = vec![note(43, github::Level::Warning), note(30, github::Level::Failure)];
+    rt.update(move |s, _| {
+        s.open_commit("m0..c3");
+        s.pulls.pr = Some(github::Detail {
+            pull, body: String::new(), state: "OPEN".into(), mergeable: String::new(), merge_state: String::new(), head_oid: "c3".into(), reviewers: vec![], assignees: vec![],
+            conversation: vec![], threads: vec![], annotations: Ok(annotations), commentable: vec![], merge_base: "m0".into(), commits: vec![], reviewed: vec![],
+        });
+        // The test has no watcher to read the range: the loaded diff stays the one shown.
+        s.loaded = true;
+        s.place_comments();
+    });
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    let rows = &rt.state.diff.rows;
+    let under: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| matches!(r, diff::Row::Comment { .. })).map(|(i, _)| i).collect();
+    assert_eq!(under.len(), 1, "only the one on a line in the diff");
+    let diff::Row::Line { f, h, i } = rows[under[0] - 1] else { panic!("right under its line") };
+    assert_eq!(rt.state.diff.files()[f as usize].hunks[h as usize].lines[i as usize].new, Some(43));
+    assert!(rt.find("annotation").is_some(), "drawn as a note");
+    // Part of the pull request numbers its lines otherwise: no annotations there.
+    rt.update(|s, _| {
+        s.commit = Some("c3^..c3".into());
+        s.place_comments();
+    });
+    assert!(rt.state.diff.rows.iter().all(|r| !matches!(r, diff::Row::Comment { .. })));
 }
 
 #[test]

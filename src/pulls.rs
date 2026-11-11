@@ -107,17 +107,23 @@ impl Default for PullsState {
 impl PullsState {
     /// Where each line thread of the open pull request goes in the diff: by its line and that
     /// line's text, as a comment is. An outdated thread has no line, and an anchor no line matches.
-    pub fn anchors(&self) -> Vec<diff::Anchor> {
+    /// Then, when the diff is the whole pull request (`whole`), its checks' annotations: by their
+    /// line in the head, whose text `head_line` reads from the diff.
+    pub fn anchors(&self, whole: bool, head_line: impl Fn(&str, u32) -> Option<String>) -> Vec<diff::Anchor> {
         let Some(pr) = &self.pr else { return Vec::new() };
-        pr.threads
-            .iter()
-            .map(|t| diff::Anchor {
-                path: t.path.clone(),
-                side: if t.left { diff::Side::Old } else { diff::Side::New },
-                line: t.line.unwrap_or(0),
-                text: if t.line.is_some() { t.text.clone() } else { "\0outdated".into() },
-            })
-            .collect()
+        let threads = pr.threads.iter().map(|t| diff::Anchor {
+            path: t.path.clone(),
+            side: if t.left { diff::Side::Old } else { diff::Side::New },
+            line: t.line.unwrap_or(0),
+            text: if t.line.is_some() { t.text.clone() } else { "\0outdated".into() },
+        });
+        let annotations = pr.annotations.iter().flatten().map(|a| diff::Anchor {
+            path: a.path.clone(),
+            side: diff::Side::New,
+            line: a.line,
+            text: whole.then(|| head_line(&a.path, a.line)).flatten().unwrap_or_else(|| "\0elsewhere".into()),
+        });
+        threads.chain(annotations).collect()
     }
 
     /// The signed-in login, once the list is read.
@@ -318,6 +324,9 @@ impl Collate {
                 s.pulls.fetching = None;
                 match got {
                     Ok((range, d)) => {
+                        if let Err(e) = &d.annotations {
+                            s.say(format!("Couldn't read the checks' annotations: {e}"), true);
+                        }
                         s.pulls.open = false;
                         s.open_commit(&range);
                         s.compared = Some((d.pull.base.clone(), d.pull.head.clone()));
@@ -960,7 +969,9 @@ fn post_view(s: &Collate, k: &Kit, key: &str, p: &github::Post) -> El {
 
 /// A line thread of the open pull request, under its line: its comments, a reply, resolve.
 pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
-    let Some(th) = s.pulls.pr.as_ref().and_then(|p| p.threads.get(t)) else { return row() };
+    let Some(pr) = &s.pulls.pr else { return row() };
+    // Past the threads: the checks' annotations.
+    let Some(th) = pr.threads.get(t) else { return annotation_row(k, pr, t - pr.threads.len()) };
     let resolve = Button::new(if th.resolved { "Unresolve" } else { "Resolve" }).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
         .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.toggle_thread(t)).build(k).key("resolve");
     let reply = Button::new("Reply").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
@@ -986,6 +997,25 @@ pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
         bubble = bubble.child(post_view(s, k, &format!("t{t}-c{i}"), c));
     }
     row().w_full().pl(96.0).pr(EDGE).py(6.0).role("note").label(format!("Review thread by {}", th.comments.first().map_or("", |c| c.author.as_str()))).child(bubble)
+}
+
+/// A check's annotation under its line, coloured by how much it matters.
+fn annotation_row(k: &Kit, pr: &github::Detail, a: usize) -> El {
+    let Some(a) = pr.annotations.as_ref().ok().and_then(|l| l.get(a)) else { return row() };
+    let (what, hue) = match a.level {
+        github::Level::Failure => ("Failure", k.c.danger.fg),
+        github::Level::Warning => ("Warning", k.c.warning.icon),
+        github::Level::Notice => ("Notice", k.c.info.icon),
+    };
+    let head = row().w_full().gap(8.0).items_center()
+        .child(text(what.to_owned()).font(k.ty.text_xsmall_medium).color(hue))
+        .child(text(a.check.clone()).font(k.ty.text_small).color(k.c.text_faint).truncate().min_w(0.0))
+        .child(text(a.title.clone()).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0));
+    let bubble = col().key("annotation").w_full().max_w(720.0).px(12.0).py(8.0).gap(4.0).radius(k.radius.md)
+        .border(1.0, k.alpha(hue, 0.5)).fill(k.alpha(hue, 0.06))
+        .child(head)
+        .child(text(a.message.trim().to_owned()).font(k.ty.text_small).color(k.c.text_base).wrap().w_full());
+    row().w_full().pl(96.0).pr(EDGE).py(6.0).role("note").label(format!("{what} from {}: {}", a.check, a.message)).child(bubble)
 }
 
 /// The dialog for writing a review, a comment, a reply or a new pull request.
