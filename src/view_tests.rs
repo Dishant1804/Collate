@@ -676,6 +676,28 @@ fn the_diff_has_one_edge_each_side() {
 }
 
 #[test]
+fn the_minimap_shows_the_view_and_takes_it_where_its_pressed() {
+    let mut rt = loaded();
+    let rect = |rt: &Runtime<Collate>, key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+    let map = rect(&rt, "minimap");
+    let summary = rect(&rt, "summary");
+    assert!((map[0] + map[2] - (summary[0] + summary[2])).abs() < 1.0, "the minimap sits on the diff's right edge");
+    let before = rect(&rt, "minimap-view");
+    assert!((before[1] - map[1]).abs() < 1.0, "the box starts at the top, where the view is");
+    assert!(before[3] < map[3], "the box covers only the part on screen");
+    let (x, y) = (map[0] + map[2] / 2.0, map[1] + map[3] - 2.0);
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let n = rt.state.diff.files().len();
+    assert!(rt.state.diff.visible_file() + 3 >= n, "pressing its foot goes to the end, not file {} of {n}", rt.state.diff.visible_file());
+    let after = rect(&rt, "minimap-view");
+    assert!(after[1] > before[1] + map[3] / 2.0, "the box follows, to {} from {}", after[1], before[1]);
+}
+
+#[test]
 fn the_map_zooms_into_folders_and_opens_a_changed_file() {
     let mut rt = loaded();
     click(&mut rt, "view-map");

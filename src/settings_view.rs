@@ -185,6 +185,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             setting(k, "markers", "+ and − markers", &[], "A sign beside each changed line", switch(k, "Markers", st.markers, |c, v| c.markers = v)),
             setting(k, "words", "Word highlights", &[], "Tint the words that changed within a line", switch(k, "Word highlights", st.word_diff, |c, v| c.word_diff = v)),
             setting(k, "syntax", "Syntax highlighting", &[], "", switch(k, "Syntax highlighting", st.syntax, |c, v| c.syntax = v)),
+            setting(k, "minimap", "Minimap", &[], "A strip on the right showing where the changes are; click it to go there", switch(k, "Minimap", st.minimap, |c, v| c.minimap = v)),
         ],
         2 => languages_settings(s, k),
         3 => vec![

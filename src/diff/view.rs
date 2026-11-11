@@ -7,10 +7,10 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 
-use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, Phase, ScrollSpec, Span, TextStyle, Tx, col, icon, memo, rich, row, text};
+use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, Live, Phase, ScrollPos, ScrollSpec, Shape, Span, TextStyle, Tx, canvas, col, icon, memo, rich, row, text};
 
 use super::model::{FileStatus, LineKind, Side};
-use super::state::{DiffMode, DiffState, EXPAND_STEP, Expand, GAP_H, HEADER_H, LineRef, NOTE_H, Row, Style};
+use super::state::{DiffMode, DiffState, EXPAND_STEP, Expand, GAP_H, HEADER_H, LineRef, MAP_ADD, MAP_DEL, MAP_FILE, MAP_FOUND, NOTE_H, Row, Style};
 use rune_kit::Kit;
 use rune_kit::syntax::SyntaxTheme;
 
@@ -37,6 +37,10 @@ pub const EDGE: f32 = 16.0;
 const GLYPH_INSET: f32 = 8.0;
 /// A small ghost button pads its label this much on each side.
 pub const GHOST_PAD: f32 = 8.0;
+/// The minimap's width.
+const MAP_W: f32 = 12.0;
+/// The shortest the minimap's box for the part on screen gets, so a long diff's stays easy to see.
+const MIN_THUMB: f32 = 8.0;
 
 /// Width of the coloured edge between the gutter and the code of an added or removed line:
 /// one continuous stripe down a run of changes, the shape the eye picks up.
@@ -157,10 +161,26 @@ impl<S: 'static> DiffView<S> {
             });
         let scroll = col().key("scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false });
         let scroll = if wrap { scroll } else { scroll.scroll_xy() };
-        let scroll = scroll.child(list).child(col().key(super::state::TAIL_KEY).w_full().h(tail).a11y_hidden());
+        let mut scroll = scroll.child(list).child(col().key(super::state::TAIL_KEY).w_full().h(tail).a11y_hidden());
+        // The minimap's box follows the scroll through live values, so scrolling runs no view.
+        let mut map = None;
+        if st.style().minimap && !st.rows.is_empty() && let Some(r) = rune::memo::layout(&format!("{key}/scroll")) {
+            let (shown, at) = (Live::new([0.0; 4]), Live::new([0.0; 4]));
+            let (shown2, at2) = (shown.clone(), at.clone());
+            scroll = scroll.on_scroll_offset(move |p: ScrollPos| {
+                let (top, max, h) = (p.offset[1], p.max[1], p.viewport[1]);
+                let all = (max + h).max(1.0);
+                shown2.set([0.0, top / all * h, MAP_W, (h / all * h).max(MIN_THUMB)]);
+                at2.set([top, max, h, 0.0]);
+            });
+            map = Some(v.minimap(st, &key, r[3], tail, &shown, at));
+        }
         let mut root = col().key(key).w_full().grow(1.0).min_h(0.0).fill(v.look.bg).child(scroll);
         if let Some(f) = st.sticky() {
             root = root.child(v.file_header(s, st, f, true).key("sticky").absolute(0.0, 0.0).w_full());
+        }
+        if let Some(map) = map {
+            root = root.child(map);
         }
         root
     }
@@ -195,6 +215,10 @@ struct Look {
     moved: Tints,
     /// A search match's background.
     found: Color,
+    /// A search match on the minimap.
+    found_mark: Color,
+    /// The minimap's box for the part on screen.
+    map_view: Color,
     gap_bg: Color,
     empty_bg: Color,
     selected: Color,
@@ -254,6 +278,8 @@ impl Look {
             del: tints(c.danger.icon, c.danger.fg),
             moved: tints(c.info.icon, c.info.fg),
             found: tint(bg, c.warning.icon, if dark { 0.45 } else { 0.4 }),
+            found_mark: c.warning.icon,
+            map_view: k.alpha(c.text_base, if dark { 0.14 } else { 0.1 }),
             gap_bg: tint(bg, info, if dark { 0.1 } else { 0.06 }),
             empty_bg: tint(bg, c.text_base, if dark { 0.03 } else { 0.025 }),
             selected: tint(bg, info, if dark { 0.2 } else { 0.14 }),
@@ -731,6 +757,50 @@ impl<S: 'static> View<S> {
             inner = inner.max_w(w).sticky_left(0.0);
         }
         row().w_full().h(NOTE_H).fill(l.bg).role("note").label(msg).child(inner)
+    }
+
+    /// The minimap: where the changes are, scaled to the view's height `h`, with a box over
+    /// the part on screen (`shown`, set as it scrolls). Pressing or dragging on it centres the
+    /// view there, from where it's scrolled (`at`: offset, most it scrolls, viewport height).
+    fn minimap(&self, st: &DiffState, key: &str, h: f32, tail: f32, shown: &Live<[f32; 4]>, at: Live<[f32; 4]>) -> El {
+        let l = &self.look;
+        let n = h.round().max(1.0) as u32;
+        let marks = memo(format!("{key}/minimap-marks"), (l.version, st.rev, st.search_rev(), n, tail.to_bits()), || {
+            let marks = st.overview(n, tail);
+            let rect = |x0: f32, x1: f32, y0: usize, y1: usize| vec![[x0, y0 as f32], [x1, y0 as f32], [x1, y1 as f32], [x0, y1 as f32]];
+            let mut shape = Shape::new().view_box(2.0, n as f32);
+            for (bit, x0, x1, color) in [(MAP_FILE, 0.0, 2.0, l.border), (MAP_DEL, 0.0, 1.0, l.del.bar), (MAP_ADD, 1.0, 2.0, l.add.bar), (MAP_FOUND, 0.0, 2.0, l.found_mark)] {
+                // One fill per run of bands, not per band.
+                let mut b = 0;
+                while b < marks.len() {
+                    if marks[b] & bit == 0 {
+                        b += 1;
+                        continue;
+                    }
+                    let start = b;
+                    while b < marks.len() && marks[b] & bit != 0 {
+                        b += 1;
+                    }
+                    shape = shape.fill(rect(x0, x1, start, b), color);
+                }
+            }
+            canvas(shape).absolute(0.0, 0.0).w(MAP_W).h_full().a11y_hidden()
+        });
+        let scroll = format!("{key}/scroll");
+        col()
+            .key("minimap")
+            .role("slider")
+            .label("Minimap")
+            .help("Where the changes are; click or drag to go there")
+            .pin(None, Some(0.0), Some(0.0), Some(0.0))
+            .w(MAP_W)
+            .child(marks)
+            .child(col().key("minimap-view").absolute(0.0, 0.0).w(MAP_W).live_rect(shown).fill(l.map_view).a11y_hidden())
+            .on_drag_any(move |d: &mut Drag, tx: &mut Tx| {
+                let [_, max, vh, _] = at.get();
+                let y = d.y / d.h.max(1.0) * (max + vh) - vh / 2.0;
+                tx.scroll_to_y(scroll.clone(), y.clamp(0.0, max));
+            })
     }
 
     fn file_header(&self, s: &S, st: &DiffState, f: usize, sticky: bool) -> El {

@@ -166,6 +166,8 @@ pub struct Settings {
     pub one_number: bool,
     pub markers: bool,
     pub word_diff: bool,
+    /// A strip down the diff's right edge showing where the changes are.
+    pub minimap: bool,
     pub syntax: bool,
     /// Fetch and build a grammar the first time a diff shows a language without one.
     pub download_languages: bool,
@@ -207,6 +209,7 @@ impl Default for Settings {
             one_number: true,
             markers: true,
             word_diff: true,
+            minimap: true,
             syntax: true,
             download_languages: true,
             context: 3,
@@ -237,6 +240,7 @@ impl Settings {
             one_number: self.one_number,
             markers: self.markers,
             word_diff: self.word_diff,
+            minimap: self.minimap,
         }
     }
 
@@ -344,6 +348,7 @@ impl Settings {
                         "one_number" => s.one_number = b,
                         "markers" => s.markers = b,
                         "word_diff" => s.word_diff = b,
+                        "minimap" => s.minimap = b,
                         "syntax" => s.syntax = b,
                         "download_languages" => s.download_languages = b,
                         "collapse_viewed" => s.collapse_viewed = b,
@@ -385,12 +390,13 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nagent = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nminimap = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nagent = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
             self.font_size,
             self.wrap,
             self.one_number,
             self.markers,
             self.word_diff,
+            self.minimap,
             self.syntax,
             self.download_languages,
             self.context,
@@ -462,6 +468,7 @@ mod tests {
             one_number: false,
             markers: false,
             word_diff: false,
+            minimap: false,
             syntax: false,
             download_languages: false,
             context: FULL_FILE,
