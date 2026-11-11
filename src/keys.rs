@@ -198,6 +198,10 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
             }
             true
         }
+        "b" => {
+            s.toggle_inline_blame();
+            true
+        }
         "z" => {
             s.fold_all(true, tx);
             true

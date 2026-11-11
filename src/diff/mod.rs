@@ -15,7 +15,7 @@ mod view;
 
 pub use find::{Finder, Query};
 pub use model::{FileDiff, FileStatus, ImageSide, LineKind, Side, mark_moved, parse};
-pub use state::{Anchor, DiffMode, DiffState, IMAGE_H, LineRef, Style};
+pub use state::{Anchor, BlameNote, DiffMode, DiffState, IMAGE_H, LineRef, Style};
 pub use myers::{WordEdit, apply_edits, word_edits};
 pub use view::{DiffView, EDGE, GHOST_PAD};
 #[cfg(test)]

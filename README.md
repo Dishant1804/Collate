@@ -56,6 +56,7 @@ on its own.
 | `⌥⌘C` `⌥⌘W` `⌥⌘R` | Search: match case, whole words, regular expression |
 | `⌘P` `⌘L` | Go to a file (`file:line` for a line), go to a line |
 | `m` | Jump to the other end of a move |
+| `b` | Inline blame: who last changed each line, beside the numbers |
 | `p` | Pick single word changes to stage |
 | `z` `Z` | Fold / unfold every file |
 | `s` | Unified / split |

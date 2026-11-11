@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::comments::{comments_text, parse_comments};
-use crate::diff::mark_moved;
+use crate::diff::{BlameNote, mark_moved};
 use crate::git::{Blob, Snapshot};
 use crate::history_view::ref_labels;
 use crate::settings::Motion;
@@ -695,6 +695,36 @@ fn the_minimap_shows_the_view_and_takes_it_where_its_pressed() {
     assert!(rt.state.diff.visible_file() + 3 >= n, "pressing its foot goes to the end, not file {} of {n}", rt.state.diff.visible_file());
     let after = rect(&rt, "minimap-view");
     assert!(after[1] > before[1] + map[3] / 2.0, "the box follows, to {} from {}", after[1], before[1]);
+}
+
+#[test]
+fn inline_blame_names_who_changed_a_line_once_per_run() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    let code_x = |rt: &Runtime<Collate>| rt.presented("code").expect("a line's code").0[0];
+    let before = code_x(&rt);
+    rt.key(KeyEvent { key: Key::Text("b".into()), mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.diff.blame_shown(), "b shows the blame column");
+    let path = rt.state.diff.files()[0].path().to_owned();
+    let note = |id: &str, who: &str| BlameNote { id: id.into(), who: who.into(), help: format!("{who} help").into() };
+    let lines: Vec<BlameNote> = (1..=70).map(|n| if n == 11 { note("0000", "Not committed yet") } else { note("abc", "t, 2026-11-11") }).collect();
+    rt.state.diff.set_blame(Some((path, lines)));
+    for _ in 0..5 {
+        rt.frame(1.0 / 60.0);
+    }
+    let blame = rt.presented("blame").expect("the blame column").0;
+    assert!((blame[2] - 200.0).abs() < 1.0, "the column is {} wide", blame[2]);
+    assert!((code_x(&rt) - before - 200.0).abs() < 1.0, "the code moves over for it");
+    let st = &rt.state.diff;
+    assert_eq!(st.blame_note(0, 11).map(|n| &*n.who), Some("Not committed yet"));
+    assert_eq!(st.blame_missing().len(), st.files().len() - 1, "the other files wait for theirs");
+    rt.key(KeyEvent { key: Key::Text("b".into()), mods: Default::default() });
+    for _ in 0..5 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(!rt.state.diff.blame_shown(), "b again hides it");
+    assert!((code_x(&rt) - before).abs() < 1.0, "and the code moves back");
 }
 
 #[test]

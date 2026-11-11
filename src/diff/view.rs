@@ -47,6 +47,8 @@ const MIN_THUMB: f32 = 8.0;
 const BAR: f32 = 2.0;
 /// Space between the line numbers and the code, and after the code.
 const CODE_PAD: (f32, f32) = (12.0, 24.0);
+/// The inline blame column, before the numbers in unified mode.
+const BLAME_W: f32 = 200.0;
 
 type Get<S> = Rc<dyn Fn(&S) -> &DiffState>;
 type GetMut<S> = Rc<dyn Fn(&mut S) -> &mut DiffState>;
@@ -373,6 +375,11 @@ impl Cell<'_> {
     }
 }
 
+/// The blame column's width, when shown.
+fn blame_w(st: &DiffState) -> f32 {
+    if st.blame_shown() { BLAME_W } else { 0.0 }
+}
+
 struct View<S> {
     d: DiffView<S>,
     look: Look,
@@ -383,7 +390,7 @@ impl<S: 'static> View<S> {
     fn content_width(&self, st: &DiffState) -> f32 {
         let l = &self.look;
         let digits = (0..st.files().len()).map(|f| st.digits(f)).max().unwrap_or(3);
-        l.gutter_w(digits, true) + st.columns() as f32 * l.adv + CODE_PAD.0 + CODE_PAD.1
+        l.gutter_w(digits, true) + blame_w(st) + st.columns() as f32 * l.adv + CODE_PAD.0 + CODE_PAD.1
     }
 
     /// The most a full-width part of a row (a header) spans: the viewport, not
@@ -414,7 +421,7 @@ impl<S: 'static> View<S> {
             Row::Gap { f, gap } if self.d.hunk.is_some() => self.gap(s, st, f as usize, gap as usize),
             Row::Gap { f, gap } => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.gap(s, st, f as usize, gap as usize)),
             _ => {
-                let version = (self.look.version, st.rev, st.row_selected(i, None), st.copy_side(), st.selection().map(|s| s.start.side), st.search_rev());
+                let version = (self.look.version, st.rev, st.row_selected(i, None), st.copy_side(), st.selection().map(|s| s.start.side), st.search_rev(), st.blame_rev);
                 memo(key, version, || self.line(st, i))
             }
         }
@@ -477,6 +484,9 @@ impl<S: 'static> View<S> {
             .self_stretch()
             .items_stretch()
             .fill(l.gutter_fill(c.kind, c.moved, selected));
+        if st.blame_shown() {
+            gutter = gutter.child(self.blame(st, i, f, &c).key("blame"));
+        }
         gutter = if l.one_number {
             let (n, side) = match (c.kind, c.new) {
                 (LineKind::Removed, _) | (_, None) => (c.old, Side::Old),
@@ -545,6 +555,21 @@ impl<S: 'static> View<S> {
                 line.child(half(Side::Old, old)).child(divider).child(half(Side::New, new))
             }
         }
+    }
+
+    /// Who last changed the line, said where the commit changes from the line above; a
+    /// removed line has none.
+    fn blame(&self, st: &DiffState, i: usize, f: usize, c: &Cell<'_>) -> El {
+        let l = &self.look;
+        let cell = row().w(BLAME_W).min_h(l.line_h).self_stretch().px(8.0).items_start().a11y_hidden();
+        let Some(n) = c.new.filter(|_| c.kind != LineKind::Removed) else { return cell };
+        let Some(note) = st.blame_note(f, n) else { return cell };
+        let above = i.checked_sub(1).and_then(|p| self.cells(st, st.rows[p]).0).and_then(|a| a.new.filter(|_| a.kind != LineKind::Removed));
+        let same = above == Some(n - 1) && st.blame_note(f, n - 1).is_some_and(|b| b.id == note.id);
+        if same {
+            return cell.help(note.help.to_string());
+        }
+        cell.help(note.help.to_string()).child(text(note.who.to_string()).font(l.small).color(l.muted).truncate().min_w(0.0).grow(1.0))
     }
 
     /// For a moved line, the marker says where the other end is.
@@ -664,7 +689,8 @@ impl<S: 'static> View<S> {
     }
 
     fn gutter_w(&self, st: &DiffState, f: usize) -> f32 {
-        self.look.gutter_w(st.digits(f), st.mode() == DiffMode::Unified)
+        let unified = st.mode() == DiffMode::Unified;
+        self.look.gutter_w(st.digits(f), unified) + if unified { blame_w(st) } else { 0.0 }
     }
 
     /// The unchanged lines between two hunks, folded: buttons to show more, and the next

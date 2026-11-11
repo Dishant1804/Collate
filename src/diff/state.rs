@@ -230,6 +230,19 @@ pub struct DiffState {
     nav: Option<u32>,
     /// The visible range first reported after navigating to a row, while it holds.
     nav_range: Option<(u32, std::ops::Range<usize>)>,
+    /// Inline blame, while shown: each file's new-side lines' notes, by path, as far as read.
+    blame: Option<HashMap<String, Rc<[BlameNote]>>>,
+    /// Bumped whenever the blame shown changes, so lines rebuild.
+    pub(crate) blame_rev: u64,
+}
+
+/// Who last changed a line, for the gutter: its commit (all zeros when not committed yet),
+/// what the gutter says, and what hovering it says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlameNote {
+    pub id: Rc<str>,
+    pub who: Rc<str>,
+    pub help: Rc<str>,
 }
 
 /// What [`DiffState::overview`]'s marks were worked out for.
@@ -290,6 +303,8 @@ impl DiffState {
             reported: None,
             nav: None,
             nav_range: None,
+            blame: None,
+            blame_rev: 0,
         };
         s.set_files(files);
         s
@@ -323,6 +338,14 @@ impl DiffState {
         self.digits = files.iter().map(|f| f.last_line().max(1).ilog10() + 1).map(|d| d.max(3)).collect();
         self.columns = files.iter().map(FileDiff::columns).max().unwrap_or(0);
         self.stats = files.iter().map(|f| (f.additions(), f.deletions())).collect();
+        // A file's blame holds while its diff is the same one, shared from the watcher's cache.
+        if let Some(b) = &mut self.blame {
+            let before = b.len();
+            b.retain(|p, _| files.iter().any(|f| f.path() == p && self.files.iter().any(|o| o.path() == p && std::sync::Arc::ptr_eq(&o.hunks, &f.hunks))));
+            if b.len() != before {
+                self.blame_rev += 1;
+            }
+        }
         self.files = files;
         self.selection = None;
         self.chunks.borrow_mut().clear();
@@ -412,6 +435,43 @@ impl DiffState {
 
     pub fn search(&self) -> Option<&super::Finder> {
         self.search.as_ref()
+    }
+
+    /// Shows or hides the blame column; hiding forgets what was read.
+    pub fn show_blame(&mut self, on: bool) {
+        if on != self.blame.is_some() {
+            self.blame = on.then(HashMap::new);
+            self.blame_rev += 1;
+        }
+    }
+
+    pub fn blame_shown(&self) -> bool {
+        self.blame.is_some()
+    }
+
+    /// The paths shown that have no blame read yet.
+    pub fn blame_missing(&self) -> Vec<String> {
+        let Some(b) = &self.blame else { return Vec::new() };
+        self.files.iter().filter(|f| f.new_path.is_some() && !f.binary && !b.contains_key(f.path())).map(|f| f.path().to_owned()).collect()
+    }
+
+    /// Sets the notes for `path`'s new side, by line; forgets every file's with `None`, as when
+    /// the files changed.
+    pub fn set_blame(&mut self, path: Option<(String, Vec<BlameNote>)>) {
+        let Some(b) = &mut self.blame else { return };
+        match path {
+            Some((p, notes)) => b.insert(p, notes.into()),
+            None => {
+                b.clear();
+                None
+            }
+        };
+        self.blame_rev += 1;
+    }
+
+    /// Line `n` (from 1) of file `f`'s new side: its blame note.
+    pub(crate) fn blame_note(&self, f: usize, n: u32) -> Option<&BlameNote> {
+        self.blame.as_ref()?.get(self.files.get(f)?.path())?.get(n.checked_sub(1)? as usize)
     }
 
     pub(crate) fn search_rev(&self) -> u64 {

@@ -1112,6 +1112,12 @@ impl Repo {
         Ok(parse_blame(&self.run(&args, None)?))
     }
 
+    /// [`Repo::blame`] of the file as staged, its lines numbered as in the index.
+    pub fn blame_staged(&self, path: &str) -> Result<Vec<Blamed>, String> {
+        let staged = self.run(&["show", &format!(":{path}")], None)?;
+        Ok(parse_blame(&self.run(&["blame", "--porcelain", "--contents", "-", "--", path], Some(&staged))?))
+    }
+
     /// A conflicted file's three versions from the index: the common base (empty when both
     /// sides added the file), this branch's and the incoming one's.
     pub fn merge_sides(&self, path: &str) -> Result<(String, String, String), String> {
@@ -1508,6 +1514,13 @@ mod tests {
         let amended = repo.staged_diff(true).unwrap();
         assert!(amended.contains("+++ b/b.txt") && amended.contains("+++ b/c.txt"), "the last commit's change too: {amended}");
         assert_eq!(repo.recent_subjects(5).unwrap(), ["Add b", "Add a"]);
+        // Blame of the index numbers its lines as staged, not as in the working tree.
+        std::fs::write(dir.join("a.txt"), "staged\na.txt\n").unwrap();
+        git(&["add", "a.txt"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nstaged\na.txt\n").unwrap();
+        let staged: Vec<(bool, String)> = repo.blame_staged("a.txt").unwrap().into_iter().map(|b| (b.id.bytes().all(|c| c == b'0'), b.text)).collect();
+        assert_eq!(staged, [(true, "staged".to_owned()), (false, "a.txt".to_owned())]);
+        assert_eq!(repo.blame("a.txt", None).unwrap().len(), 4, "the working tree's lines");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

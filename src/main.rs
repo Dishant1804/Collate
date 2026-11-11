@@ -397,6 +397,8 @@ struct Collate {
     comments_version: u64,
     /// A file's blame, and a file's history, while shown.
     blame: Option<(String, Vec<git::Blamed>)>,
+    /// Inline blame is being read for the files shown.
+    blaming: bool,
     /// The merge editor's file, while open.
     merge: Option<merge::Merge>,
     /// Shown instead of the repository's changes: two files or folders compared, or a patch,
@@ -526,6 +528,7 @@ fn init() -> Collate {
         refs: Vec::new(),
         compared: None,
         blame: None,
+        blaming: false,
         merge: None,
         loose: None,
         file_log: None,
@@ -1051,6 +1054,99 @@ impl Collate {
         });
     }
 
+    /// Shows or hides who last changed each line, beside the numbers in the unified layout.
+    fn toggle_inline_blame(&mut self) {
+        if self.loose.is_some() {
+            self.say("Blame needs a repository", false);
+            return;
+        }
+        if self.diff.mode() != DiffMode::Unified && !self.diff.blame_shown() {
+            self.say("Inline blame shows in the unified layout", false);
+            return;
+        }
+        let on = !self.diff.blame_shown();
+        self.diff.show_blame(on);
+        self.load_inline_blame();
+    }
+
+    /// Reads the inline blame of the files shown that have none yet, off the UI thread: as of
+    /// the commit shown in History, the index for staged changes, else the working tree. An
+    /// added file not committed yet is all new.
+    fn load_inline_blame(&mut self) {
+        if self.blaming || self.loose.is_some() || current_repo().is_none() {
+            return;
+        }
+        let missing = self.diff.blame_missing();
+        if missing.is_empty() {
+            return;
+        }
+        let at = match (self.scope, self.commit.as_deref()) {
+            (Scope::History, Some(c)) => Some(c.split_once("..").map_or(c, |(_, b)| b).to_owned()),
+            _ => None,
+        };
+        let staged = self.scope == Scope::Staged;
+        // Each file's diff as asked about, so a blame of content since changed is dropped.
+        let asked: Vec<_> = missing
+            .into_iter()
+            .filter_map(|p| self.diff.files().iter().find(|f| f.path() == p))
+            .map(|f| (f.path().to_owned(), at.is_none() && f.status == diff::FileStatus::Added, f.hunks.clone()))
+            .collect();
+        self.blaming = true;
+        self.read_bg(
+            move |r| {
+                asked
+                    .into_iter()
+                    .map(|(path, new, hunks)| {
+                        let lines = if new { Ok(Vec::new()) } else if staged { r.blame_staged(&path) } else { r.blame(&path, at.as_deref()) };
+                        (path, new, hunks, lines)
+                    })
+                    .collect::<Vec<_>>()
+            },
+            |s, read| {
+                s.blaming = false;
+                let mut notes: HashMap<String, diff::BlameNote> = HashMap::new();
+                let mut note = |b: &git::Blamed| {
+                    notes
+                        .entry(b.id.clone())
+                        .or_insert_with(|| {
+                            let (who, help) = if b.id.bytes().all(|c| c == b'0') {
+                                ("Not committed yet".to_owned(), "Not committed yet".to_owned())
+                            } else {
+                                (format!("{}, {}", b.author, day(b.time)), format!("{}\n{} - {}, {}", b.summary, abbrev(&b.id), b.author, day(b.time)))
+                            };
+                            diff::BlameNote { id: b.id.as_str().into(), who: who.into(), help: help.into() }
+                        })
+                        .clone()
+                };
+                let mut failed = Vec::new();
+                for (path, new, hunks, lines) in read {
+                    let current = s.diff.files().iter().any(|f| f.path() == path && Arc::ptr_eq(&f.hunks, &hunks));
+                    if !current || !s.diff.blame_shown() {
+                        continue;
+                    }
+                    let got = match lines {
+                        Ok(_) if new => {
+                            let uncommitted = git::Blamed { id: "0".repeat(40), author: String::new(), time: 0, summary: String::new(), text: String::new() };
+                            let n = hunks.iter().flat_map(|h| &h.lines).filter_map(|l| l.new).max().unwrap_or(0);
+                            vec![note(&uncommitted); n as usize]
+                        }
+                        Ok(lines) => lines.iter().map(&mut note).collect(),
+                        Err(e) => {
+                            failed.push(format!("{path}: {e}"));
+                            Vec::new()
+                        }
+                    };
+                    s.diff.set_blame(Some((path, got)));
+                }
+                if !failed.is_empty() {
+                    s.say(format!("Couldn't blame {}", failed.join(" - ")), true);
+                }
+                // Files that came in meanwhile.
+                s.load_inline_blame();
+            },
+        );
+    }
+
     /// The commits that changed file `f`.
     fn show_file_log(&mut self, f: usize) {
         let Some((file, _)) = self.file(f) else { return };
@@ -1494,6 +1590,7 @@ impl Collate {
             .item(PopupItem::new("ws", "Ignore Whitespace").checked(st.ignore_whitespace))
             .item(PopupItem::new("moved", "Highlight Moved Code").checked(st.show_moved))
             .item(PopupItem::new("wrap", "Wrap Long Lines").checked(st.wrap))
+            .item(PopupItem::new("blame", "Inline Blame").checked(self.diff.blame_shown()).enabled(self.loose.is_none() && self.diff.mode() == DiffMode::Unified))
             .separator()
             .item(PopupItem::new("collapse", "Collapse All Files"))
             .item(PopupItem::new("expand", "Expand All Files"))
@@ -1510,6 +1607,7 @@ impl Collate {
             Some("ws") => s.configure(|c| c.ignore_whitespace = !c.ignore_whitespace),
             Some("moved") => s.configure(|c| c.show_moved = !c.show_moved),
             Some("wrap") => s.configure(|c| c.wrap = !c.wrap),
+            Some("blame") => s.toggle_inline_blame(),
             Some("collapse") => s.fold_all(true, tx),
             Some("expand") => s.fold_all(false, tx),
             Some("reread") => {
@@ -2096,6 +2194,7 @@ impl Collate {
         self.images = images;
         self.diff.set_files_folded(files, &folded);
         self.want_languages();
+        self.load_inline_blame();
         // Opened before the window could read it (a scene, a switch of project).
         if self.pulls.open && self.pulls.list.is_none() {
             self.load_pulls();
@@ -2973,6 +3072,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("n  N  ⌘G", "Next / previous search match"),
             ("⌥⌘C  ⌥⌘W  ⌥⌘R", "Search: match case, whole words, regular expression"),
             ("m", "Jump to the other end of a move (blue lines)"),
+            ("b", "Inline blame beside the line numbers"),
             ("z  Z", "Collapse / expand every file"),
             ("s", "Unified / split"),
             ("w  W", "Wrap long lines / hide whitespace changes"),
