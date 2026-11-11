@@ -92,21 +92,14 @@ pub struct Style {
     pub markers: bool,
     /// Tint the changed words inside changed lines.
     pub word_diff: bool,
-    /// A strip down the right edge showing where the changes are.
-    pub minimap: bool,
 }
 
 impl Default for Style {
     fn default() -> Style {
-        Style { font_size: 12.5, line_h: 20.0, one_number: true, markers: true, word_diff: true, minimap: true }
+        Style { font_size: 12.5, line_h: 20.0, one_number: true, markers: true, word_diff: true }
     }
 }
 
-/// [`DiffState::overview`]'s marks: a removed or added line, a file's start, a search match.
-pub(crate) const MAP_DEL: u8 = 1;
-pub(crate) const MAP_ADD: u8 = 2;
-pub(crate) const MAP_FILE: u8 = 4;
-pub(crate) const MAP_FOUND: u8 = 8;
 pub(crate) const HEADER_H: f32 = 44.0;
 pub(crate) const GAP_H: f32 = 32.0;
 pub(crate) const NOTE_H: f32 = 40.0;
@@ -195,8 +188,6 @@ pub struct DiffState {
     search: Option<super::Finder>,
     search_rev: u64,
     chunks: RefCell<HashMap<(u32, Side, u32), Rc<Chunk>>>,
-    /// The minimap's marks and what they were worked out for: (rev, search_rev, buckets, tail).
-    overview: RefCell<Option<(MapAt, Rc<[u8]>)>>,
     /// Per file, lines added and removed: counted once, read by every frame's headers.
     stats: Vec<(usize, usize)>,
     /// Per file, per hunk, per side: the index in the hunk of each of its lines on that side.
@@ -245,9 +236,6 @@ pub struct BlameNote {
     pub help: Rc<str>,
 }
 
-/// What [`DiffState::overview`]'s marks were worked out for.
-type MapAt = (u64, u64, u32, u32);
-
 /// A selection, the revision it was looked up at, and the rows it covers then.
 type SelRows = (LineRange, u64, Option<(u32, u32)>);
 
@@ -283,7 +271,6 @@ impl DiffState {
             search: None,
             search_rev: 0,
             chunks: RefCell::new(HashMap::new()),
-            overview: RefCell::new(None),
             stats: Vec::new(),
             side_lines: Vec::new(),
             gaps: Vec::new(),
@@ -1005,52 +992,6 @@ impl DiffState {
             Row::Comment { .. } => COMMENT_H,
             _ => self.style.line_h,
         }
-    }
-
-    /// The minimap's marks: the list's estimated height plus `tail` cut into `buckets` equal
-    /// bands, each a set of [`MAP_DEL`], [`MAP_ADD`], [`MAP_FILE`] and [`MAP_FOUND`] for the
-    /// rows that start in it. Worked out once per rows, search and size, as it walks every row.
-    pub(crate) fn overview(&self, buckets: u32, tail: f32) -> Rc<[u8]> {
-        let at = (self.rev, self.search_rev, buckets, tail as u32);
-        if let Some((k, marks)) = &*self.overview.borrow()
-            && *k == at
-        {
-            return marks.clone();
-        }
-        let total: f32 = (0..self.rows.len()).map(|r| self.estimate(r)).sum::<f32>() + tail;
-        let mut marks = vec![0u8; buckets as usize];
-        if total > 0.0 && buckets > 0 {
-            let per = buckets as f32 / total;
-            let found = |text: &str| self.search.as_ref().is_some_and(|q| !q.find_all(text).is_empty());
-            let mut y = 0.0;
-            for (r, &row) in self.rows.iter().enumerate() {
-                let b = ((y * per) as usize).min(marks.len() - 1);
-                y += self.estimate(r);
-                let line = |f: u32, h: u32, i: u32| &self.files[f as usize].hunks[h as usize].lines[i as usize];
-                let mark = match row {
-                    Row::File(_) => MAP_FILE,
-                    Row::Line { f, h, i } => {
-                        let l = line(f, h, i);
-                        let kind = match l.kind {
-                            LineKind::Added => MAP_ADD,
-                            LineKind::Removed => MAP_DEL,
-                            LineKind::Context => 0,
-                        };
-                        kind | if found(&l.text) { MAP_FOUND } else { 0 }
-                    }
-                    Row::Pair { f, h, del, add } => MAP_DEL | MAP_ADD | if found(&line(f, h, del).text) || found(&line(f, h, add).text) { MAP_FOUND } else { 0 },
-                    _ => 0,
-                };
-                // A tall row (an image) covers every band it spans, not just its first.
-                let end = ((y * per).ceil() as usize).clamp(b + 1, marks.len());
-                for m in &mut marks[b..if mark & (MAP_ADD | MAP_DEL) != 0 { end } else { b + 1 }] {
-                    *m |= mark;
-                }
-            }
-        }
-        let marks: Rc<[u8]> = marks.into();
-        *self.overview.borrow_mut() = Some((at, marks.clone()));
-        marks
     }
 
     /// Line `n` of `side` of file `f`, from its whole text, its hunks or an unchanged range.
