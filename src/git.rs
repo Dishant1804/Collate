@@ -1225,6 +1225,36 @@ pub struct Moved {
 }
 
 /// The branch of `all` (as [`Repo::branches`] reads them) a review most likely compares against.
+/// `git diff` of two files or folders outside any repository. It exits 1 when they differ,
+/// which isn't a failure.
+pub fn diff_no_index(a: &Path, b: &Path) -> Result<String, String> {
+    let out = Command::new("git").args(["diff", "--no-index", "--no-color", "--no-ext-diff", "--"]).arg(a).arg(b).output().map_err(|e| format!("can't run git: {e}"))?;
+    match out.status.code() {
+        Some(0 | 1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => Err(String::from_utf8_lossy(&out.stderr).trim().lines().take(3).collect::<Vec<_>>().join(" ")),
+    }
+}
+
+/// Makes `exe` git's diff and merge tool for this user: `git difftool` and `git mergetool`
+/// open it, and a merge it saves counts as done.
+pub fn register_tool(exe: &Path) -> Result<(), String> {
+    let exe = format!("'{}'", exe.display().to_string().replace('\'', r"'\''"));
+    let settings = [
+        ("difftool.collate.cmd", format!(r#"{exe} "$LOCAL" "$REMOTE" --title "$MERGED""#)),
+        ("mergetool.collate.cmd", format!(r#"{exe} --merge "$BASE" "$LOCAL" "$REMOTE" "$MERGED""#)),
+        ("mergetool.collate.trustExitCode", "true".into()),
+        ("diff.tool", "collate".into()),
+        ("merge.tool", "collate".into()),
+    ];
+    for (key, value) in settings {
+        let out = Command::new("git").args(["config", "--global", key, &value]).output().map_err(|e| format!("can't run git: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("git config {key}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+    }
+    Ok(())
+}
+
 pub fn default_base(all: &[String]) -> Option<String> {
     ["origin/main", "origin/master", "main", "master", "origin/develop", "develop"].iter().find(|b| all.iter().any(|r| r == *b)).map(|b| (*b).to_owned())
 }

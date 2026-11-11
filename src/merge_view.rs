@@ -118,14 +118,14 @@ pub fn merge_dialog(m: &Merge, k: &Kit, layer: &mut Vec<El>) {
     let scroll = col().key("merge-scroll").w_full().h(520.0).px(16.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(body.font(mono));
     let save_help = if unsettled > 0 { "Settle every conflict first" } else if m.output.is_some() { "Write the merged file for git" } else { "Write the merged file and mark it resolved" };
     let buttons = row().key("merge-buttons").w_full().px(16.0).py(12.0).gap(8.0).justify_end()
-        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.merge = None).build(k).key("merge-cancel"))
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.close_merge()).build(k).key("merge-cancel"))
         .child(Button::new("Save").variant(ButtonVariant::Contrast).disabled(unsettled > 0).help(save_help).on_press(|s: &mut Collate| s.save_merge()).build(k).key("merge-save"));
     Dialog::new("merge", format!("Merge - {}", m.path))
         .open(true)
         .width(1200.0)
         .fit()
         .click_outside(false)
-        .on_close(|s: &mut Collate| s.merge = None)
+        .on_close(|s: &mut Collate| s.close_merge())
         .child(top)
         .child(scroll)
         .child(buttons)

@@ -1989,3 +1989,29 @@ fn bench_start_scroll() {
         eprintln!("{name:36} {}", stats(&phase));
     }
 }
+
+#[test]
+fn a_dropped_patch_shows_on_its_own_until_closed() {
+    let mut rt = loaded();
+    let files = rt.state.diff.files().len();
+    assert!(files > 1);
+    let patch = std::env::temp_dir().join(format!("collate-dropped-{}.patch", std::process::id()));
+    std::fs::write(&patch, "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n").unwrap();
+    rt.drop_files(vec![patch.clone()], Some((600.0, 400.0)));
+    for _ in 0..3 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.loose.as_deref(), Some(patch.file_name().unwrap().to_str().unwrap()));
+    assert_eq!(rt.state.diff.files().iter().map(|f| f.path()).collect::<Vec<_>>(), ["notes.txt"]);
+    assert!(rt.find("loose-summary").is_some() && rt.find("unstaged").is_none(), "the patch, without the repository's lists");
+    // A refresh of the repository doesn't replace it.
+    let snap = snapshot();
+    rt.update(move |s, tx| s.apply_snapshot(snap, tx));
+    assert_eq!(rt.state.diff.files().len(), 1);
+    click(&mut rt, "loose-close");
+    assert!(rt.state.loose.is_none());
+    let snap = snapshot();
+    rt.update(move |s, tx| s.apply_snapshot(snap, tx));
+    assert_eq!(rt.state.diff.files().len(), files, "back to the changes");
+    let _ = std::fs::remove_file(patch);
+}

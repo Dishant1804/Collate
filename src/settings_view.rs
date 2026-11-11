@@ -196,6 +196,8 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             setting(k, "notify", "Review requests", &[], "A notification when someone asks for your review, checked every few minutes", switch(k, "Review requests", st.notify_reviews, |c, v| c.notify_reviews = v)),
             setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
             setting(k, "order", "Source files first", &[], "Then tests, then lockfiles and generated files", switch(k, "Source files first", st.source_first, |c, v| c.source_first = v)),
+            setting(k, "git-tool", "Git's diff and merge tool", &[], "git difftool and git mergetool open Collate", Button::new("Use Collate").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+                .help("Sets diff.tool and merge.tool in your global git config").on_press(|s: &mut Collate| s.register_git_tool()).build(k).key("register-tool")),
         ],
         AGENT_TAB => agent_settings(s, k),
         PROJECTS_TAB => {

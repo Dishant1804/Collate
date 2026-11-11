@@ -30,13 +30,19 @@ rm -rf "$apps/Collate.app"
 ditto "$app" "$apps/Collate.app"
 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$apps/Collate.app"
 
-# `collate [path]` from a terminal opens the app on that repository.
+# `collate` from a terminal: on its own or with a folder, opens the app on that repository in
+# a window of its own; with anything else (two files or folders, a patch, `git diff | collate`,
+# flags) runs it here and waits for its window to close.
 mkdir -p "$bin"
-cat > "$bin/collate" <<'CLI'
+cat > "$bin/collate" <<CLI
 #!/bin/sh
-# Opens Collate on a repository: `collate` (the current folder) or `collate <path>`.
-dir=$(cd "${1:-.}" 2>/dev/null && pwd) || { echo "collate: no such folder: ${1:-.}" >&2; exit 1; }
-exec open -n -a Collate --args "$dir"
+# Opens Collate: \`collate [folder]\` on a repository, \`collate a b\` compares two files or
+# folders, \`collate x.patch\` or \`git diff | collate\` reads a patch.
+if [ -t 0 ] && { [ \$# -eq 0 ] || { [ \$# -eq 1 ] && [ -d "\$1" ]; }; }; then
+  dir=\$(cd "\${1:-.}" 2>/dev/null && pwd) || { echo "collate: no such folder: \${1:-.}" >&2; exit 1; }
+  exec open -n -a Collate --args "\$dir"
+fi
+exec "$apps/Collate.app/Contents/MacOS/Collate" "\$@"
 CLI
 chmod +x "$bin/collate"
 

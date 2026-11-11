@@ -25,6 +25,22 @@ they open without a warning. Collate can check for newer releases and install th
 Optional: the GitHub CLI (`brew install gh`, then `gh auth login`) for pull requests and
 commit authors' pictures.
 
+## The `collate` command
+
+| Command | Opens |
+| --- | --- |
+| `collate [folder]` | the repository's changes |
+| `collate main..topic`, `collate HEAD~2` | a range or a commit |
+| `collate --staged`, `--unstaged`, `--branch`, `--history` | that view |
+| `collate --split`, `--unified`, `-- src/api` | that layout; the file list filtered |
+| `collate a.rs b.rs`, `collate old/ new/` | two files or two folders compared |
+| `collate fix.patch`, `git diff \| collate` | a patch |
+| `collate --merge base local remote merged` | the merge editor, for `git mergetool` |
+
+Settings > Review > Git's diff and merge tool makes `git difftool` and `git mergetool` open
+Collate. Dropping a folder on the window opens it; a patch, or two files or folders, is shown
+on its own.
+
 ## Keys
 
 | Key | Action |

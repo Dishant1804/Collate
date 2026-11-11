@@ -10,6 +10,7 @@
 mod agent;
 mod avatars;
 mod checkpoints;
+mod cli;
 mod comments;
 mod diff;
 mod git;
@@ -40,7 +41,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -73,6 +74,19 @@ fn set_repo(r: Option<Repo>) {
 }
 
 static HANDLE: OnceLock<rune::AppHandle<Collate>> = OnceLock::new();
+
+/// What the command line asked `init` to open beyond a repository.
+enum Start {
+    /// Files compared, or a patch read: its name and its files, with no repository.
+    Loose(String, Vec<FileDiff>),
+    /// `git mergetool`'s file.
+    Merge(merge::Merge),
+    /// How to show the repository.
+    Shown(cli::Shown),
+}
+static START: std::sync::Mutex<Option<Start>> = std::sync::Mutex::new(None);
+/// The status Collate exits with: for `git mergetool`, 0 once the merge is saved.
+static EXIT: AtomicI32 = AtomicI32::new(0);
 
 /// How long a status message stays up, in seconds.
 const NOTICE_FOR: f64 = 5.0;
@@ -385,6 +399,9 @@ struct Collate {
     blame: Option<(String, Vec<git::Blamed>)>,
     /// The merge editor's file, while open.
     merge: Option<merge::Merge>,
+    /// Shown instead of the repository's changes: two files or folders compared, or a patch,
+    /// by name. The diff holds their files.
+    loose: Option<String>,
     file_log: Option<(String, Vec<graph::Commit>)>,
     /// ⌘P's palette is up: what's typed into it (a file, `file:line` or `:line`), and the
     /// match picked. Like ⌘F, the app takes the keys itself.
@@ -510,6 +527,7 @@ fn init() -> Collate {
         compared: None,
         blame: None,
         merge: None,
+        loose: None,
         file_log: None,
         comments: Vec::new(),
         comments_shown: Vec::new(),
@@ -521,6 +539,25 @@ fn init() -> Collate {
         s.load_history();
     }
     s.apply_settings(None);
+    match START.lock().unwrap().take() {
+        Some(Start::Loose(name, files)) => s.show_loose(name, files),
+        Some(Start::Merge(m)) => s.merge = Some(m),
+        Some(Start::Shown(shown)) => {
+            if let Some(mode) = shown.layout {
+                s.diff.set_mode(mode);
+            }
+            if let Some(f) = shown.filter {
+                s.filter = TextEdit::new(&f);
+            }
+            if let Some(scope) = shown.scope {
+                s.set_scope(scope);
+            }
+            if let Some(rev) = shown.rev {
+                s.open_commit(&rev);
+            }
+        }
+        None => {}
+    }
     s
 }
 
@@ -1581,8 +1618,13 @@ impl Collate {
         let path = m.path.clone();
         match m.output.clone() {
             Some(out) => match std::fs::write(&out, text) {
+                // git mergetool waits for Collate to quit, and takes 0 as merged.
                 Ok(()) => {
                     self.merge = None;
+                    EXIT.store(0, Ordering::Relaxed);
+                    if let Some(app) = HANDLE.get() {
+                        app.quit();
+                    }
                     self.say(format!("Merged {path}"), false);
                 }
                 Err(e) => self.say(format!("{}: {e}", out.display()), true),
@@ -1593,6 +1635,81 @@ impl Collate {
                 let result = repo.save_merge(&path, &text);
                 self.after_discard(result, format!("Merged {path}"));
             }
+        }
+    }
+
+    /// Closes the merge editor without saving; for `git mergetool`, Collate quits, the merge
+    /// not done.
+    fn close_merge(&mut self) {
+        if self.merge.take().is_some_and(|m| m.output.is_some())
+            && let Some(app) = HANDLE.get()
+        {
+            app.quit();
+        }
+    }
+
+    /// Shows files compared, or a patch read, in place of the repository's changes.
+    fn show_loose(&mut self, name: String, files: Vec<FileDiff>) {
+        self.loose = Some(name);
+        self.diff.set_files(files);
+        self.want_languages();
+        self.find();
+        self.loaded = true;
+    }
+
+    /// Leaves files compared or a patch for the repository's changes, read again.
+    fn close_loose(&mut self) {
+        if self.loose.take().is_none() {
+            return;
+        }
+        self.loaded = false;
+        self.hashes.clear();
+        self.diff.set_files(Vec::new());
+        refresh();
+    }
+
+    /// Makes this Collate git's difftool and mergetool, off the UI thread.
+    fn register_git_tool(&mut self) {
+        let (Ok(exe), Some(app)) = (std::env::current_exe(), HANDLE.get().cloned()) else { return };
+        std::thread::spawn(move || {
+            let done = git::register_tool(&exe);
+            app.update(move |s, _| match done {
+                Ok(()) => s.say("git difftool and git mergetool now open Collate", false),
+                Err(e) => s.say(e, true),
+            });
+        });
+    }
+
+    /// Files dropped on the window: a folder opens as a project, a patch is read, and two
+    /// files or two folders are compared.
+    fn dropped(&mut self, paths: &[PathBuf], tx: &mut Tx) {
+        let patch = |p: &PathBuf| p.extension().is_some_and(|e| e == "patch" || e == "diff");
+        match paths {
+            [p] if p.is_dir() => {
+                self.close_loose();
+                self.open_project(p, tx);
+            }
+            [p] if patch(p) => match cli::read_patch(p) {
+                Ok(files) => self.show_loose(p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()), files),
+                Err(e) => self.say(e, true),
+            },
+            [a, b] => {
+                let (a, b) = (a.clone(), b.clone());
+                if a.is_dir() != b.is_dir() {
+                    self.say("Drop two files or two folders to compare them", true);
+                    return;
+                }
+                // git compares them off the UI thread.
+                let Some(app) = HANDLE.get().cloned() else { return };
+                std::thread::spawn(move || {
+                    let files = cli::compare(&a, &b, None);
+                    app.update(move |s, _| match files {
+                        Ok(files) => s.show_loose(cli::title(&a, &b, None), files),
+                        Err(e) => s.say(e, true),
+                    });
+                });
+            }
+            _ => self.say("Drop a folder to open it, a patch to read it, or two files or folders to compare them", true),
         }
     }
 
@@ -1895,6 +2012,10 @@ impl Collate {
     /// Show diffs the watcher prepared. Only the cheap part runs here, on the UI thread: the
     /// file tree, the rows and the folds.
     fn apply(&mut self, p: Prepared, tx: &mut Tx) {
+        // Files compared or a patch hold the diff until closed.
+        if self.loose.is_some() {
+            return;
+        }
         let Prepared { snap, files, hidden, opts } = p;
         // Made for a scope, base or setting the reader has since left: a newer one is coming.
         let wanted = match snap.scope {
@@ -2409,7 +2530,30 @@ fn view(s: &Collate, cx: &mut Cx<Collate>) -> El {
     if s.screen == Screen::Settings {
         settings_panel(s, &k, &mut layer);
     }
-    rune_kit::root(base, layer)
+    rune_kit::root(base, layer).on_drop_files(|s: &mut Collate, paths, tx| s.dropped(paths, tx))
+}
+
+/// Files compared or a patch: what they are, then their diff, read only.
+fn loose_view(s: &Collate, k: &Kit, name: &str) -> El {
+    let files = s.diff.files();
+    let (add, del) = files.iter().fold((0, 0), |(a, d), f| (a + f.additions(), d + f.deletions()));
+    let what = match files.len() {
+        0 => "No differences".to_owned(),
+        1 => format!("1 file - +{add} -{del}"),
+        n => format!("{n} files - +{add} -{del}"),
+    };
+    let close = Button::new(if s.has_project { "Back to Changes" } else { "Close" }).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+        .help("Leave this comparison").on_press(|s: &mut Collate| s.close_loose()).build(k).key("loose-close").mr(-GHOST_PAD);
+    let head = row().key("loose-head").w_full().px(EDGE).py(8.0).gap(8.0).items_center()
+        .child(text(name.to_owned()).font(k.ty.ui_medium).color(k.c.text_base).truncate().min_w(0.0).shrink())
+        .child(text(what).key("loose-summary").font(k.ty.text_small).color(k.c.text_muted).grow(1.0))
+        .child(close);
+    let body = if files.is_empty() {
+        message(k, "No differences", "The two sides are the same.")
+    } else {
+        DiffView::new(|s: &Collate| &s.diff, |s: &mut Collate| &mut s.diff).build(s, k)
+    };
+    col().key("loose").w_full().grow(1.0).min_h(0.0).child(head).child(body)
 }
 
 /// The project menu: a search, the added projects (starred ones first, each with its star),
@@ -2666,7 +2810,8 @@ fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
 }
 
 fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El {
-    let no_project = !s.has_project;
+    // Files compared or a patch have no lists of their own.
+    let no_project = !s.has_project || s.loose.is_some();
     let sidebar = if no_project { col().key("sidebar").w_full().h_full() } else { views_sidebar(s, k) };
     let inspector = if no_project { col().key("staging").w_full().h_full() } else { staging_panel(s, k) };
 
@@ -2790,6 +2935,10 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     } else { body };
     let body = if s.has_project && s.map.open { map_view::map_view(s, k) } else { body };
     let body = if s.has_project && s.pulls.open { pulls::pulls_view(s, k) } else { body };
+    let body = match &s.loose {
+        Some(name) => loose_view(s, k, name),
+        None => body,
+    };
     let body = match operation_bar(s, k) {
         Some(bar) => col().key("with-operation").w_full().grow(1.0).min_h(0.0).child(bar).child(body),
         None => body,
@@ -3991,32 +4140,77 @@ fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
 }
 
 fn main() {
-    // A folder named on the command line, else the project opened last; none is fine (the
-    // window offers to add one, as it does when Collate is launched from the Dock).
-    // Only the first argument can be the folder: later ones are flags and their values
-    // (`--snap out.png`), and Finder may pass a `-psn_…` one.
-    let arg = std::env::args().nth(1).filter(|a| !a.starts_with('-')).map(PathBuf::from);
-    let mut projects = load_projects();
-    let repo = match &arg {
-        Some(dir) => match Repo::open(dir) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                eprintln!("collate: {e}");
-                std::process::exit(1);
+    let die = |e: String| -> ! {
+        eprintln!("collate: {e}");
+        std::process::exit(2);
+    };
+    // Rune takes the window's own flags (`--snap out.png`); the rest are Collate's.
+    let launch = cli::parse(rune::tooling::extra_args(), cli::piped()).unwrap_or_else(|e| die(e));
+    let mut shown = cli::Shown::default();
+    let mut start: Option<Start> = None;
+    match launch {
+        cli::Launch::Repo(s) => shown = s,
+        cli::Launch::Compare { a, b, title } => {
+            let files = cli::compare(&a, &b, title.as_deref()).unwrap_or_else(|e| die(e));
+            start = Some(Start::Loose(cli::title(&a, &b, title.as_deref()), files));
+        }
+        cli::Launch::Patch(p) => {
+            let files = cli::read_patch(&p).unwrap_or_else(|e| die(e));
+            // Nothing came down an open pipe: no patch was meant, so the window opens as usual.
+            if !(files.is_empty() && p == std::path::Path::new("-")) {
+                let name = if p == std::path::Path::new("-") { "Patch".to_owned() } else { p.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()) };
+                start = Some(Start::Loose(name, files));
             }
-        },
-        None => projects.iter().find_map(|p| Repo::open(p).ok()),
+        }
+        cli::Launch::Merge { base, local, remote, merged } => {
+            let read = |p: &PathBuf| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+            let (b, l, r) = (read(&base).unwrap_or_else(|e| die(e)), read(&local).unwrap_or_else(|e| die(e)), read(&remote).unwrap_or_else(|e| die(e)));
+            start = Some(Start::Merge(merge::Merge::new(merged.display().to_string(), &b, &l, &r, Some(merged))));
+            // Until it's saved, git takes the merge as not done.
+            EXIT.store(1, Ordering::Relaxed);
+        }
+    }
+    // A folder named on the command line, else the project opened last; none is fine (the
+    // window offers to add one, as it does when Collate is launched from the Dock). Files
+    // compared, a patch or a merge open on their own.
+    let mut projects = load_projects();
+    let repo = match (&start, &shown.dir) {
+        (Some(_), _) => None,
+        (None, Some(dir)) => Some(Repo::open(dir).unwrap_or_else(|e| die(e))),
+        // Launched from a terminal in a repository (one from the Finder or the Dock starts in `/`).
+        (None, None) => std::env::current_dir().ok().filter(|d| d.parent().is_some()).and_then(|d| Repo::open(&d).ok())
+            .or_else(|| projects.iter().find_map(|p| Repo::open(p).ok())),
     };
     if let Some(r) = &repo {
         remember_project(&mut projects, &load_paths("favorites"), r.root.clone());
     }
-    let title: &'static str = Box::leak(repo.as_ref().map_or_else(|| "Collate".to_owned(), |r| format!("{} — Collate", r.name())).into_boxed_str());
+    // A commit or range named on the command line, by its ids.
+    if let Some(rev) = shown.rev.take() {
+        let Some(r) = &repo else { die(format!("{rev}: no repository to read it in")) };
+        let id = |name: &str| r.resolve(name).unwrap_or_else(|e| die(e));
+        shown.rev = Some(match rev.split_once("..") {
+            Some((from, to)) => format!("{}..{}", id(if from.is_empty() { "HEAD" } else { from }), id(if to.is_empty() { "HEAD" } else { to })),
+            None => id(&rev),
+        });
+    }
+    let window_title = match &start {
+        Some(Start::Loose(name, _)) => Some(name.clone()),
+        Some(Start::Merge(m)) => Some(format!("Merge {}", m.path)),
+        _ => None,
+    };
+    let title = window_title.or_else(|| repo.as_ref().map(Repo::name)).map_or_else(|| "Collate".to_owned(), |n| format!("{n} — Collate"));
+    let title: &'static str = Box::leak(title.into_boxed_str());
     let base = repo.as_ref().and_then(|r| git::default_base(&r.branches()));
     // History opens on the latest commit; the window's own state picks the same one.
     let first_commit = repo.as_ref().and_then(Repo::head_id);
     let root = repo.as_ref().map(|r| r.root.clone());
     set_repo(repo);
-    let start = Settings::load().default_scope;
+    let scope = if shown.rev.is_some() { Scope::History } else { shown.scope.unwrap_or(Settings::load().default_scope) };
+    let first_commit = shown.rev.clone().or(first_commit);
+    if start.is_none() {
+        start = Some(Start::Shown(shown));
+    }
+    *START.lock().unwrap() = start;
 
     let spec = AppSpec {
         on_key: Some(on_key),
@@ -4095,10 +4289,11 @@ fn main() {
     watch_project_files(root);
     let handle = app.handle();
     let _ = HANDLE.set(handle.clone());
-    std::thread::spawn(move || watch(handle, rx, start, base, first_commit));
+    std::thread::spawn(move || watch(handle, rx, scope, base, first_commit));
     // Read the first snapshot right away rather than after one poll interval.
     let _ = WATCHER.get().unwrap().send(Cmd::Refresh);
     app.run();
+    std::process::exit(EXIT.load(Ordering::Relaxed));
 }
 
 #[cfg(test)]

@@ -111,13 +111,19 @@ async function installRelease() {
   return true;
 }
 
-/** `collate [path]` from a terminal opens the app on that repository; the same script scripts/install.sh writes. */
+/** `collate` from a terminal: the same script scripts/install.sh writes. On its own or with a
+ * folder it opens the app on that repository; with anything else (two files or folders, a
+ * patch, `git diff | collate`, flags) it runs the app here and waits for its window. */
 function writeCommand() {
   fs.mkdirSync(BIN, { recursive: true });
   fs.writeFileSync(path.join(BIN, 'collate'), `#!/bin/sh
-# Opens Collate on a repository: \`collate\` (the current folder) or \`collate <path>\`.
-dir=$(cd "\${1:-.}" 2>/dev/null && pwd) || { echo "collate: no such folder: \${1:-.}" >&2; exit 1; }
-exec open -n -a Collate --args "$dir"
+# Opens Collate: \`collate [folder]\` on a repository, \`collate a b\` compares two files or
+# folders, \`collate x.patch\` or \`git diff | collate\` reads a patch.
+if [ -t 0 ] && { [ $# -eq 0 ] || { [ $# -eq 1 ] && [ -d "$1" ]; }; }; then
+  dir=$(cd "\${1:-.}" 2>/dev/null && pwd) || { echo "collate: no such folder: \${1:-.}" >&2; exit 1; }
+  exec open -n -a Collate --args "$dir"
+fi
+exec "${path.join(appsFolder(), 'Collate.app', 'Contents', 'MacOS', 'Collate')}" "$@"
 `, { mode: 0o755 });
 }
 
