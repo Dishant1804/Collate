@@ -713,3 +713,29 @@ fn operations_that_move_head_undo() {
     // Nothing moved, nothing to undo.
     assert!(r.undoable("the reset", Back::Keep, false, |r| r.reset("hard", "HEAD")).1.is_none());
 }
+
+#[test]
+fn staged_changes_fix_up_an_earlier_commit() {
+    let (dir, r) = repo("fixup", &[("a.txt", "one\n"), ("b.txt", "b\n")]);
+    let first = r.head_at().unwrap().1;
+    write(&dir, "b.txt", "b2\n");
+    sh(&dir, &["commit", "-qam", "second"]);
+    // Staged goes into the first commit; unstaged stays where it is.
+    write(&dir, "a.txt", "ONE\n");
+    r.stage("a.txt").unwrap();
+    write(&dir, "b.txt", "b3\n");
+    r.fixup(&first).unwrap();
+    assert_eq!(sh(&dir, &["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["second", "init"]);
+    assert_eq!(sh(&dir, &["show", "HEAD^:a.txt"]), "ONE\n");
+    assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "b3\n");
+    assert!(sh(&dir, &["diff", "--cached"]).is_empty());
+    // Not a commit off the branch.
+    sh(&dir, &["branch", "side"]);
+    sh(&dir, &["checkout", "-q", "side"]);
+    sh(&dir, &["commit", "-qam", "side"]);
+    let side = r.head_at().unwrap().1;
+    sh(&dir, &["checkout", "-q", "main"]);
+    write(&dir, "a.txt", "x\n");
+    r.stage("a.txt").unwrap();
+    assert!(r.fixup(&side).is_err());
+}

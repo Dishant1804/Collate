@@ -1020,6 +1020,25 @@ impl Repo {
         self.run(&["reset", "-q", &format!("--{how}"), id], None)
     }
 
+    /// Folds what's staged into commit `id`, an earlier commit of this branch: commits it as a
+    /// fixup and rebases it in, setting the unstaged changes aside meanwhile.
+    pub fn fixup(&self, id: &str) -> Result<String, String> {
+        if self.run(&["merge-base", "--is-ancestor", id, "HEAD"], None).is_err() {
+            return Err("That commit isn't on this branch".to_owned());
+        }
+        if self.run(&["rev-list", "--merges", &format!("{id}..HEAD")], None).is_ok_and(|m| !m.is_empty()) {
+            return Err("A merge came after that commit; fixing it up would flatten the merge".to_owned());
+        }
+        let pushed = self.run(&["merge-base", "--is-ancestor", id, "@{u}"], None).is_ok();
+        self.run(&["commit", "-q", "--fixup", id], None)?;
+        let parent = format!("{id}^");
+        let onto = if self.run(&["rev-parse", "--verify", "-q", &parent], None).is_ok() { parent.as_str() } else { "--root" };
+        // The todo list as git wrote it, fixup already in place: no editor to stop in.
+        let rebase = self.run_env(&["rebase", "-q", "-i", "--autosquash", "--autostash", onto], None, &[("GIT_SEQUENCE_EDITOR", Path::new("true"))]);
+        self.stopped(rebase)?;
+        Ok(if pushed { "It was pushed already: Force Push sends the new version".to_owned() } else { String::new() })
+    }
+
     /// The branch HEAD is on (`None` when detached) and its commit; `None` before the first commit.
     pub fn head_at(&self) -> Option<(Option<String>, String)> {
         let id = self.run(&["rev-parse", "--verify", "-q", "HEAD"], None).ok()?;

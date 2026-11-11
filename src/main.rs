@@ -1111,6 +1111,8 @@ impl Collate {
             .separator()
             .item(PopupItem::new("pick", format!("Cherry-Pick onto {on}")).enabled(!is_head))
             .item(PopupItem::new("revert", "Revert Commit"))
+            .item(PopupItem::new("fixup", format!("Fix Up with {} Staged File{}", self.staged, if self.staged == 1 { "" } else { "s" }))
+                .enabled(self.staged > 0 && self.operation.is_none() && current_repo().is_some_and(|r| r.merged(&id))))
             .item(PopupItem::new("compare", format!("Compare with {on}")).enabled(!is_head && self.head.is_some()))
             .submenu_enabled(format!("Reset {on} to Here"), reset, !is_head);
         tx.popup_menu(menu, anchor.to_owned(), move |s: &mut Collate, picked, tx| {
@@ -1124,6 +1126,9 @@ impl Collate {
                 Some("branch") => s.ask(Ask::Branch(Some(id))),
                 Some("tag") => s.ask(Ask::Tag(Some(id))),
                 Some("pick") => s.act_undoable("Cherry-picking…", format!("the cherry-pick of {short_id}"), git::Back::Keep, false, move |r| r.cherry_pick(&id).map(|_| format!("Cherry-picked {short_id}"))),
+                Some("fixup") => s.act_undoable("Fixing up…", format!("the fixup of {short_id}"), git::Back::Keep, false, move |r| {
+                    r.fixup(&id).map(|note| if note.is_empty() { format!("Fixed up {short_id} with the staged changes") } else { format!("Fixed up {short_id} with the staged changes. {note}") })
+                }),
                 Some("revert") => s.act_undoable("Reverting…", format!("the revert of {short_id}"), git::Back::Keep, false, move |r| r.revert(&id).map(|_| format!("Reverted {short_id}"))),
                 Some("reset-soft") => s.act_undoable("Resetting…", format!("the reset to {short_id}"), git::Back::Soft, false, move |r| r.reset("soft", &id).map(|_| format!("Reset to {short_id}; its later changes are staged"))),
                 Some("reset-mixed") => s.act_undoable("Resetting…", format!("the reset to {short_id}"), git::Back::Mixed, false, move |r| r.reset("mixed", &id).map(|_| format!("Reset to {short_id}; its later changes are unstaged"))),
