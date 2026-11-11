@@ -49,6 +49,12 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.toggle_terminal();
         return true;
     }
+    // ⌘W ends the open drawer's shell, as Terminal closes a tab before its window; the last
+    // one hides the drawer. Untaken, it closes the window.
+    if ev.is_command('w') && !ev.mods.alt && s.terminals.open {
+        s.end_terminal();
+        return true;
+    }
     if shell::is_sidebar_toggle(ev) {
         s.sidebar.toggle();
         return true;

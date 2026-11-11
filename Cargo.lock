@@ -591,6 +591,7 @@ name = "collate"
 version = "1.2.0"
 dependencies = [
  "alacritty_terminal",
+ "libc",
  "libloading",
  "notify",
  "regex",

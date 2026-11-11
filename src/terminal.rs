@@ -81,6 +81,10 @@ pub struct Session {
     pub keys: TextEdit,
     /// Wheel points not yet a whole line.
     wheel: f32,
+    /// The PTY's own end (a copy), and the process id of what it started (the shell, or on
+    /// macOS the `login` above it): whether a program runs in front of the shell.
+    tty: std::fs::File,
+    shell: u32,
 }
 
 impl Drop for Session {
@@ -129,6 +133,27 @@ impl Session {
 
     fn copy_selection(&self) -> Option<String> {
         self.term.lock().selection_to_string().filter(|s| !s.is_empty())
+    }
+
+    /// The program running in front of the shell, by name; `None` at the shell's prompt.
+    pub fn running(&self) -> Option<String> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `tty` is an open descriptor this session owns.
+        let front = unsafe { libc::tcgetpgrp(self.tty.as_raw_fd()) };
+        if front <= 0 || front as u32 == self.shell {
+            return None;
+        }
+        // SAFETY: `info` is plain data, written for the size given.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+        let got = unsafe { libc::proc_pidinfo(front, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+        // On macOS the shell runs under `login`, our child: in front, it's at its prompt.
+        if got == size && info.pbi_ppid == self.shell {
+            return None;
+        }
+        let name = if info.pbi_name[0] != 0 { &info.pbi_name[..] } else { &info.pbi_comm[..] };
+        let name: String = name.iter().take_while(|&&c| c != 0).map(|&c| c as u8 as char).collect();
+        Some(if name.is_empty() { format!("process {front}") } else { name })
     }
 }
 
@@ -189,6 +214,8 @@ impl Terminals {
             ..Default::default()
         };
         let pty = tty::new(&options, window_size(cols, rows), id).map_err(|e| format!("Couldn't start a shell: {e}"))?;
+        let tty = pty.file().try_clone().map_err(|e| format!("Couldn't start a shell: {e}"))?;
+        let shell = pty.child().id();
         let dirty = Arc::new(AtomicBool::new(false));
         let sender = Arc::new(OnceLock::new());
         let proxy = Proxy { id, dirty: dirty.clone(), pty: sender.clone(), sink };
@@ -203,7 +230,7 @@ impl Terminals {
             t.keys.focused = false;
         }
         let title = dir.file_name().map_or_else(|| "Terminal".to_owned(), |n| n.to_string_lossy().into_owned());
-        self.list.push(Session { id, title, term, pty, dirty, size: (cols, rows), keys, wheel: 0.0 });
+        self.list.push(Session { id, title, term, pty, dirty, size: (cols, rows), keys, wheel: 0.0, tty, shell });
         self.active = self.list.len() - 1;
         self.open = true;
         Ok(())

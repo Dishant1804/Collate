@@ -237,6 +237,8 @@ struct Notice {
     until: Option<f64>,
     /// A discard's backup, offered back as "Undo".
     undo: Option<PathBuf>,
+    /// The shell ⌘W would end, with a program running in it: asks until answered.
+    end: Option<u64>,
 }
 
 struct Collate {
@@ -661,6 +663,34 @@ impl Collate {
         }
     }
 
+    /// ⌘W in the drawer: ends the active shell, first asking when a program runs in it, so a
+    /// slipped key doesn't stop a server or an editor. ⌘W again while it asks ends it.
+    fn end_terminal(&mut self) {
+        let Some(t) = self.terminals.active() else { return };
+        let id = t.id;
+        let asked = self.notice.as_ref().is_some_and(|n| n.end == Some(id));
+        match t.running() {
+            Some(name) if !asked => {
+                self.notice = Some(Notice { text: format!("{name} is running in this terminal - end it?"), error: false, until: None, undo: None, end: Some(id) });
+            }
+            _ => {
+                if asked {
+                    self.notice = None;
+                }
+                let i = self.terminals.active;
+                self.terminals.close(i);
+            }
+        }
+    }
+
+    /// End Terminal in the notice: ends the shell it asked about, if it still runs.
+    fn confirm_end_terminal(&mut self) {
+        let Some(id) = self.notice.take().and_then(|n| n.end) else { return };
+        if let Some(i) = self.terminals.list.iter().position(|t| t.id == id) {
+            self.terminals.close(i);
+        }
+    }
+
     /// Another shell, in the project's folder (home without one).
     fn new_terminal(&mut self) {
         let dir = current_repo().map(|r| r.root.clone()).or_else(|| std::env::var_os("HOME").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("/"));
@@ -816,7 +846,7 @@ impl Collate {
     }
 
     fn say(&mut self, text: impl Into<String>, error: bool) {
-        self.notice = Some(Notice { text: text.into(), error, until: None, undo: None });
+        self.notice = Some(Notice { text: text.into(), error, until: None, undo: None, end: None });
     }
 
     /// Run a change to the repository, report how it went and reread.
@@ -1426,7 +1456,7 @@ impl Collate {
     fn after_discard(&mut self, result: Result<PathBuf, String>, done: String) {
         match result {
             Ok(backup) => {
-                self.notice = Some(Notice { text: done, error: false, until: None, undo: Some(backup) });
+                self.notice = Some(Notice { text: done, error: false, until: None, undo: Some(backup), end: None });
                 self.selection_clear();
             }
             Err(e) => self.say(e, true),
@@ -3640,6 +3670,11 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
     if note.undo.is_some() {
         r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Put the discarded file back from its backup").on_press(|s: &mut Collate| s.undo_discard()).build(k).key("undo"));
     }
+    if note.end.is_some() {
+        r = r
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Keep the terminal running").on_press(|s: &mut Collate| s.notice = None).build(k).key("end-cancel"))
+            .child(Button::new("End Terminal").variant(ButtonVariant::Danger).control_size(ControlSize::Small).help("End the shell and what runs in it (⌘W)").on_press(|s: &mut Collate| s.confirm_end_terminal()).build(k).key("end-terminal"));
+    }
     Some(r)
 }
 
@@ -3819,6 +3854,10 @@ fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
     // Whatever moved the reader since the last frame, back now returns there.
     let moved = s.note_place();
     let Some(n) = &mut s.notice else { return moved };
+    // A question stays until it's answered.
+    if n.end.is_some() {
+        return moved;
+    }
     match n.until {
         None => {
             n.until = Some(now + NOTICE_FOR);

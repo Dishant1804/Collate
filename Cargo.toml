@@ -16,6 +16,9 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 regex = "1"
 # The terminal drawer: a PTY and a VT parser and grid, as Alacritty itself runs them.
 alacritty_terminal = { version = "0.26", default-features = false }
+# Asks a shell's PTY what runs in front of it, so ⌘W can ask before ending a program.
+# Already built for Rune and alacritty_terminal.
+libc = "0.2"
 # Syntax colours for languages the built-in scanners don't know: grammars are fetched and
 # compiled on demand (src/grammars.rs), so only the parser runtime ships in the app.
 tree-sitter = "0.27"

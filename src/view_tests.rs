@@ -1116,6 +1116,42 @@ fn command_j_opens_a_terminal_under_the_diff() {
     assert!(!rt.state.terminals.open && rt.state.terminals.list.len() == 1, "⌘J again hides it; the shell keeps running");
 }
 
+#[test]
+fn command_w_asks_before_ending_a_terminal_that_runs_a_program() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    rt.update(|s, _| {
+        s.terminals.connect(std::sync::Arc::new(|_, _| {}));
+        s.new_terminal();
+        s.new_terminal();
+    });
+    let cmd_w = KeyEvent { key: Key::Command('w'), mods: rune::Mods { cmd: true, ..Default::default() } };
+    // An idle shell ends at once.
+    rt.key(cmd_w.clone());
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.terminals.list.len() == 1 && rt.state.notice.is_none(), "an idle shell ends without asking");
+    for c in "sleep 30".chars() {
+        rt.key(KeyEvent { key: Key::Text(c.to_string()), mods: Default::default() });
+    }
+    rt.key(KeyEvent { key: Key::Enter, mods: Default::default() });
+    let start = std::time::Instant::now();
+    while rt.state.terminals.list[0].running().is_none() {
+        assert!(start.elapsed().as_secs() < 20, "sleep runs in front of the shell");
+        rt.frame(1.0 / 60.0);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(rt.state.terminals.list[0].running().as_deref(), Some("sleep"));
+    rt.key(cmd_w.clone());
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.terminals.list.len() == 1 && rt.state.notice.as_ref().is_some_and(|n| n.end.is_some()), "it asks first");
+    click(&mut rt, "end-cancel");
+    assert!(rt.state.terminals.list.len() == 1 && rt.state.notice.is_none(), "Cancel keeps it");
+    rt.key(cmd_w.clone());
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "end-terminal");
+    assert!(rt.state.terminals.list.is_empty() && !rt.state.terminals.open, "End Terminal ends it and the drawer goes");
+}
+
 /// Frames while a shell floods the terminal with coloured lines, every row changing.
 /// `cargo test --release bench_terminal_frames -- --ignored --nocapture`
 #[test]
