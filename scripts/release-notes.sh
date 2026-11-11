@@ -27,14 +27,10 @@ cat <<NOTES
 
 Install or update with \`npx collate-app@latest\`.
 
-\`Collate-$version-macos-universal.zip\` holds the app, for Apple silicon and Intel Macs,
-macOS 13 or later; it needs \`git\` on your \`PATH\`. Unzip it and move Collate to
-Applications. Collate is signed ad hoc, not by an Apple Developer ID, so macOS blocks the
-first launch of a downloaded copy. Clear the quarantine once:
-
-\`\`\`sh
-xattr -dr com.apple.quarantine /Applications/Collate.app
-\`\`\`
+\`Collate-$version-macos-universal.dmg\` holds the app, for Apple silicon and Intel Macs,
+macOS 13 or later; it needs \`git\` on your \`PATH\`. Open it and drag Collate to
+Applications. \`Collate-$version-macos-universal.zip\` is the same app, for the in-app
+updater and the installer. Both are signed with a Developer ID and notarized by Apple.
 
 The \`collate-$version-macos-universal.tar.gz\` download holds the bare binary for a
 terminal: \`collate <repository>\`. \`SHA256SUMS\` lists every download's checksum.

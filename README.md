@@ -17,6 +17,11 @@ That checks your Mac, installs anything missing, puts Collate in Applications an
 You need macOS 13 or newer and [Node.js](https://nodejs.org) 18 or newer. Then open Collate
 from Launchpad, or run `collate` in a repository.
 
+Or download `Collate-<version>-macos-universal.dmg` from the
+[latest release](https://github.com/Dishant1804/Collate/releases/latest), open it and drag
+Collate to Applications. Releases are signed with a Developer ID and notarized by Apple, so
+they open without a warning. Collate can check for newer releases and install them (Settings).
+
 Optional: the GitHub CLI (`brew install gh`, then `gh auth login`) for pull requests and
 commit authors' pictures.
 

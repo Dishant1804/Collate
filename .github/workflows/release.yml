@@ -27,7 +27,37 @@ jobs:
           [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but Cargo.toml says $version"; exit 1; }
 
       - run: cargo test
-      - run: scripts/package.sh
+
+      # The Developer ID certificate goes into a keychain of its own on this runner, and the
+      # notary key into a file; scripts/package.sh signs and notarizes with them.
+      - name: Load the signing certificate and notary key
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          [ -n "$CERT_P12" ] && [ -n "$NOTARY_KEY_P8" ] || { echo "the signing secrets aren't set (MACOS_CERT_P12, NOTARY_KEY_P8)"; exit 1; }
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          printf '%s\n' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+
+      - name: Build, sign and notarize the downloads
+        env:
+          COLLATE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY_PATH: ${{ runner.temp }}/notary.p8
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          [ -n "$COLLATE_SIGN_IDENTITY" ] || { echo "MACOS_SIGN_IDENTITY isn't set"; exit 1; }
+          scripts/package.sh
       - run: scripts/release-notes.sh "$GITHUB_REF_NAME" > notes.md
 
       - name: Publish

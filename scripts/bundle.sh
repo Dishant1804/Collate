@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Makes Collate.app from a built binary: the icon, Info.plist and an ad-hoc signature.
+# Makes Collate.app from a built binary: the icon, Info.plist and a signature.
 # Shared by install.sh (this Mac) and package.sh (the release downloads).
 #
 #   scripts/bundle.sh <binary> <out-dir>   writes <out-dir>/Collate.app
@@ -50,6 +50,10 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Apple silicon runs only signed code; an ad-hoc signature is all we have without a
-# Developer ID, so a downloaded copy needs its quarantine cleared once (see the README).
-codesign --force --sign - "$app" >/dev/null
+# Apple silicon runs only signed code. A release signs with the Developer ID named in
+# COLLATE_SIGN_IDENTITY (scripts/package.sh notarizes it); a build for this Mac signs ad hoc.
+if [[ -n ${COLLATE_SIGN_IDENTITY:-} ]]; then
+  codesign --force --options runtime --timestamp --entitlements scripts/Collate.entitlements --sign "$COLLATE_SIGN_IDENTITY" "$app"
+else
+  codesign --force --sign - "$app" >/dev/null
+fi
