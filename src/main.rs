@@ -30,6 +30,7 @@ mod search;
 mod settings;
 mod settings_view;
 mod terminal;
+mod themes;
 mod update;
 mod watcher;
 #[cfg(test)]
@@ -2609,14 +2610,7 @@ fn reveal(s: &mut Collate, id: &str, tx: &mut Tx) {
 }
 
 fn kit(s: &Collate, cx: &Cx<Collate>) -> Kit {
-    let dark = s.settings.dark(cx.system_dark());
-    let mut k = Kit::neutral(dark);
-    // Focus rings in slate, the hue of the app's greys, rather than the kit's blue accent;
-    // light enough on dark to be seen, darker on light.
-    let slate = rune::oklch(if dark { 0.68 } else { 0.55 }, 0.035, 262.0);
-    k.c.border_focus = slate;
-    k.c.border_active = slate;
-    k
+    themes::kit(s.settings.theme, cx.system_dark())
 }
 
 fn view(s: &Collate, cx: &mut Cx<Collate>) -> El {

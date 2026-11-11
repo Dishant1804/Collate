@@ -580,6 +580,24 @@ fn settings_float_over_the_review_and_close_with_escape() {
 }
 
 #[test]
+fn picking_a_theme_in_settings_repaints_the_app_and_the_code() {
+    let mut rt = loaded();
+    rt.update(|s, _| s.screen = Screen::Settings);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    for t in crate::themes::Theme::ALL {
+        assert!(rt.find(&format!("theme-{}", t.id())).is_some(), "{} is offered", t.name());
+    }
+    let was = rt.state.diff.style();
+    click(&mut rt, "theme-dracula");
+    assert_eq!(rt.state.settings.theme, crate::themes::Theme::Dracula);
+    assert_ne!(rt.state.diff.style(), was, "the diff takes Dracula's token colours, so its rows rebuild");
+    click(&mut rt, "theme-system");
+    assert_eq!(rt.state.settings.theme, crate::themes::Theme::System, "and back");
+}
+
+#[test]
 fn reduced_motion_runs_the_clock_faster_and_default_puts_it_back() {
     let mut rt = loaded();
     assert_eq!(rt.time_scale, 1.0);

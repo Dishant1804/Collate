@@ -92,11 +92,13 @@ pub struct Style {
     pub markers: bool,
     /// Tint the changed words inside changed lines.
     pub word_diff: bool,
+    /// A named theme's token colours for code; `None` for the kit's.
+    pub scheme: Option<&'static crate::themes::Scheme>,
 }
 
 impl Default for Style {
     fn default() -> Style {
-        Style { font_size: 12.5, line_h: 20.0, one_number: true, markers: true, word_diff: true }
+        Style { font_size: 12.5, line_h: 20.0, one_number: true, markers: true, word_diff: true, scheme: None }
     }
 }
 

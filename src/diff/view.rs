@@ -264,7 +264,7 @@ impl Look {
             accent: info,
             triangle_down: k.glyph.triangle_down,
             triangle_right: k.glyph.triangle_right,
-            syntax: SyntaxTheme::from_kit(k),
+            syntax: style.scheme.map_or_else(|| SyntaxTheme::from_kit(k), |s| s.syntax(k)),
             version: 0,
         };
         let mut h = std::hash::DefaultHasher::new();
@@ -274,6 +274,8 @@ impl Look {
         look.font.size.to_bits().hash(&mut h);
         look.line_h.to_bits().hash(&mut h);
         (style.one_number, style.markers, style.word_diff).hash(&mut h);
+        // Token colours: a theme's are its own, which the colours above may not tell apart.
+        look.syntax.color(rune_kit::syntax::Syntax::Keyword).hash(&mut h);
         look.version = h.finish();
         look
     }

@@ -1,12 +1,12 @@
 //! The settings panel: sections down the left, each section's settings and their controls on
 //! the right.
-use rune::{Cursor, El, Icon, Tx, col, icon, row, text};
+use rune::{Color, Cursor, El, Icon, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit, SegmentedControl, Switch};
 
 use crate::diff::DiffMode;
 use crate::git::Scope;
 use crate::settings::{Agent, CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
-use crate::{ADD_PROJECT, AGENT_ICON, ALL_ICON, Collate, Screen, current_repo, grammars, lucide, project_labels, tilde, update};
+use crate::{ADD_PROJECT, AGENT_ICON, ALL_ICON, Collate, Screen, current_repo, grammars, lucide, project_labels, themes, tilde, update};
 
 /// The width every settings control is right-aligned in, so each description wraps at the
 /// same measure and rows of the same kind come out the same height.
@@ -127,6 +127,59 @@ fn pick<T: Copy + PartialEq + 'static>(k: &Kit, labels: &[&str], values: &'stati
         .build(k)
 }
 
+/// The Theme setting: a small preview of each theme, four to a row, the chosen one ringed.
+/// Previews paint from colours worked out once, so an open panel costs no more per frame.
+fn theme_picker(k: &Kit, current: Theme) -> El {
+    let swatches = themes::swatches();
+    // A few lines of code in the theme's colours: accent and text, an added line, a removed one.
+    let page = |[bg, fg, accent, added, removed]: [Color; 5]| {
+        let line = |w: f32, c: Color| row().w(w).h(4.0).radius(2.0).fill(c);
+        col()
+            .grow(1.0)
+            .h_full()
+            .px(10.0)
+            .py(12.0)
+            .gap(6.0)
+            .fill(bg)
+            .child(row().gap(4.0).child(line(12.0, accent)).child(line(28.0, fg)))
+            .child(row().gap(4.0).child(line(8.0, fg)).child(line(32.0, added)))
+            .child(row().gap(4.0).child(line(8.0, fg)).child(line(22.0, removed)))
+    };
+    let tile = |i: usize| {
+        let t = Theme::ALL[i];
+        let on = t == current;
+        let mut preview = row().h(64.0).clip_rounded(k.radius.md - 1.0).child(page(swatches[i]));
+        if t == Theme::System {
+            // System is Light or Dark as macOS is: show both.
+            preview = preview.child(page(swatches[2]));
+        }
+        // A hairline round each preview, and a second ring outside it for the chosen one, so
+        // choosing moves nothing.
+        let edge = if on { k.c.border_focus } else { k.c.border_weak };
+        let hairline = row().w_full().padding(1.0).radius(k.radius.md).fill(edge).child(preview.grow(1.0));
+        let frame = row().w_full().padding(1.0).radius(k.radius.md + 1.0).fill(if on { edge } else { Color::TRANSPARENT }).child(hairline);
+        col()
+            .key(format!("theme-{}", t.id()))
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(6.0)
+            .cursor(Cursor::Pointer)
+            .role("radio")
+            .label(t.name())
+            .checked(on)
+            .on_press(move |s: &mut Collate| s.configure(|c| c.theme = t))
+            .child(frame)
+            .child(text(t.name().to_owned()).font(if on { k.ty.text_small_medium } else { k.ty.text_small }).color(if on { k.c.text_base } else { k.c.text_muted }).truncate())
+    };
+    let grid = col().key("theme-grid").w_full().gap(16.0).children((0..Theme::ALL.len()).step_by(4).map(|start| {
+        // A short last row keeps its tiles the width of the rest.
+        let tiles = (start..start + 4).map(|i| if i < Theme::ALL.len() { tile(i) } else { col().key(format!("theme-gap{i}")).grow(1.0).min_w(0.0) });
+        row().key(format!("theme-row{start}")).w_full().gap(12.0).children(tiles)
+    }));
+    let words = col().gap(4.0).child(text("Theme".to_owned()).font(k.ty.ui_medium).color(k.c.text_base)).child(text("System follows macOS between Light and Dark".to_owned()).font(k.ty.text_small).color(k.c.text_muted));
+    col().key("theme").w_full().py(14.0).gap(16.0).child(words).child(grid)
+}
+
 fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
     // Off, the kit's standard switch is a dark knob on a surface-coloured track, which nearly
     // vanishes on the panel's own surface in the dark theme: draw it as a hairline control
@@ -162,7 +215,6 @@ const PROJECTS_TAB: usize = 5;
 /// away; every change applies and saves at once, so there's nothing to confirm.
 pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let st = &s.settings;
-    static THEMES: [Theme; 3] = [Theme::System, Theme::Light, Theme::Dark];
     static DENSITIES: [Density; 3] = [Density::Compact, Density::Comfortable, Density::Spacious];
     static MOTIONS: [Motion; 2] = [Motion::Default, Motion::Reduced];
     static LAYOUTS: [DiffMode; 2] = [DiffMode::Unified, DiffMode::Split];
@@ -170,7 +222,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let tab = s.settings_tab.min(SETTINGS_TABS.len() - 1);
     let rows: Vec<El> = match tab {
         0 => vec![
-            setting(k, "theme", "Theme", &[], "", pick(k, &["System", "Light", "Dark"], &THEMES, st.theme, |c, v| c.theme = v)),
+            theme_picker(k, st.theme),
             setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(k, &["11", "12", "13", "14", "16"], &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
             setting(k, "density", "Line spacing", &[], "", pick(k, &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
             setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(k, &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),

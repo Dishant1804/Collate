@@ -6,13 +6,8 @@ use std::path::PathBuf;
 
 use crate::diff::{DiffMode, Style};
 use crate::git::Scope;
+pub use crate::themes::Theme;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Theme {
-    System,
-    Light,
-    Dark,
-}
 
 /// How much room each line gets, as a multiple of the font size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -237,14 +232,7 @@ impl Settings {
             one_number: self.one_number,
             markers: self.markers,
             word_diff: self.word_diff,
-        }
-    }
-
-    pub fn dark(&self, system_dark: bool) -> bool {
-        match self.theme {
-            Theme::System => system_dark,
-            Theme::Light => false,
-            Theme::Dark => true,
+            scheme: self.theme.scheme(),
         }
     }
 
@@ -281,13 +269,7 @@ impl Settings {
             let Some((k, v)) = line.split_once('=') else { continue };
             let (k, v) = (k.trim(), v.trim());
             match k {
-                "theme" => {
-                    s.theme = match v {
-                        "light" => Theme::Light,
-                        "dark" => Theme::Dark,
-                        _ => Theme::System,
-                    }
-                }
+                "theme" => s.theme = Theme::from_id(v).unwrap_or(Theme::System),
                 "font_size" => {
                     if let Some(n) = v.parse::<f32>().ok().filter(|n| FONT_SIZES.contains(n)) {
                         s.font_size = n;
@@ -364,11 +346,7 @@ impl Settings {
     }
 
     fn serialize(&self) -> String {
-        let theme = match self.theme {
-            Theme::System => "system",
-            Theme::Light => "light",
-            Theme::Dark => "dark",
-        };
+        let theme = self.theme.id();
         let density = match self.density {
             Density::Compact => "compact",
             Density::Comfortable => "comfortable",
