@@ -992,7 +992,7 @@ fn the_review_loop_stages_discards_and_commits() {
     rt.update(|s, _| s.discard_file(0));
     assert_ne!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), before);
     assert!(rt.state.notice.as_ref().is_some_and(|n| n.undo.is_some()), "undo is offered");
-    rt.update(|s, _| s.undo_discard());
+    rt.update(|s, _| s.undo_notice());
     assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), before, "undo puts the file back");
 
     // Viewed, then edited: flagged, not silently forgotten.

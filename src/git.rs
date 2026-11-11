@@ -1020,6 +1020,56 @@ impl Repo {
         self.run(&["reset", "-q", &format!("--{how}"), id], None)
     }
 
+    /// The branch HEAD is on (`None` when detached) and its commit; `None` before the first commit.
+    pub fn head_at(&self) -> Option<(Option<String>, String)> {
+        let id = self.run(&["rev-parse", "--verify", "-q", "HEAD"], None).ok()?;
+        Some((self.run(&["symbolic-ref", "-q", "--short", "HEAD"], None).ok(), id))
+    }
+
+    /// Runs `f`, which moves HEAD, and says how to undo it: nothing when HEAD didn't move,
+    /// `f` failed, or it stopped midway on conflicts. With `save`, the working tree is saved
+    /// as a checkpoint first, for an operation that throws changes away (a hard reset).
+    pub fn undoable(&self, what: &str, back: Back, save: bool, f: impl FnOnce(&Repo) -> Result<String, String>) -> (Result<String, String>, Option<Moved>) {
+        let from = self.head_at();
+        let saved = match save {
+            true => match self.checkpoint(&format!("Before {what}")) {
+                Ok(sha) => Some(sha),
+                Err(e) => return (Err(format!("Couldn't save the changes first, so nothing was done: {e}")), None),
+            },
+            false => None,
+        };
+        let result = f(self);
+        let moved = match (&result, from, self.head_at()) {
+            (Ok(_), Some(from), Some(to)) if from != to && self.operation().is_none() => Some(Moved { what: what.to_owned(), back, from, to, saved }),
+            _ => None,
+        };
+        (result, moved)
+    }
+
+    /// Takes back operation `m`: puts HEAD where it was, and the saved changes back. Refuses
+    /// when HEAD has moved since, as undoing then would throw the later work away.
+    pub fn undo(&self, m: &Moved) -> Result<String, String> {
+        if let Some(op) = self.operation() {
+            return Err(format!("Finish or abort the {} first", op.noun()));
+        }
+        if self.head_at().as_ref() != Some(&m.to) {
+            return Err(format!("HEAD has moved since {}, so it can't be undone", m.what));
+        }
+        let (branch, id) = &m.from;
+        match (m.back, branch) {
+            (Back::Switch, Some(b)) => self.run(&["switch", "-q", b], None)?,
+            (Back::Switch, None) => self.run(&["switch", "-q", "--detach", id], None)?,
+            (Back::Soft, _) => self.reset("soft", id)?,
+            (Back::Mixed, _) => self.reset("mixed", id)?,
+            // Moves the files that differ, and refuses if one of them has changes of its own.
+            (Back::Keep, _) => self.reset("keep", id)?,
+        };
+        if let Some(sha) = &m.saved {
+            self.restore_checkpoint(sha)?;
+        }
+        Ok(format!("Undid {}", m.what))
+    }
+
     /// Local branches, remote branches and tags: what a compare can start or end at.
     pub fn refs(&self) -> Vec<String> {
         let mut all = self.branches();
@@ -1101,6 +1151,32 @@ impl Repo {
     pub fn message(&self, id: &str) -> String {
         self.run(&["show", "-s", "--format=%B", id], None).unwrap_or_default()
     }
+}
+
+/// How HEAD goes back to undo an operation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Back {
+    /// A commit or amend: its changes come back staged.
+    Soft,
+    /// A mixed reset: the index goes back with HEAD.
+    Mixed,
+    /// A merge, rebase, pull, cherry-pick, revert or hard reset: the files go back too.
+    Keep,
+    /// A branch switch: onto the branch it left.
+    Switch,
+}
+
+/// An operation that moved HEAD, and how to take it back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Moved {
+    /// What it was, as "Undid …" names it: "the commit", "the merge of main".
+    pub what: String,
+    pub back: Back,
+    /// The branch (`None` detached) and commit before, and after.
+    pub from: (Option<String>, String),
+    pub to: (Option<String>, String),
+    /// The checkpoint of the working tree taken first, put back by the undo.
+    pub saved: Option<String>,
 }
 
 /// The branch of `all` (as [`Repo::branches`] reads them) a review most likely compares against.

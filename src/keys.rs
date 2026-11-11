@@ -87,6 +87,11 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.commit();
         return true;
     }
+    // Fields take their own ⌘Z first, for their text.
+    if ev.is_command('z') && !ev.mods.shift && s.has_project && tx.focused().is_none_or(|f| !(f.contains("filter") || f.contains("message") || f.contains("search"))) {
+        s.undo_move();
+        return true;
+    }
     if ev.is_command('o') {
         s.add_project();
         return true;

@@ -673,3 +673,43 @@ fn force_push_replaces_a_rewritten_branch_unless_the_remote_moved() {
     r.force_push().unwrap();
     assert_eq!(sh(&remote, &["log", "-1", "--format=%s", "main"]).trim(), "two, reworded");
 }
+
+#[test]
+fn operations_that_move_head_undo() {
+    use crate::git::Back;
+    let (dir, r) = repo("undo", &[("a.txt", "one\n")]);
+    let head = |r: &Repo| r.head_at().unwrap();
+    let start = head(&r);
+    // A commit comes back staged.
+    write(&dir, "a.txt", "two\n");
+    r.stage("a.txt").unwrap();
+    let (done, moved) = r.undoable("the commit", Back::Soft, false, |r| r.commit("second", false));
+    assert!(done.is_ok());
+    let moved = moved.expect("a commit moves HEAD");
+    r.undo(&moved).unwrap();
+    assert_eq!(head(&r), start);
+    assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]).trim(), "a.txt");
+    // A hard reset gives back the commit and the changes it threw away.
+    r.commit("second", false).unwrap();
+    let second = head(&r);
+    write(&dir, "a.txt", "three\n");
+    let (_, moved) = r.undoable("the reset", Back::Keep, true, |r| r.reset("hard", &start.1));
+    r.undo(&moved.unwrap()).unwrap();
+    assert_eq!(head(&r), second);
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "three\n");
+    // A switch goes back to the branch it left.
+    sh(&dir, &["checkout", "-q", "--", "a.txt"]);
+    sh(&dir, &["branch", "other", &start.1]);
+    let (_, moved) = r.undoable("the switch", Back::Switch, false, |r| r.switch("other"));
+    let moved = moved.unwrap();
+    // Not once HEAD has moved since: that would throw the new work away.
+    write(&dir, "b.txt", "b\n");
+    r.stage("b.txt").unwrap();
+    r.commit("on other", false).unwrap();
+    assert!(r.undo(&moved).is_err());
+    sh(&dir, &["reset", "-q", "--hard", "HEAD^"]);
+    r.undo(&moved).unwrap();
+    assert_eq!(head(&r), second);
+    // Nothing moved, nothing to undo.
+    assert!(r.undoable("the reset", Back::Keep, false, |r| r.reset("hard", "HEAD")).1.is_none());
+}

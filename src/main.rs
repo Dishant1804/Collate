@@ -235,10 +235,17 @@ struct Notice {
     error: bool,
     /// When it goes; set on the first frame after it's posted.
     until: Option<f64>,
-    /// A discard's backup, offered back as "Undo".
-    undo: Option<PathBuf>,
+    /// What its "Undo" takes back.
+    undo: Option<Undo>,
     /// The shell ⌘W would end, with a program running in it: asks until answered.
     end: Option<u64>,
+}
+
+/// What a notice's Undo takes back: a discard, from its backup, or an operation that moved HEAD.
+#[derive(Clone)]
+enum Undo {
+    Backup(PathBuf),
+    Head(git::Moved),
 }
 
 struct Collate {
@@ -388,6 +395,8 @@ struct Collate {
     found_pick: usize,
     /// The staging panel's lists folded to their titles, by key ("unstaged", "staged").
     folded_lists: HashSet<&'static str>,
+    /// The last operation that moved HEAD (a commit, merge, reset…), for ⌘Z.
+    last_move: Option<git::Moved>,
 }
 
 /// What the toolbar's search looks through: the diff's lines, the Map's files, or History's
@@ -453,6 +462,7 @@ fn init() -> Collate {
         found: Vec::new(),
         found_pick: 0,
         folded_lists: HashSet::new(),
+        last_move: None,
         jumping: false,
         jump: String::new(),
         jump_pick: 0,
@@ -863,31 +873,51 @@ impl Collate {
     /// thread; then report it and reread the files, the branches and the history. One at a
     /// time. Without a window (tests) it runs here.
     fn act_bg(&mut self, doing: &str, f: impl FnOnce(&Repo) -> Result<String, String> + Send + 'static) {
+        self.act_bg_moved(doing, move |r| (f(r), None));
+    }
+
+    /// [`Collate::act_bg`] for an operation that moves HEAD: once it's done, ⌘Z and the
+    /// notice's Undo put HEAD back. `back` says how; `save` keeps the working tree first, for
+    /// one that throws changes away.
+    fn act_undoable(&mut self, doing: &str, what: String, back: git::Back, save: bool, f: impl FnOnce(&Repo) -> Result<String, String> + Send + 'static) {
+        self.act_bg_moved(doing, move |r| r.undoable(&what, back, save, f));
+    }
+
+    fn act_bg_moved(&mut self, doing: &str, f: impl FnOnce(&Repo) -> (Result<String, String>, Option<git::Moved>) + Send + 'static) {
         let Some(repo) = current_repo() else { return };
         if self.busy.is_some() {
             self.say(format!("Wait for {} to finish", self.busy.as_deref().unwrap_or_default().trim_end_matches('…').to_lowercase()), true);
             return;
         }
         let Some(app) = HANDLE.get().cloned() else {
-            let result = f(&repo);
-            self.landed(result);
+            let (result, moved) = f(&repo);
+            self.landed(result, moved);
             return;
         };
         self.busy = Some(doing.to_owned());
         std::thread::spawn(move || {
-            let result = f(&repo);
+            let (result, moved) = f(&repo);
             app.update(move |s, _| {
                 s.busy = None;
-                s.landed(result);
+                s.landed(result, moved);
             });
         });
     }
 
-    /// How a change from [`Collate::act_bg`] went, and what it may have moved.
-    fn landed(&mut self, result: Result<String, String>) {
+    /// How a change from [`Collate::act_bg`] went, and what it may have moved: an operation
+    /// that moved HEAD is offered back as Undo.
+    fn landed(&mut self, result: Result<String, String>, moved: Option<git::Moved>) {
         match result {
-            Ok(done) => self.say(done, false),
+            Ok(done) => {
+                self.say(done, false);
+                if let (Some(n), Some(m)) = (self.notice.as_mut(), &moved) {
+                    n.undo = Some(Undo::Head(m.clone()));
+                }
+            }
             Err(e) => self.say(e, true),
+        }
+        if moved.is_some() {
+            self.last_move = moved;
         }
         self.load_branches();
         if self.scope == Scope::History {
@@ -914,7 +944,7 @@ impl Collate {
         self.prompt_text = TextEdit::new("");
         match ask {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
-            Ask::Branch(at) => self.act_bg("Creating the branch…", move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
+            Ask::Branch(at) => self.act_undoable("Creating the branch…", format!("the switch to {name}"), git::Back::Switch, false, move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
             Ask::Tag(_) if name.is_empty() => {}
             Ask::Tag(at) => {
@@ -1050,7 +1080,10 @@ impl Collate {
 
     fn confirm_risky(&mut self) {
         match self.risky.take() {
-            Some(Risky::ResetHard(id)) => self.act_bg("Resetting…", move |r| r.reset("hard", &id).map(|_| format!("Reset to {} and threw the changes away", abbrev(&id)))),
+            Some(Risky::ResetHard(id)) => {
+                let short_id = abbrev(&id);
+                self.act_undoable("Resetting…", format!("the reset to {short_id}"), git::Back::Keep, true, move |r| r.reset("hard", &id).map(|_| format!("Reset to {short_id} and threw the changes away")))
+            }
             Some(Risky::DropStash(name)) => self.act_bg("Dropping the stash…", move |r| r.stash_do("drop", &name).map(|_| format!("Dropped {name}"))),
             Some(Risky::ForcePush) => self.act_bg("Force pushing…", |r| r.force_push().map(|_| "Force pushed".to_owned())),
             Some(Risky::DeleteTag(name, remote)) => self.act_bg("Deleting the tag…", move |r| {
@@ -1090,10 +1123,10 @@ impl Collate {
                 }
                 Some("branch") => s.ask(Ask::Branch(Some(id))),
                 Some("tag") => s.ask(Ask::Tag(Some(id))),
-                Some("pick") => s.act_bg("Cherry-picking…", move |r| r.cherry_pick(&id).map(|_| format!("Cherry-picked {short_id}"))),
-                Some("revert") => s.act_bg("Reverting…", move |r| r.revert(&id).map(|_| format!("Reverted {short_id}"))),
-                Some("reset-soft") => s.act_bg("Resetting…", move |r| r.reset("soft", &id).map(|_| format!("Reset to {short_id}; its later changes are staged"))),
-                Some("reset-mixed") => s.act_bg("Resetting…", move |r| r.reset("mixed", &id).map(|_| format!("Reset to {short_id}; its later changes are unstaged"))),
+                Some("pick") => s.act_undoable("Cherry-picking…", format!("the cherry-pick of {short_id}"), git::Back::Keep, false, move |r| r.cherry_pick(&id).map(|_| format!("Cherry-picked {short_id}"))),
+                Some("revert") => s.act_undoable("Reverting…", format!("the revert of {short_id}"), git::Back::Keep, false, move |r| r.revert(&id).map(|_| format!("Reverted {short_id}"))),
+                Some("reset-soft") => s.act_undoable("Resetting…", format!("the reset to {short_id}"), git::Back::Soft, false, move |r| r.reset("soft", &id).map(|_| format!("Reset to {short_id}; its later changes are staged"))),
+                Some("reset-mixed") => s.act_undoable("Resetting…", format!("the reset to {short_id}"), git::Back::Mixed, false, move |r| r.reset("mixed", &id).map(|_| format!("Reset to {short_id}; its later changes are unstaged"))),
                 Some("reset-hard") => s.risky = Some(Risky::ResetHard(id)),
                 Some("compare") => {
                     let (Some(head), on) = (s.head.clone(), if s.branch == "HEAD" { "HEAD".to_owned() } else { s.branch.clone() }) else { return };
@@ -1324,7 +1357,13 @@ impl Collate {
         for b in self.branches.iter().filter(|b| **b != self.branch && (!b.contains('/') || b.starts_with("origin/"))).take(30) {
             bases = bases.item(PopupItem::new(format!("base:{b}"), b.clone()).checked(*b == base));
         }
+        let undo = match &self.last_move {
+            Some(m) => format!("Undo {}", m.what.strip_prefix("the ").unwrap_or(&m.what)),
+            None => "Undo".to_owned(),
+        };
         let menu = PopupMenu::new()
+            .item(PopupItem::new("undo", undo).enabled(idle && self.last_move.is_some()))
+            .separator()
             .item(PopupItem::new("fetch", "Fetch").enabled(idle))
             .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
             .item(PopupItem::new("agent-rebase", format!("Rebase Onto Upstream with {}", self.settings.agent.title())).enabled(idle && diverged && self.operation.is_none()))
@@ -1351,16 +1390,17 @@ impl Collate {
             let (what, arg) = p.split_once(':').unwrap_or((p, ""));
             let arg = arg.to_owned();
             match what {
+                "undo" => s.undo_move(),
                 "fetch" => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
                 // A pull only fast-forwards; one that can't says what can.
                 "pull" if diverged => s.say(format!("This branch and its upstream have both moved, so a pull can't fast-forward: rebase or merge, or Rebase Onto Upstream with {}", s.settings.agent.title()), true),
-                "pull" => s.act_bg("Pulling…", |r| r.pull().map(|_| "Pulled".to_owned())),
+                "pull" => s.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull().map(|_| "Pulled".to_owned())),
                 "agent-rebase" => s.settle_with_agent(agent::Settle::Diverged(ahead, behind)),
                 "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
                 "force-push" => s.risky = Some(Risky::ForcePush),
-                "switch" => s.act_bg("Switching…", move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
-                "merge" => s.act_bg("Merging…", move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
-                "rebase" => s.act_bg("Rebasing…", move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
+                "switch" => s.act_undoable("Switching…", format!("the switch to {arg}"), git::Back::Switch, false, move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
+                "merge" => s.act_undoable("Merging…", format!("the merge of {arg}"), git::Back::Keep, false, move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
+                "rebase" => s.act_undoable("Rebasing…", format!("the rebase onto {arg}"), git::Back::Keep, false, move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
                 "new-branch" => s.ask(Ask::Branch(None)),
                 "rename" => {
                     let from = s.branch.clone();
@@ -1456,7 +1496,7 @@ impl Collate {
     fn after_discard(&mut self, result: Result<PathBuf, String>, done: String) {
         match result {
             Ok(backup) => {
-                self.notice = Some(Notice { text: done, error: false, until: None, undo: Some(backup), end: None });
+                self.notice = Some(Notice { text: done, error: false, until: None, undo: Some(Undo::Backup(backup)), end: None });
                 self.selection_clear();
             }
             Err(e) => self.say(e, true),
@@ -1464,9 +1504,25 @@ impl Collate {
         refresh();
     }
 
-    fn undo_discard(&mut self) {
-        let Some(backup) = self.notice.as_mut().and_then(|n| n.undo.take()) else { return };
-        self.act(|r| r.restore(&backup).map(|n| format!("Restored {n} file{} from the backup", if n == 1 { "" } else { "s" })));
+    /// The notice's Undo: puts a discard back, or takes back the operation it reported.
+    fn undo_notice(&mut self) {
+        match self.notice.as_mut().and_then(|n| n.undo.take()) {
+            Some(Undo::Backup(backup)) => self.act(|r| r.restore(&backup).map(|n| format!("Restored {n} file{} from the backup", if n == 1 { "" } else { "s" }))),
+            Some(Undo::Head(_)) => self.undo_move(),
+            None => {}
+        }
+    }
+
+    /// ⌘Z: takes back the last operation that moved HEAD. A failed undo keeps it, to try again.
+    fn undo_move(&mut self) {
+        let Some(m) = self.last_move.take() else {
+            self.say("Nothing to undo", false);
+            return;
+        };
+        self.act_bg_moved("Undoing…", move |r| match r.undo(&m) {
+            Ok(done) => (Ok(done), None),
+            Err(e) => (Err(e), Some(m)),
+        });
     }
 
     fn selection_clear(&mut self) {
@@ -1586,7 +1642,7 @@ impl Collate {
         self.committing = true;
         // Hooks can take a while; the window stays live.
         std::thread::spawn(move || {
-            let result = repo.commit(&msg, amend);
+            let (result, moved) = repo.undoable(if amend { "the amend" } else { "the commit" }, git::Back::Soft, false, |r| r.commit(&msg, amend));
             repo_handle.update(move |s, _| {
                 s.committing = false;
                 match result {
@@ -1594,6 +1650,12 @@ impl Collate {
                         s.message = TextEdit::new("");
                         s.amend = false;
                         s.say(format!("{} {summary}", if amend { "Amended" } else { "Committed" }), false);
+                        if let (Some(n), Some(m)) = (s.notice.as_mut(), &moved) {
+                            n.undo = Some(Undo::Head(m.clone()));
+                        }
+                        if moved.is_some() {
+                            s.last_move = moved;
+                        }
                         if s.scope == Scope::History {
                             s.load_history();
                         }
@@ -2722,6 +2784,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("<  >", "Git Graph: older / newer commit"),
             ("r", "Reread the repository"),
             ("⌘↩", "Commit what's staged"),
+            ("⌘Z", "Undo the last commit, merge, rebase, pull, reset, cherry-pick, revert or switch"),
             ("⌘O", "Add a local project (the project menu, top left, switches)"),
             ("⌘,", "Settings"),
             ("⇧⌘B", "Show / hide the views sidebar"),
@@ -2909,7 +2972,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
 
     if let Some(r) = &s.risky {
         let (title, what, button) = match r {
-            Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. There's no backup.".to_owned(), "Reset and Discard"),
+            Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. Undo (⌘Z) puts both back.".to_owned(), "Reset and Discard"),
             Risky::DropStash(name) => (format!("Drop {name}?"), "Its changes are deleted. There's no backup.".to_owned(), "Drop Stash"),
             Risky::ForcePush => (
                 format!("Force push {}?", s.branch),
@@ -3667,8 +3730,12 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
         .role("status")
         .label(note.text.clone())
         .child(text(note.text.clone()).key("notice").font(k.ty.text_small).color(color).truncate().min_w(0.0).grow(1.0));
-    if note.undo.is_some() {
-        r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Put the discarded file back from its backup").on_press(|s: &mut Collate| s.undo_discard()).build(k).key("undo"));
+    if let Some(undo) = &note.undo {
+        let help = match undo {
+            Undo::Backup(_) => "Put the discarded file back from its backup".to_owned(),
+            Undo::Head(m) => format!("Take back {} (⌘Z)", m.what),
+        };
+        r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help(help).on_press(|s: &mut Collate| s.undo_notice()).build(k).key("undo"));
     }
     if note.end.is_some() {
         r = r
