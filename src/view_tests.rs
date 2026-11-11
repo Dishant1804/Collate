@@ -586,15 +586,19 @@ fn picking_a_theme_in_settings_repaints_the_app_and_the_code() {
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
-    for t in crate::themes::Theme::ALL {
-        assert!(rt.find(&format!("theme-{}", t.id())).is_some(), "{} is offered", t.name());
-    }
+    assert!(rt.find("theme-preview").is_some(), "the chosen theme shows");
+    let pick = |rt: &mut Runtime<Collate>, t: crate::themes::Theme| {
+        click(rt, "theme-trigger");
+        assert!(rt.state.theme_open, "the dropdown opens");
+        let i = crate::themes::Theme::ALL.iter().position(|x| *x == t).unwrap();
+        click(rt, &format!("option{i}"));
+        assert!(!rt.state.theme_open, "and closes on a choice");
+        assert_eq!(rt.state.settings.theme, t);
+    };
     let was = rt.state.diff.style();
-    click(&mut rt, "theme-dracula");
-    assert_eq!(rt.state.settings.theme, crate::themes::Theme::Dracula);
+    pick(&mut rt, crate::themes::Theme::Dracula);
     assert_ne!(rt.state.diff.style(), was, "the diff takes Dracula's token colours, so its rows rebuild");
-    click(&mut rt, "theme-system");
-    assert_eq!(rt.state.settings.theme, crate::themes::Theme::System, "and back");
+    pick(&mut rt, crate::themes::Theme::System);
 }
 
 #[test]

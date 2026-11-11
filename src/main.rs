@@ -276,6 +276,8 @@ struct Collate {
     base_commit: Option<String>,
     branches: Vec<String>,
     base_open: bool,
+    /// Settings' theme dropdown is open.
+    theme_open: bool,
     loaded: bool,
     error: Option<String>,
     settings: Settings,
@@ -446,6 +448,7 @@ fn init() -> Collate {
         base_commit: None,
         branches,
         base_open: false,
+        theme_open: false,
         loaded: false,
         error: None,
         settings,
