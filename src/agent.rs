@@ -227,14 +227,22 @@ impl Collate {
         if self.writing_message {
             return;
         }
-        if self.staged == 0 && !self.amend {
-            self.say("Stage files first: the message describes what's staged", true);
-            return;
-        }
         let (Some(app), Some(repo)) = (HANDLE.get().cloned(), current_repo()) else {
             self.say("Open a project first", true);
             return;
         };
+        if self.staged == 0 && !self.amend {
+            if self.total == 0 {
+                self.say("Nothing to describe: there are no changes", true);
+                return;
+            }
+            // The button said so ("Stage All and Write"): the message describes what's staged.
+            if let Err(e) = repo.stage_all() {
+                self.say(e, true);
+                return;
+            }
+            crate::refresh();
+        }
         self.writing_message = true;
         let (agent, amend, draft) = (self.settings.agent, self.amend, self.message.text.trim().to_owned());
         let rules = read_agent_file("commit-instructions.txt").unwrap_or_else(|| COMMIT_RULES.to_owned());

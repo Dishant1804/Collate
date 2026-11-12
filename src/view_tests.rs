@@ -1563,16 +1563,33 @@ fn the_checklist_asks_the_agent_about_the_change_in_view() {
 }
 
 #[test]
-fn the_agent_writes_a_commit_message_only_for_what_is_staged() {
+fn with_nothing_staged_the_agent_offers_to_stage_all_and_write() {
     let mut rt = loaded();
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
-    assert!(rt.find("write-message").is_some(), "in the commit box's head");
     assert_eq!(rt.state.staged, 0, "the fixture stages nothing");
+    // Not a disabled button: it says it stages first, and is there to press.
+    let write = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("write-message")).expect("in the commit box's head");
+    assert_eq!(write.label.as_deref(), Some("Stage All and Write"));
+    assert!(!write.inert, "with changes to stage, it can be pressed");
+    // The tests have no window to write into, so it stops before staging anything.
     rt.update(|s, _| s.write_message());
-    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.starts_with("Stage files first")));
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error));
+    assert_eq!(rt.state.staged, 0);
     assert!(!rt.state.writing_message);
+}
+
+#[test]
+fn the_agent_can_be_asked_without_a_selection() {
+    let mut rt = loaded();
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.diff.selection(), None);
+    click(&mut rt, "agent-ask");
+    let Some(Ask::Agent(about, false)) = rt.state.prompt.clone() else { panic!("Ask asks about the change in view") };
+    assert!(about.contains("uncommitted"), "{about}");
 }
 
 #[test]

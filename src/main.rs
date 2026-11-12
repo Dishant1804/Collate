@@ -3879,7 +3879,7 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
     // A box, not a line: room for a summary and a body under it. Return starts a new line;
     // ⌘↩ commits.
     let field = TextArea::new(&s.message)
-        .placeholder(if s.staged == 0 && !s.amend { "Stage files to write a commit".to_owned() } else { "Summary, then a blank line and the details".to_owned() })
+        .placeholder(if s.staged == 0 && !s.amend { "Stage files to commit them, or Stage All and Write above".to_owned() } else { "Summary, then a blank line and the details".to_owned() })
         .label("Commit message")
         .rows(8)
         .max_height(COMMIT_BOX_H)
@@ -3914,11 +3914,19 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
     // Set as the lists above are: an edge-to-edge hairline, as between them, then a 28 pt title
     // right under it.
     let agent = s.settings.agent.title();
-    let write = Button::new(if s.writing_message { "Writing…".to_owned() } else { format!("Write with {agent}") })
+    // With nothing staged, the common case, it offers to stage everything first rather than
+    // sit disabled.
+    let stage_first = s.staged == 0 && !s.amend;
+    let (label, help) = match (s.writing_message, stage_first) {
+        (true, _) => ("Writing…".to_owned(), String::new()),
+        (_, true) => ("Stage All and Write".to_owned(), format!("Stages every change, then {agent} drafts the message from it; you commit it")),
+        _ => (format!("Write with {agent}"), format!("{agent} drafts the message from what's staged, keeping the intent of what you've typed; you commit it")),
+    };
+    let write = Button::new(label)
         .variant(ButtonVariant::Ghost)
         .control_size(ControlSize::Small)
-        .disabled(s.writing_message || (s.staged == 0 && !s.amend))
-        .help(format!("{agent} drafts the message from what's staged, keeping the intent of what you've typed; you commit it"))
+        .disabled(s.writing_message || (stage_first && s.total == 0))
+        .help(help)
         .on_press(|s: &mut Collate| s.write_message())
         .build(k)
         .key("write-message")
