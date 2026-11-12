@@ -653,10 +653,11 @@ impl Repo {
     /// [`Repo::run`] with environment variables set, as `GIT_INDEX_FILE`.
     fn run_env(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &Path)]) -> Result<String, String> {
         let mut c = Command::new("git");
-        c.envs(env.iter().map(|(k, v)| (k, v)));
         // No terminal to ask on: a fetch or push that needs a password fails instead of waiting.
-        // Nor an editor: continuing a merge or rebase keeps the message git prepared.
+        // Nor an editor: continuing a merge or rebase keeps the message git prepared. `env`
+        // comes after, so a caller can name its own editor.
         c.arg("-C").arg(&self.root).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true").stdout(Stdio::piped()).stderr(Stdio::piped());
+        c.envs(env.iter().map(|(k, v)| (k, v)));
         c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
         let mut child = c.spawn().map_err(|e| format!("can't run git: {e}"))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
@@ -1112,6 +1113,34 @@ impl Repo {
         let onto = if self.run(&["rev-parse", "--verify", "-q", &parent], None).is_ok() { parent.as_str() } else { "--root" };
         // The todo list as git wrote it, fixup already in place: no editor to stop in.
         let rebase = self.run_env(&["rebase", "-q", "-i", "--autosquash", "--autostash", onto], None, &[("GIT_SEQUENCE_EDITOR", Path::new("true"))]);
+        self.stopped(rebase)?;
+        Ok(if pushed { "It was pushed already: Force Push sends the new version".to_owned() } else { String::new() })
+    }
+
+    /// Gives commit `id` on this branch the subject `subject`, keeping its body, by replaying
+    /// the branch from it. The commits after it get new ids; their changes stay as they are.
+    pub fn reword(&self, id: &str, subject: &str) -> Result<String, String> {
+        if self.run(&["merge-base", "--is-ancestor", id, "HEAD"], None).is_err() {
+            return Err("That commit isn't on this branch".to_owned());
+        }
+        let merge = self.run(&["rev-parse", "--verify", "-q", &format!("{id}^2")], None).is_ok();
+        if merge || self.run(&["rev-list", "--merges", &format!("{id}..HEAD")], None).is_ok_and(|m| !m.is_empty()) {
+            return Err("A merge is in the way; rewording would flatten it".to_owned());
+        }
+        let old = self.message(id);
+        let body = old.split_once('\n').map_or("", |(_, b)| b);
+        let message = self.git_dir().join("COLLATE_MESSAGE");
+        std::fs::write(&message, format!("{subject}\n{body}")).map_err(|e| e.to_string())?;
+        let pushed = self.run(&["merge-base", "--is-ancestor", id, "@{u}"], None).is_ok();
+        let parent = format!("{id}^");
+        let onto = if self.run(&["rev-parse", "--verify", "-q", &parent], None).is_ok() { parent.as_str() } else { "--root" };
+        // The todo's first line is the commit: mark it to reword, and let the "editor" put the
+        // new message in place. Both run through the shell, so the path is quoted.
+        let quoted = format!("'{}'", message.display().to_string().replace('\'', "'\\''"));
+        let editor = format!("cp {quoted}");
+        let todo = "sed -i.collate -e '1s/^pick /reword /'";
+        let rebase = self.run_env(&["rebase", "-q", "-i", "--autostash", onto], None, &[("GIT_SEQUENCE_EDITOR", Path::new(todo)), ("GIT_EDITOR", Path::new(&editor))]);
+        let _ = std::fs::remove_file(&message);
         self.stopped(rebase)?;
         Ok(if pushed { "It was pushed already: Force Push sends the new version".to_owned() } else { String::new() })
     }

@@ -233,6 +233,8 @@ enum Ask {
     Rename(String),
     /// A tag at a commit (HEAD when `None`).
     Tag(Option<String>),
+    /// A new subject for a commit on this branch.
+    Reword(String),
     /// A stash of one file's changes, by its path.
     StashFile(String),
     /// A stash of the tracked files' changes, leaving untracked ones.
@@ -1013,6 +1015,13 @@ impl Collate {
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
             Ask::StashFile(path) => self.act_bg("Stashing…", move |r| r.stash_paths(&name, &[&path]).map(|_| format!("Stashed {path}"))),
             Ask::StashTracked => self.act_bg("Stashing…", move |r| r.stash_tracked(&name).map(|_| "Stashed the tracked changes".to_owned())),
+            Ask::Reword(_) if name.is_empty() => self.say("A commit needs a message", true),
+            Ask::Reword(id) => {
+                let short_id = abbrev(&id);
+                self.act_undoable("Rewording…", format!("the new message of {short_id}"), git::Back::Keep, false, move |r| {
+                    r.reword(&id, &name).map(|note| if note.is_empty() { format!("Reworded {short_id}") } else { format!("Reworded {short_id}. {note}") })
+                });
+            }
             Ask::Tag(_) if name.is_empty() => {}
             Ask::Tag(at) => {
                 // `v1.2 First stable release`: the name, then an optional message.
@@ -1281,6 +1290,7 @@ impl Collate {
             .separator()
             .item(PopupItem::new("pick", format!("Cherry-Pick onto {on}")).enabled(!is_head))
             .item(PopupItem::new("revert", "Revert Commit"))
+            .item(PopupItem::new("reword", "Edit Message…").enabled(self.operation.is_none() && current_repo().is_some_and(|r| r.merged(&id))))
             .item(PopupItem::new("fixup", format!("Fix Up with {} Staged File{}", self.staged, if self.staged == 1 { "" } else { "s" }))
                 .enabled(self.staged > 0 && self.operation.is_none() && current_repo().is_some_and(|r| r.merged(&id))))
             .item(PopupItem::new("compare", format!("Compare with {on}")).enabled(!is_head && self.head.is_some()))
@@ -1299,6 +1309,11 @@ impl Collate {
                 Some("fixup") => s.act_undoable("Fixing up…", format!("the fixup of {short_id}"), git::Back::Keep, false, move |r| {
                     r.fixup(&id).map(|note| if note.is_empty() { format!("Fixed up {short_id} with the staged changes") } else { format!("Fixed up {short_id} with the staged changes. {note}") })
                 }),
+                Some("reword") => {
+                    let subject = current_repo().map(|r| r.message(&id)).unwrap_or_default().lines().next().unwrap_or_default().to_owned();
+                    s.ask(Ask::Reword(id));
+                    s.prompt_text = TextEdit::new(&subject);
+                }
                 Some("revert") => s.act_undoable("Reverting…", format!("the revert of {short_id}"), git::Back::Keep, false, move |r| r.revert(&id).map(|_| format!("Reverted {short_id}"))),
                 Some("reset-soft") => s.act_undoable("Resetting…", format!("the reset to {short_id}"), git::Back::Soft, false, move |r| r.reset("soft", &id).map(|_| format!("Reset to {short_id}; its later changes are staged"))),
                 Some("reset-mixed") => s.act_undoable("Resetting…", format!("the reset to {short_id}"), git::Back::Mixed, false, move |r| r.reset("mixed", &id).map(|_| format!("Reset to {short_id}; its later changes are unstaged"))),
@@ -3294,6 +3309,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
             Ask::StashFile(_) => ("Stash this file", "Its changes are put away and it goes back to HEAD; the other files stay as they are.", "Stash", "Message (optional)"),
             Ask::StashTracked => ("Stash tracked changes", "Changes to tracked files are put away and they go back to HEAD; untracked files stay.", "Stash", "Message (optional)"),
+            Ask::Reword(_) => ("Edit the commit's subject", "Its body and changes stay. The commits after it are replayed, so they get new hashes; ⌘Z undoes it.", "Reword", "Subject"),
             Ask::Tag(None) => ("New tag", "Made at HEAD, here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Agent(_, true) => ("Ask the agent", "About the selected lines. It starts in a new terminal, with a checkpoint to go back to.", "Ask", "What do you want to know or change?"),
@@ -3316,7 +3332,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k)
             .key("prompt-field")
             .w_full();
-        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Agent(..) | Ask::Rename(_) | Ask::Tag(_));
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Agent(..) | Ask::Rename(_) | Ask::Tag(_) | Ask::Reword(_));
         let mut buttons = row().key("prompt-buttons").w_full().gap(8.0).justify_end();
         // On a pull request's line: suggest what it should say instead, starting from what it says.
         if let Ask::Comment(at, None) = ask

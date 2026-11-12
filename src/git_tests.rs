@@ -738,6 +738,27 @@ fn the_first_push_goes_to_the_only_remote() {
 }
 
 #[test]
+fn an_older_commit_is_reworded_keeping_its_body_and_what_came_after() {
+    let (dir, r) = repo("reword", &[("a.txt", "one\n")]);
+    write(&dir, "a.txt", "two\n");
+    sh(&dir, &["commit", "-qam", "second\n\nwhy it's so"]);
+    let second = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+    write(&dir, "b.txt", "b\n");
+    sh(&dir, &["add", "-A"]);
+    sh(&dir, &["commit", "-qm", "third"]);
+    write(&dir, "a.txt", "dirty\n");
+    r.reword(&second, "second, it's 'quoted'").unwrap();
+    assert_eq!(sh(&dir, &["log", "--format=%s"]), "third\nsecond, it's 'quoted'\ninit\n");
+    assert_eq!(sh(&dir, &["log", "-1", "--skip=1", "--format=%b"]).trim(), "why it's so");
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "dirty\n");
+    assert!(dir.join("b.txt").exists());
+    // The first commit has no parent to replay from.
+    let root = sh(&dir, &["rev-list", "--max-parents=0", "HEAD"]).trim().to_owned();
+    r.reword(&root, "start").unwrap();
+    assert_eq!(sh(&dir, &["log", "--format=%s"]), "third\nsecond, it's 'quoted'\nstart\n");
+}
+
+#[test]
 fn one_file_is_stashed_or_ignored_alone() {
     let (dir, r) = repo("stash-one", &[("a.txt", "one\n"), ("b.txt", "one\n")]);
     write(&dir, "a.txt", "two\n");
