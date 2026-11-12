@@ -43,6 +43,9 @@ on its own.
 
 ## Keys
 
+Every command is also in the menu bar (File, View, Go, Changes, Branch, Agent), with its key
+beside it; Help's search finds one by name.
+
 | Key | Action |
 |---|---|
 | `j` `k` | Next / previous change |

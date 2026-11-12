@@ -2291,3 +2291,33 @@ fn a_setting_with_more_than_three_choices_is_a_dropdown() {
     click(&mut rt, "option1");
     assert_eq!((rt.state.settings_menu, rt.state.settings.context), (None, crate::settings::CONTEXT_LINES[1]), "a choice applies and closes it");
 }
+
+#[test]
+fn the_menu_bar_commands_switch_views_and_toggle_options() {
+    use crate::commands::COMMANDS;
+    let mut rt = loaded();
+    let run = |rt: &mut Runtime<Collate>, id: &str| {
+        let c = COMMANDS.iter().find(|c| c.id == id).unwrap();
+        assert!((c.enabled)(&rt.state), "{id} is enabled");
+        rt.update(|s, tx| (c.run)(s, tx));
+        rt.frame(1.0 / 60.0);
+    };
+    let checked = |rt: &Runtime<Collate>, id: &str| (COMMANDS.iter().find(|c| c.id == id).unwrap().checked)(&rt.state);
+    assert!(checked(&rt, "view-all"));
+    run(&mut rt, "view-staged");
+    assert_eq!(rt.state.scope, Scope::Staged);
+    assert!(checked(&rt, "view-staged") && !checked(&rt, "view-all"));
+    run(&mut rt, "view-map");
+    assert!(rt.state.map.open && !checked(&rt, "view-staged"));
+    run(&mut rt, "view-all");
+    assert!(!rt.state.map.open && rt.state.scope == Scope::Uncommitted);
+    let wrap = rt.state.settings.wrap;
+    run(&mut rt, "wrap");
+    assert_eq!(rt.state.settings.wrap, !wrap);
+    assert_eq!(checked(&rt, "wrap"), !wrap);
+    run(&mut rt, "wrap");
+    run(&mut rt, "go-file");
+    assert!(rt.state.jumping);
+    let stage = COMMANDS.iter().find(|c| c.id == "stage").unwrap();
+    assert!(!(stage.enabled)(&rt.state), "nothing acts behind the palette");
+}

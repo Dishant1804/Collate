@@ -51,7 +51,7 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     // A dialog takes its own keys (Escape closes it); nothing else acts behind it.
-    if s.confirm.is_some() || s.words.is_some() || s.prompt.is_some() || s.risky.is_some() || s.compare.is_some() || s.blame.is_some() || s.file_log.is_some() {
+    if s.dialog_open() {
         return false;
     }
     if s.show_help {
@@ -154,10 +154,16 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.mods.cmd || ev.mods.ctrl || ev.mods.alt {
         return s.diff.key(ev, tx);
     }
+    letter(s, t, tx)
+}
+
+/// What a key without ⌘, ⌃ or ⌥ does in the review, whether typed or picked from the menu bar,
+/// which names the same keys. False when it does nothing here.
+pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
     let hunk = s.diff.current_hunk();
     let file = s.diff.visible_file();
     // The diff's own key handler steps aside while the tree has focus; these work from either.
-    match t.as_str() {
+    match t {
         "j" => s.diff.next_hunk(true, tx),
         "k" => s.diff.next_hunk(false, tx),
         "]" => s.diff.next_file(true, tx),
@@ -175,7 +181,7 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 s.say("Whitespace is hidden, so hunks don't match the file; stage whole files (A) or show whitespace (W).", true);
                 return true;
             }
-            match (t.as_str(), s.scope) {
+            match (t, s.scope) {
                 ("a", Scope::Uncommitted | Scope::Unstaged) => s.stage_hunk(f, h, picked),
                 ("u", Scope::Staged) => s.unstage_hunk(f, h, picked),
                 ("u", Scope::Uncommitted) if s.info.get(f).is_some_and(|i| i.staged == Staged::Fully) => s.unstage_hunk(f, h, picked),
@@ -269,8 +275,7 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
             true
         }
         "1" | "2" | "3" | "4" | "5" => {
-            s.map.open = false;
-            s.set_scope(Scope::ALL[t.parse::<usize>().unwrap() - 1]);
+            s.show_scope(Scope::ALL[t.parse::<usize>().unwrap() - 1]);
             true
         }
         "r" => refresh(),

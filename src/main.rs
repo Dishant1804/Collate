@@ -11,6 +11,7 @@ mod agent;
 mod avatars;
 mod checkpoints;
 mod cli;
+mod commands;
 mod comments;
 mod diff;
 mod git;
@@ -610,6 +611,25 @@ impl Collate {
 
     /// Opens the git repository containing `dir` in this window: the review starts over on
     /// it, and it goes to the top of the project list.
+    /// A dialog is up, which takes its own keys.
+    fn dialog_open(&self) -> bool {
+        self.confirm.is_some() || self.words.is_some() || self.prompt.is_some() || self.risky.is_some() || self.compare.is_some() || self.blame.is_some() || self.file_log.is_some()
+    }
+
+    /// Something modal is up (a dialog, the palette, the merge editor, the keys): the review
+    /// behind it takes no commands.
+    fn modal_open(&self) -> bool {
+        self.dialog_open() || self.jumping || self.merge.is_some() || self.show_help
+    }
+
+    /// Shows `scope`'s changes in place of the Map or the pull requests.
+    fn show_scope(&mut self, scope: Scope) {
+        self.map.open = false;
+        self.pulls.open = false;
+        self.close_pull();
+        self.set_scope(scope);
+    }
+
     fn open_project(&mut self, dir: &std::path::Path, tx: &mut Tx) {
         self.close_projects();
         let repo = match Repo::open(dir) {
@@ -1619,61 +1639,62 @@ impl Collate {
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
             .submenu("Compare Against", bases)
             .item(PopupItem::new("compare", "Compare Branches or Tags…"));
-        tx.popup_menu(menu, "branch", move |s: &mut Collate, picked, _| {
-            let Some(p) = picked else { return };
-            let (what, arg) = p.split_once(':').unwrap_or((p, ""));
-            let arg = arg.to_owned();
-            match what {
-                "undo" => s.undo_move(),
-                "fetch" => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
-                // A pull only fast-forwards; one that can't says what can.
-                "pull" if diverged => s.say(format!("This branch and its upstream have both moved, so a pull can't fast-forward: use Pull, Rebasing My Commits, or Rebase Onto Upstream with {}", s.settings.agent.title()), true),
-                "pull-rebase" => s.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull_rebase().map(|_| "Pulled, with your commits on top".to_owned())),
-                "pull" => s.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull().map(|_| "Pulled".to_owned())),
-                "agent-rebase" => s.settle_with_agent(agent::Settle::Diverged(ahead, behind)),
-                "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
-                "force-push" => s.risky = Some(Risky::ForcePush),
-                "switch" => s.act_undoable("Switching…", format!("the switch to {arg}"), git::Back::Switch, false, move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
-                "merge" => s.act_undoable("Merging…", format!("the merge of {arg}"), git::Back::Keep, false, move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
-                "rebase" => s.act_undoable("Rebasing…", format!("the rebase onto {arg}"), git::Back::Keep, false, move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
-                "new-branch" => s.ask(Ask::Branch(None)),
-                "rename" => {
-                    let from = s.branch.clone();
-                    s.ask(Ask::Rename(from.clone()));
-                    s.prompt_text = TextEdit::new(&from);
-                }
-                "delete" => {
-                    let merged = current_repo().is_some_and(|r| r.merged(&arg));
-                    s.risky = Some(Risky::DeleteBranch(arg, merged));
-                }
-                "compare" => s.start_compare(),
-                "unpushed" => s.show_unpushed(),
-                "stash" => s.ask(Ask::Stash),
-                "new-tag" => s.ask(Ask::Tag(None)),
-                "show-tag" => {
-                    if let Some(id) = current_repo().and_then(|r| r.resolve(&arg).ok()) {
-                        s.open_commit(&id);
-                    }
-                }
-                "push-tag" => s.act_bg("Pushing the tag…", move |r| r.push_tag(&arg).map(|_| format!("Pushed {arg}"))),
-                "delete-tag" => s.risky = Some(Risky::DeleteTag(arg, false)),
-                "delete-remote-tag" => s.risky = Some(Risky::DeleteTag(arg, true)),
-                "show" => s.open_commit(&arg),
-                "apply" => s.act_bg("Applying the stash…", move |r| r.stash_do("apply", &arg).map(|_| format!("Applied {arg}"))),
-                "pop" => s.act_bg("Applying the stash…", move |r| r.stash_do("pop", &arg).map(|_| format!("Applied and dropped {arg}"))),
-                "drop" => s.risky = Some(Risky::DropStash(arg)),
-                "preview" => {
-                    s.map.open = false;
-                    s.set_scope(Scope::Branch);
-                }
-                "base" => {
-                    s.set_base(&arg);
-                    s.map.open = false;
-                    s.set_scope(Scope::Branch);
-                }
-                _ => {}
+        tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
+    }
+
+    /// Does what the branch menu's item `picked` names (`fetch`, `switch:main`); the menu bar's
+    /// Branch menu does the same.
+    fn branch_do(&mut self, picked: &str) {
+        let (ahead, behind) = self.ahead_behind.unwrap_or((0, 0));
+        let diverged = ahead > 0 && behind > 0;
+        let (what, arg) = picked.split_once(':').unwrap_or((picked, ""));
+        let arg = arg.to_owned();
+        match what {
+            "undo" => self.undo_move(),
+            "fetch" => self.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
+            // A pull only fast-forwards; one that can't says what can.
+            "pull" if diverged => self.say(format!("This branch and its upstream have both moved, so a pull can't fast-forward: use Pull, Rebasing My Commits, or Rebase Onto Upstream with {}", self.settings.agent.title()), true),
+            "pull-rebase" => self.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull_rebase().map(|_| "Pulled, with your commits on top".to_owned())),
+            "pull" => self.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull().map(|_| "Pulled".to_owned())),
+            "agent-rebase" => self.settle_with_agent(agent::Settle::Diverged(ahead, behind)),
+            "push" => self.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
+            "force-push" => self.risky = Some(Risky::ForcePush),
+            "switch" => self.act_undoable("Switching…", format!("the switch to {arg}"), git::Back::Switch, false, move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
+            "merge" => self.act_undoable("Merging…", format!("the merge of {arg}"), git::Back::Keep, false, move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
+            "rebase" => self.act_undoable("Rebasing…", format!("the rebase onto {arg}"), git::Back::Keep, false, move |r| r.rebase(&arg).map(|_| format!("Rebased onto {arg}"))),
+            "new-branch" => self.ask(Ask::Branch(None)),
+            "rename" => {
+                let from = self.branch.clone();
+                self.ask(Ask::Rename(from.clone()));
+                self.prompt_text = TextEdit::new(&from);
             }
-        });
+            "delete" => {
+                let merged = current_repo().is_some_and(|r| r.merged(&arg));
+                self.risky = Some(Risky::DeleteBranch(arg, merged));
+            }
+            "compare" => self.start_compare(),
+            "unpushed" => self.show_unpushed(),
+            "stash" => self.ask(Ask::Stash),
+            "new-tag" => self.ask(Ask::Tag(None)),
+            "show-tag" => {
+                if let Some(id) = current_repo().and_then(|r| r.resolve(&arg).ok()) {
+                    self.open_commit(&id);
+                }
+            }
+            "push-tag" => self.act_bg("Pushing the tag…", move |r| r.push_tag(&arg).map(|_| format!("Pushed {arg}"))),
+            "delete-tag" => self.risky = Some(Risky::DeleteTag(arg, false)),
+            "delete-remote-tag" => self.risky = Some(Risky::DeleteTag(arg, true)),
+            "show" => self.open_commit(&arg),
+            "apply" => self.act_bg("Applying the stash…", move |r| r.stash_do("apply", &arg).map(|_| format!("Applied {arg}"))),
+            "pop" => self.act_bg("Applying the stash…", move |r| r.stash_do("pop", &arg).map(|_| format!("Applied and dropped {arg}"))),
+            "drop" => self.risky = Some(Risky::DropStash(arg)),
+            "preview" => self.show_scope(Scope::Branch),
+            "base" => {
+                self.set_base(&arg);
+                self.show_scope(Scope::Branch);
+            }
+            _ => {}
+        }
     }
 
     fn more_menu(&mut self, tx: &mut Tx) {
@@ -3618,12 +3639,7 @@ const NAV_W: f32 = 24.0 * 2.0 + 2.0;
 fn views_sidebar(s: &Collate, k: &Kit) -> El {
     let place = |key: &str, label: &str, glyph: &'static Icon, scope: Scope, badge: Option<usize>, detail: Option<String>| {
         let elsewhere = s.map.open || s.pulls.open || s.pulls.pr.is_some();
-        let mut r = SidebarRow::new(label.to_owned()).icon(glyph).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| {
-            s.map.open = false;
-            s.pulls.open = false;
-            s.close_pull();
-            s.set_scope(scope);
-        });
+        let mut r = SidebarRow::new(label.to_owned()).icon(glyph).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| s.show_scope(scope));
         if let Some(n) = badge.filter(|&n| n > 0) {
             r = r.badge(n.to_string());
         }
@@ -4393,6 +4409,7 @@ fn found_list(s: &Collate, k: &Kit, place: Searched) -> El {
 
 /// Before every frame: retire a status message once it's been up long enough.
 fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
+    commands::sync_menu(s);
     // Whatever moved the reader since the last frame, back now returns there.
     let moved = s.note_place();
     let Some(n) = &mut s.notice else { return moved };
