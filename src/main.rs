@@ -3062,7 +3062,8 @@ fn welcome(s: &Collate, k: &Kit) -> El {
         .fill(k.c.bg_base)
         .child(text("Open a project").font(rune::TextStyle { size: 22.0, line_height: 28.0, ..k.ty.ui_medium }).color(k.c.text_base))
         .child(text("Pick a folder inside a git repository to review its changes.").font(k.ty.ui).color(k.c.text_muted))
-        .child(add);
+        .child(add)
+        .child(text("Or drop a folder on this window. In Terminal, collate opens the repository you're in, collate a.rs b.rs compares two files or folders, and collate fix.patch shows a patch.".to_owned()).font(k.ty.text_small).color(k.c.text_faint).wrap().max_w(440.0));
     if !s.projects.is_empty() {
         c = c.child(text("Recent").font(k.ty.text_xsmall_medium).color(k.c.text_muted).pt(12.0)).child(list);
     }
@@ -3070,6 +3071,13 @@ fn welcome(s: &Collate, k: &Kit) -> El {
         c = c.child(text(n.text.clone()).font(k.ty.text_small).color(if n.error { k.c.danger.icon } else { k.c.text_muted }));
     }
     c
+}
+
+/// A button that runs command `id`, with its key, or none when it can't run now.
+fn next_step(s: &Collate, k: &Kit, id: &'static str) -> Option<El> {
+    let c = commands::find(id).filter(|c| (c.enabled)(s))?;
+    Some(Button::new(c.title.to_owned()).variant(ButtonVariant::Outline).control_size(ControlSize::Small).shortcut(commands::keycap(c.key))
+        .on_press_tx(move |s: &mut Collate, tx: &mut Tx| commands::run(s, id, tx)).build(k).key(format!("next-{id}")))
 }
 
 /// A small text button for file and hunk actions.
@@ -3309,7 +3317,16 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Scope::Branch => "This branch has no changes against its base.",
             Scope::History => "This commit changes no files (an empty commit, or a merge).",
         };
-        col().key("empty").w_full().grow(1.0).min_h(0.0).child(summary(s, k, layer)).child(message(k, if s.hidden > 0 { "Only low-signal files changed" } else { "No changes" }, why))
+        // Somewhere else to look, since there's nothing here.
+        let next: &[&str] = match s.scope {
+            Scope::Uncommitted => &["view-history", "view-pulls", "compare"],
+            Scope::Staged => &["view-all", "view-history", "compare"],
+            Scope::Unstaged => &["view-staged", "commit", "view-history"],
+            Scope::Branch => &["view-all", "view-history", "compare"],
+            Scope::History => &[],
+        };
+        let steps = row().key("next-steps").gap(8.0).pt(10.0).children(next.iter().filter_map(|&id| next_step(s, k, id)));
+        col().key("empty").w_full().grow(1.0).min_h(0.0).child(summary(s, k, layer)).child(message(k, if s.hidden > 0 { "Only low-signal files changed" } else { "No changes" }, why).child(steps))
     } else {
         let (fk, hk, ik, ck) = (k.clone(), k.clone(), k.clone(), k.clone());
         // Images draw again as each finishes decoding.

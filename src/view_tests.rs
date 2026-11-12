@@ -2388,6 +2388,28 @@ fn keys_that_do_nothing_here_say_why() {
 }
 
 #[test]
+fn an_empty_view_offers_somewhere_else_to_look() {
+    let mut rt = loaded();
+    let repo = Repo::open(test_repo()).unwrap();
+    let snap = repo.snapshot(Scope::Staged, &repo.status_raw().unwrap(), None).unwrap();
+    rt.update(move |s, tx| {
+        s.set_scope(Scope::Staged);
+        s.apply_snapshot(snap, tx);
+    });
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("empty").is_some(), "nothing is staged in the test repository");
+    assert!(rt.find("next-view-history").is_some() && rt.find("next-compare").is_some(), "the Git Graph and Compare are offered");
+    click(&mut rt, "next-view-all");
+    assert_eq!(rt.state.scope, Scope::Uncommitted, "All Changes shows what isn't staged yet");
+    // With no project open, the welcome says what else opens one.
+    let mut rt = Runtime::new(init(), view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
+    rt.frame(0.0);
+    assert!(rt.find("welcome").is_some() && rt.find("add-project").is_some());
+}
+
+#[test]
 fn the_command_palette_finds_and_runs_a_command() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);

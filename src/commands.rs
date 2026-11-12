@@ -161,7 +161,7 @@ thread_local! {
     static SHOWN: RefCell<Option<Vec<(bool, bool)>>> = const { RefCell::new(None) };
 }
 
-fn find(id: &str) -> Option<&'static Command> {
+pub fn find(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
 }
 
