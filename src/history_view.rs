@@ -290,6 +290,13 @@ fn graph_row(s: &Collate, k: &Kit, i: usize, width: f32) -> El {
         .label(if uncommitted { "Uncommitted changes: open All Changes".to_owned() } else { format!("{}{}, {}, {}", if selected { "Selected: " } else { "" }, c.subject, c.author, c.id) })
         .on_press(move |s: &mut Collate| if id == graph::UNCOMMITTED { s.set_scope(Scope::Uncommitted) } else { s.set_commit(&id) })
         .on_double_press(move |s: &mut Collate| if !uncommitted { s.history_diff = true })
+        .on_secondary_press({
+            let id = c.id.clone();
+            move |s: &mut Collate, p: rune::PointerPress, tx: &mut Tx| if !uncommitted {
+                s.set_commit(&id);
+                s.commit_menu(p, tx);
+            }
+        })
         .child(canvas(shape).w(width).h(GRAPH_ROW)).child(description)
         .child(if uncommitted { muted(String::new(), AUTHOR_W) } else {
             row().w(AUTHOR_W).gap(6.0).items_center().child(avatar(k, s, c, 16.0)).child(muted(c.author.clone(), AUTHOR_W - 22.0).min_w(0.0).shrink())

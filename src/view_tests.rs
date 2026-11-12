@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::comments::{comments_text, parse_comments};
-use crate::diff::{BlameNote, mark_moved};
+use crate::diff::{BlameNote, Side, mark_moved};
 use crate::git::{Blob, Snapshot};
 use crate::history_view::ref_labels;
 use crate::settings::Motion;
@@ -2320,4 +2320,42 @@ fn the_menu_bar_commands_switch_views_and_toggle_options() {
     assert!(rt.state.jumping);
     let stage = COMMANDS.iter().find(|c| c.id == "stage").unwrap();
     assert!(!(stage.enabled)(&rt.state), "nothing acts behind the palette");
+}
+
+#[test]
+fn right_clicks_open_the_menus_for_a_line_a_file_and_a_listed_file() {
+    let mut rt = loaded();
+    let right_click = |rt: &mut Runtime<Collate>, key: &str| {
+        let (x, y) = rt.find(key).unwrap_or_else(|| panic!("{key} is on screen"));
+        rt.secondary_down(x, y);
+        rt.secondary_up(x, y);
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+    };
+    // An added line: its menu acts on it, and selects it so it's what the commands act on.
+    let added = (1..400).map(|n| format!("df0.n{n}")).find(|k| rt.find(k).is_some()).expect("an added line on screen");
+    right_click(&mut rt, &added);
+    let menu = rt.popup_menu().expect("the line menu opened");
+    for id in ["stage", "discard", "comment", "ask", "copy-ref", "copy-lines", "open", "blame"] {
+        assert!(menu.find(id).is_some(), "the line menu has {id}");
+    }
+    assert_eq!(menu.find("stage").map(|i| i.title().to_owned()), Some("Stage Line".into()));
+    assert!(menu.find("unstage").is_none(), "nothing of it is staged");
+    let sel = rt.state.diff.selection().expect("the line is selected");
+    assert_eq!((sel.file, sel.start, sel.end.line), (0, LineRef::new(Side::New, added[5..].parse().unwrap()), sel.start.line));
+    rt.resolve_popup(None).unwrap();
+    // A file's header: the file's menu.
+    right_click(&mut rt, "df0");
+    let menu = rt.popup_menu().expect("the file menu opened");
+    assert!(menu.find("log").is_some() && menu.find("discard").is_some(), "the header's menu is the file's");
+    rt.resolve_popup(None).unwrap();
+    // A row of the file list: the same menu, for that file.
+    right_click(&mut rt, "src/api/file3.rs");
+    let menu = rt.popup_menu().expect("the list's file menu opened");
+    assert!(menu.find("stage").is_some() && menu.find("blame").is_some(), "the listed file's menu");
+    rt.resolve_popup(Some("viewed")).unwrap();
+    rt.frame(1.0 / 60.0);
+    let f = rt.state.diff.file_index("src/api/file3.rs").unwrap();
+    assert!(rt.state.is_viewed(f), "its pick acts on the file right-clicked");
 }

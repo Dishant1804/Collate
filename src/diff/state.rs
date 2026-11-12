@@ -716,6 +716,25 @@ impl DiffState {
         self.row_at(sel.file, at).is_some_and(|r| (a..=b).contains(&r))
     }
 
+    /// The file, and the line when it shows one, under element `path` in the diff's list, for a
+    /// right-click: the row by its key after `rows/`, the side by the split half it's in, else
+    /// the one its key names. A header, a gap or a note has no line.
+    pub(crate) fn line_at_path(&self, path: &str) -> Option<(usize, Option<LineRef>)> {
+        let mut parts = path.split_once("/rows/")?.1.split('/');
+        let key = parts.next()?;
+        let f: usize = key.strip_prefix("df")?.split('.').next()?.parse().ok()?;
+        let start = *self.file_rows.get(f)? as usize;
+        let end = self.file_rows.get(f + 1).map_or(self.rows.len(), |&r| r as usize);
+        let r = self.rows[(start..end).find(|&i| self.key_of(self.rows[i]) == key)?];
+        let side = match parts.next() {
+            Some("old") => Side::Old,
+            Some("new") => Side::New,
+            _ if key.contains(".n") => Side::New,
+            _ => Side::Old,
+        };
+        Some((f, self.row_line(r, side).map(|n| LineRef::new(side, n))))
+    }
+
     /// Whether row `r`'s line on `side` is selected.
     pub(crate) fn row_selected(&self, r: usize, side: Option<Side>) -> bool {
         let Some(sel) = self.selection else { return false };

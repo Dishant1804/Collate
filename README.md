@@ -44,7 +44,8 @@ on its own.
 ## Keys
 
 Every command is also in the menu bar (File, View, Go, Changes, Branch, Agent), with its key
-beside it; Help's search finds one by name.
+beside it; Help's search finds one by name. Right-click a line, a file (in the diff or the
+lists), a commit in the Git Graph or a project for what acts on it.
 
 | Key | Action |
 |---|---|

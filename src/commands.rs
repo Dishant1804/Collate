@@ -2,7 +2,7 @@
 //! action can be found by name there (and in Help's search) with its key beside it.
 use std::cell::RefCell;
 
-use rune::{MenuError, MenuItem, Tx};
+use rune::{MenuError, MenuItem, PopupItem, Tx};
 
 use crate::diff::DiffMode;
 use crate::git::Scope;
@@ -155,6 +155,27 @@ pub const COMMANDS: &[Command] = &[
 thread_local! {
     /// Each command's enabled and checked state as the menu bar last got it.
     static SHOWN: RefCell<Option<Vec<(bool, bool)>>> = const { RefCell::new(None) };
+}
+
+fn find(id: &str) -> Option<&'static Command> {
+    COMMANDS.iter().find(|c| c.id == id)
+}
+
+/// Command `id` as an item of a right-click menu, titled `title` there: its key beside it,
+/// greyed and checked as the menu bar has it, so the two agree. [`run`] runs the one picked.
+pub fn popup_item(s: &Collate, id: &str, title: &str) -> PopupItem {
+    let c = find(id).unwrap_or_else(|| panic!("no command {id}"));
+    let item = PopupItem::new(id, title).enabled((c.enabled)(s)).checked((c.checked)(s));
+    match c.key.parse() {
+        Ok(key) if !c.key.is_empty() => item.key_equivalent(key),
+        _ => item,
+    }
+}
+
+pub fn run(s: &mut Collate, id: &str, tx: &mut Tx) {
+    if let Some(c) = find(id) {
+        (c.run)(s, tx);
+    }
 }
 
 /// Gives the menu bar the commands' current state when it changed. Called each frame.

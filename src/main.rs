@@ -48,9 +48,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use comments::{Comment, comment_row, load_comments};
-use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, IMAGE_H, LineKind, LineRef, Query, WordEdit, apply_edits, word_edits};
+use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, IMAGE_H, LineKind, LineRange, LineRef, Query, WordEdit, apply_edits, word_edits};
 use git::{Change, Repo, Scope, Staged};
-use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PopupItem, PopupMenu, TextEdit, Tx, col, el, icon, row, text};
+use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PointerPress, PopupAnchor, PopupItem, PopupMenu, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::shell::{self, PaneState, Sidebar, SidebarRow, SidebarSection, SplitView, Toolbar};
 use rune_kit::syntax::Highlighter;
 use rune_kit::{
@@ -1295,7 +1295,7 @@ impl Collate {
     }
 
     /// The chosen commit's "⋯" menu in History: build on it, undo it, or move the branch to it.
-    fn commit_menu(&mut self, anchor: &str, tx: &mut Tx) {
+    fn commit_menu(&mut self, anchor: impl Into<PopupAnchor>, tx: &mut Tx) {
         let Some(id) = self.commit.clone().filter(|c| c != graph::UNCOMMITTED && !c.contains("..")) else { return };
         let on = if self.branch == "HEAD" { "HEAD".to_owned() } else { self.branch.clone() };
         let is_head = self.head.as_deref() == Some(id.as_str());
@@ -1315,7 +1315,7 @@ impl Collate {
                 .enabled(self.staged > 0 && self.operation.is_none() && current_repo().is_some_and(|r| r.merged(&id))))
             .item(PopupItem::new("compare", format!("Compare with {on}")).enabled(!is_head && self.head.is_some()))
             .submenu_enabled(format!("Reset {on} to Here"), reset, !is_head);
-        tx.popup_menu(menu, anchor.to_owned(), move |s: &mut Collate, picked, tx| {
+        tx.popup_menu(menu, anchor, move |s: &mut Collate, picked, tx| {
             let id = id.clone();
             let short_id = abbrev(&id);
             match picked {
@@ -1501,7 +1501,7 @@ impl Collate {
 
     /// The file header's "⋯" menu: everything else you can do to the file, the likely action
     /// first and Discard (which asks) last.
-    fn file_menu(&mut self, f: usize, anchor: &str, tx: &mut Tx) {
+    fn file_menu(&mut self, f: usize, anchor: impl Into<PopupAnchor>, tx: &mut Tx) {
         let Some((file, info)) = self.file(f) else { return };
         let path = file.path().to_owned();
         let editable = !self.scope.read_only();
@@ -1529,7 +1529,7 @@ impl Collate {
                 .item(PopupItem::new("ignore", "Ignore File").enabled(untracked))
                 .item(PopupItem::new("discard", "Discard Changes…"));
         }
-        tx.popup_menu(menu, anchor.to_owned(), move |s: &mut Collate, picked, tx| match picked {
+        tx.popup_menu(menu, anchor, move |s: &mut Collate, picked, tx| match picked {
             Some("stage") => s.stage_file(f),
             Some("unstage") => s.unstage_file(f),
             Some("open") => s.open_file(f),
@@ -1542,6 +1542,104 @@ impl Collate {
             Some("ignore") => {
                 let path = path.clone();
                 s.act(move |r| r.ignore(&path).map(|_| format!("Ignored {path}: it's in .gitignore")));
+            }
+            _ => {}
+        });
+    }
+
+    /// A right-click in the diff at element `path`: on a line, what acts on lines (on the
+    /// selection when the line is in it, else on the line, which it selects first); on a file's
+    /// header or a gap, the file's menu.
+    fn diff_menu(&mut self, path: &str, at: PointerPress, tx: &mut Tx) {
+        let found = if path.contains("/sticky") { Some((self.diff.visible_file(), None)) } else { self.diff.line_at_path(path) };
+        let Some((f, line)) = found else { return };
+        let Some(line) = line else { return self.file_menu(f, at, tx) };
+        if !self.diff.selection().is_some_and(|sel| sel.file == f && self.diff.contains(&sel, line)) {
+            self.diff.set_selection(Some(LineRange::line(f, line)));
+        }
+        let many = self.diff.selection().is_some_and(|sel| sel.start != sel.end);
+        let lines = if many { "Lines" } else { "Line" };
+        let staged = self.info.get(f).map_or(Staged::No, |i| i.staged);
+        // Only a selection with a change in it stages: on unchanged lines the keys would act
+        // on the hunk at the top of the view, which isn't the one clicked.
+        let changes = self.diff.selected_changes().is_some();
+        let (stage, unstage, discard) = match self.scope {
+            _ if !changes => (false, false, false),
+            Scope::Uncommitted if staged == Staged::Fully => (false, true, true),
+            Scope::Uncommitted | Scope::Unstaged => (true, false, true),
+            Scope::Staged => (false, true, false),
+            Scope::Branch | Scope::History => (false, false, false),
+        };
+        let mut menu = PopupMenu::new();
+        if stage {
+            menu = menu.item(commands::popup_item(self, "stage", &format!("Stage {lines}")));
+        }
+        if unstage {
+            menu = menu.item(commands::popup_item(self, "unstage", &format!("Unstage {lines}")));
+        }
+        if discard {
+            menu = menu.item(commands::popup_item(self, "discard", &format!("Discard {lines}…")));
+        }
+        if self.word_candidate().is_some_and(|w| w.file == f) && (stage || unstage) {
+            menu = menu.item(commands::popup_item(self, "pick-words", "Pick Words…"));
+        }
+        if stage || unstage || discard {
+            menu = menu.separator();
+        }
+        let agent = format!("Ask {}…", self.settings.agent.title());
+        menu = menu
+            .item(commands::popup_item(self, "comment", "Comment…"))
+            .item(commands::popup_item(self, "ask", &agent))
+            .separator()
+            .item(commands::popup_item(self, "copy-ref", "Copy Reference"))
+            .item(commands::popup_item(self, "copy-lines", "Copy for an Agent"))
+            .separator()
+            .item(commands::popup_item(self, "open", "Open in Editor"))
+            .item(commands::popup_item(self, "blame", "Inline Blame"));
+        tx.popup_menu(menu, at, |s: &mut Collate, picked, tx| {
+            if let Some(id) = picked {
+                commands::run(s, id, tx);
+            }
+        });
+    }
+
+    /// A right-click on a file list's row at element `path`: the file's menu, as its header's
+    /// "⋯" has it. A folder has none.
+    fn list_menu(&mut self, path: &str, at: PointerPress, tx: &mut Tx) {
+        // A row's key is its path, slashes and all: the longest file path it starts with.
+        let Some((_, rest)) = path.split_once("/rows/") else { return };
+        let ends = rest.match_indices('/').map(|(i, _)| i).chain([rest.len()]);
+        let Some(f) = ends.filter_map(|i| self.diff.file_index(&rest[..i])).last() else { return };
+        self.file_menu(f, at, tx);
+    }
+
+    /// A right-click on a project in the switcher or the welcome screen.
+    fn project_menu(&mut self, path: PathBuf, at: PointerPress, tx: &mut Tx) {
+        let starred = self.favorites.contains(&path);
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("open", "Open"))
+            .item(PopupItem::new("star", if starred { "Unstar" } else { "Star" }))
+            .separator()
+            .item(PopupItem::new("finder", "Show in Finder").enabled(path.exists()))
+            .item(PopupItem::new("copy", "Copy Path"))
+            .separator()
+            .item(PopupItem::new("forget", "Remove from List"));
+        tx.popup_menu(menu, at, move |s: &mut Collate, picked, tx| match picked {
+            Some("open") => s.open_project(&path, tx),
+            Some("star") => s.toggle_favorite(&path),
+            Some("finder") => {
+                if let Err(e) = std::process::Command::new("open").arg("-R").arg(&path).spawn() {
+                    s.say(format!("Couldn't show {} in the Finder: {e}", tilde(&path)), true);
+                }
+            }
+            Some("copy") => {
+                tx.copy(path.to_string_lossy().into_owned());
+                s.say("Copied the project's path", false);
+            }
+            Some("forget") => {
+                if let Some(i) = s.projects.iter().position(|p| *p == path) {
+                    s.forget_project(i);
+                }
             }
             _ => {}
         });
@@ -2843,6 +2941,10 @@ fn project_switcher(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         let check = icon(k.glyph.check_small, 14.0).color(k.c.icon_base).opacity(if current == Some(i) { 1.0 } else { 0.0 }).a11y_hidden();
         rows = rows.child(
             option(n, labels[i].clone())
+                .on_secondary_press({
+                    let path = path.clone();
+                    move |s: &mut Collate, p: PointerPress, tx: &mut Tx| s.project_menu(path.clone(), p, tx)
+                })
                 .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.open_project(&path, tx))
                 .child(text(labels[i].clone()).font(k.ty.ui).color(k.c.text_base).grow(1.0).shrink().truncate().a11y_hidden())
                 .child(check)
@@ -2886,6 +2988,10 @@ fn welcome(s: &Collate, k: &Kit) -> El {
                 .cursor(Cursor::Pointer)
                 .role("button")
                 .label(labels[i].clone())
+                .on_secondary_press({
+                    let path = path.clone();
+                    move |s: &mut Collate, at: PointerPress, tx: &mut Tx| s.project_menu(path.clone(), at, tx)
+                })
                 .on_press_tx(move |s: &mut Collate, tx| s.open_project(&path, tx))
                 .child(text(labels[i].clone()).font(k.ty.ui_medium).color(if exists { k.c.text_base } else { k.c.text_faint }))
                 .child(text(tilde(p)).font(k.ty.text_small).color(k.c.text_faint).truncate().min_w(0.0).grow(1.0))
@@ -3164,7 +3270,10 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
                     s.select_in_lists(&p);
                 }
             })
-            .build(s, k);
+            .build(s, k)
+            .on_secondary_press(|_: &mut Collate, p: PointerPress, tx: &mut Tx| {
+                tx.element_at(p.x, p.y, move |s: &mut Collate, picked, tx| if let Some(picked) = picked { s.diff_menu(picked.path(), p, tx) });
+            });
         // Always wrapped, so the bar coming and going doesn't move the diff's rows to new
         // paths, which would reset its scroll and text selection.
         let mut diff = col().key("diff-area").w_full().grow(1.0).min_h(0.0).child(diff);
@@ -3828,6 +3937,9 @@ fn file_list(s: &Collate, k: &Kit, staged_list: bool, quick: Option<bool>) -> El
         .on_select(reveal)
         .on_open(reveal)
         .build(s, k)
+        .on_secondary_press(|_: &mut Collate, p: PointerPress, tx: &mut Tx| {
+            tx.element_at(p.x, p.y, move |s: &mut Collate, picked, tx| if let Some(picked) = picked { s.list_menu(picked.path(), p, tx) });
+        })
         // A focused tree takes typed letters (type-to-select) before the app's shortcuts see
         // them, so after a click j, k, a, x and the rest would jump around the file list. The
         // list stays click-only; the filter field and ] [ do its keyboard work.
