@@ -727,6 +727,17 @@ fn a_diverged_branch_pulls_by_rebasing_its_own_commits() {
 }
 
 #[test]
+fn the_first_push_goes_to_the_only_remote() {
+    let (remote, _) = repo("push-remote", &[("a.txt", "one\n")]);
+    let (dir, r) = repo("push-local", &[("a.txt", "one\n")]);
+    assert!(r.push().unwrap_err().contains("no remote"));
+    sh(&dir, &["remote", "add", "upstream", remote.to_str().unwrap()]);
+    sh(&dir, &["switch", "-qc", "feature"]);
+    r.push().unwrap();
+    assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "upstream/feature");
+}
+
+#[test]
 fn one_file_is_stashed_or_ignored_alone() {
     let (dir, r) = repo("stash-one", &[("a.txt", "one\n"), ("b.txt", "one\n")]);
     write(&dir, "a.txt", "two\n");

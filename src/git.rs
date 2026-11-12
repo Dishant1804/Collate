@@ -986,14 +986,21 @@ impl Repo {
         self.run(&["push", "-q", "--force-with-lease"], None)
     }
 
-    /// Pushes the branch to its upstream; a branch without one goes to `origin` under its own
-    /// name and tracks it from then on.
+    /// Pushes the branch to its upstream; a branch without one goes to `origin`, or to the only
+    /// remote there is, under its own name and tracks it from then on.
     pub fn push(&self) -> Result<String, String> {
         if self.run(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], None).is_ok() {
-            self.run(&["push", "-q"], None)
-        } else {
-            self.run(&["push", "-q", "-u", "origin", "HEAD"], None)
+            return self.run(&["push", "-q"], None);
         }
+        let remotes = self.run(&["remote"], None)?;
+        let remotes: Vec<&str> = remotes.lines().collect();
+        let to = match remotes.as_slice() {
+            [] => return Err("There's no remote to push to: add one with git remote add".to_owned()),
+            [only] => *only,
+            _ if remotes.contains(&"origin") => "origin",
+            _ => return Err(format!("This branch has no upstream and there are several remotes ({}): push it once with git push -u <remote>", remotes.join(", "))),
+        };
+        self.run(&["push", "-q", "-u", to, "HEAD"], None)
     }
 
     /// The upstream's name and the commit this branch left it at: from there to HEAD is what a
