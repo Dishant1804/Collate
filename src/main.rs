@@ -1493,7 +1493,7 @@ impl Collate {
     /// throws work away (which asks) last.
     fn changes_menu(&mut self, anchor: &str, tx: &mut Tx) {
         let idle = self.busy.is_none();
-        let newest = current_repo().and_then(|r| r.stashes().into_iter().next());
+        let stashes = current_repo().map(|r| r.stashes()).unwrap_or_default();
         let any = self.total > 0;
         // The list knows a file is untracked only where it's listed: not in Staged.
         let untracked = self.scope == Scope::Staged || self.info.iter().any(|i| !i.in_base && i.staged == Staged::No);
@@ -1503,8 +1503,8 @@ impl Collate {
             .separator()
             .item(PopupItem::new("stash", "Stash All…").enabled(any && idle))
             .item(PopupItem::new("stash-tracked", "Stash Tracked…").enabled(any && idle))
-            .item(PopupItem::new("pop", "Stash Pop").enabled(newest.is_some() && idle))
-            .item(PopupItem::new("show", "View Stash").enabled(newest.is_some()))
+            .item(PopupItem::new("pop-newest", "Stash Pop").enabled(!stashes.is_empty() && idle))
+            .submenu_enabled(format!("Stashes ({})", stashes.len()), Self::stash_list(&stashes), !stashes.is_empty())
             .separator()
             .item(PopupItem::new("discard-tracked", "Discard Tracked Changes…").enabled(any))
             .item(PopupItem::new("discard-untracked", "Remove Untracked Files…").enabled(any && untracked));
@@ -1513,15 +1513,12 @@ impl Collate {
             Some("unstage") => s.unstage_all(),
             Some("stash") => s.ask(Ask::Stash),
             Some("stash-tracked") => s.ask(Ask::StashTracked),
-            Some("pop") => s.act_bg("Applying the stash…", |r| r.stash_do("pop", "stash@{0}").map(|_| "Popped the newest stash".to_owned())),
-            Some("show") => {
-                if let Some(st) = &newest {
-                    s.open_commit(&st.id);
-                }
-            }
+            Some("pop-newest") => s.act_bg("Applying the stash…", |r| r.stash_do("pop", "stash@{0}").map(|_| "Popped the newest stash".to_owned())),
             Some("discard-tracked") => s.risky = Some(Risky::DiscardTracked),
             Some("discard-untracked") => s.risky = Some(Risky::DiscardUntracked),
-            _ => {}
+            // A stash's own items.
+            Some(p) => s.branch_do(p),
+            None => {}
         });
     }
 
@@ -1681,13 +1678,13 @@ impl Collate {
 
     /// The toolbar's "⋯" menu: how the diff is drawn, and the app's less frequent commands.
     /// The title bar's branch menu, as GitHub Desktop's: sync with the remote, switch or make a
-    /// branch, stash, and the branch as a pull request against a base.
+    /// branch, and the branch as a pull request against a base. Stashes and tags have menus of
+    /// their own (Branch > Stashes…, Tags…).
     fn branch_menu(&mut self, tx: &mut Tx) {
         let repo = current_repo();
         if let Some(r) = &repo {
             self.branches = r.branches();
         }
-        let stashes = repo.as_deref().map(Repo::stashes).unwrap_or_default();
         let base = self.base.clone().unwrap_or_default();
         let (ahead, behind) = self.ahead_behind.unwrap_or((0, 0));
         let diverged = ahead > 0 && behind > 0;
@@ -1701,27 +1698,6 @@ impl Collate {
                 continue;
             }
             switch = switch.item(PopupItem::new(format!("switch:{b}"), b.clone()));
-        }
-        let tags = repo.as_deref().map(Repo::tags).unwrap_or_default();
-        let mut tag_menu = PopupMenu::new().item(PopupItem::new("new-tag", "New Tag at HEAD…").enabled(idle)).separator();
-        for t in tags.iter().take(30) {
-            let one = PopupMenu::new()
-                .item(PopupItem::new(format!("show-tag:{t}"), "Show Commit"))
-                .item(PopupItem::new(format!("push-tag:{t}"), "Push to origin").enabled(idle))
-                .separator()
-                .item(PopupItem::new(format!("delete-tag:{t}"), "Delete…").enabled(idle))
-                .item(PopupItem::new(format!("delete-remote-tag:{t}"), "Delete Here and from origin…").enabled(idle));
-            tag_menu = tag_menu.submenu(t.clone(), one);
-        }
-        let mut stash_menu = PopupMenu::new();
-        for st in &stashes {
-            let one = PopupMenu::new()
-                .item(PopupItem::new(format!("show:{}", st.id), "Show Changes"))
-                .item(PopupItem::new(format!("apply:{}", st.name), "Apply"))
-                .item(PopupItem::new(format!("pop:{}", st.name), "Apply and Drop"))
-                .separator()
-                .item(PopupItem::new(format!("drop:{}", st.name), "Drop…"));
-            stash_menu = stash_menu.submenu(format!("{} - {}", st.name, st.message), one);
         }
         // Any other branch can be merged in.
         let (mut merges, mut rebases) = (PopupMenu::new(), PopupMenu::new());
@@ -1764,13 +1740,53 @@ impl Collate {
             .submenu_enabled(format!("Merge Into {}", self.branch), merges, idle && !detached && self.operation.is_none())
             .submenu_enabled(format!("Rebase {} Onto", self.branch), rebases, idle && !detached && self.operation.is_none() && self.total == 0)
             .separator()
-            .item(PopupItem::new("stash", "Stash All Changes…").enabled(idle && self.total > 0))
-            .submenu_enabled(format!("Stashes ({})", stashes.len()), stash_menu, !stashes.is_empty())
-            .submenu(format!("Tags ({})", tags.len()), tag_menu)
-            .separator()
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
-            .submenu("Compare Against", bases)
-            .item(PopupItem::new("compare", "Compare Branches or Tags…"));
+            .submenu("Compare Against", bases);
+        tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
+    }
+
+    /// The stashes, each with what can be done to it, as a menu whose picks `branch_do` runs.
+    fn stash_list(stashes: &[git::Stash]) -> PopupMenu {
+        let mut menu = PopupMenu::new();
+        for st in stashes {
+            let one = PopupMenu::new()
+                .item(PopupItem::new(format!("show:{}", st.id), "Show Changes"))
+                .item(PopupItem::new(format!("apply:{}", st.name), "Apply"))
+                .item(PopupItem::new(format!("pop:{}", st.name), "Apply and Drop"))
+                .separator()
+                .item(PopupItem::new(format!("drop:{}", st.name), "Drop…"));
+            menu = menu.submenu(format!("{} - {}", st.name, st.message), one);
+        }
+        menu
+    }
+
+    /// Branch > Stashes…: the stashes, from the title bar's branch button.
+    fn stashes_menu(&mut self, tx: &mut Tx) {
+        let stashes = current_repo().map(|r| r.stashes()).unwrap_or_default();
+        if stashes.is_empty() {
+            self.say("No stashes. Stash All… in the staging panel's ⌄ menu makes one.", false);
+            return;
+        }
+        tx.popup_menu(Self::stash_list(&stashes), "branch", |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
+    }
+
+    /// Branch > Tags…: a new tag, and the newest tags with what can be done to each.
+    fn tags_menu(&mut self, tx: &mut Tx) {
+        let tags = current_repo().map(|r| r.tags()).unwrap_or_default();
+        let idle = self.busy.is_none();
+        let mut menu = PopupMenu::new().item(PopupItem::new("new-tag", "New Tag at HEAD…").enabled(idle));
+        if !tags.is_empty() {
+            menu = menu.separator();
+        }
+        for t in tags.iter().take(30) {
+            let one = PopupMenu::new()
+                .item(PopupItem::new(format!("show-tag:{t}"), "Show Commit"))
+                .item(PopupItem::new(format!("push-tag:{t}"), "Push to origin").enabled(idle))
+                .separator()
+                .item(PopupItem::new(format!("delete-tag:{t}"), "Delete…").enabled(idle))
+                .item(PopupItem::new(format!("delete-remote-tag:{t}"), "Delete Here and from origin…").enabled(idle));
+            menu = menu.submenu(t.clone(), one);
+        }
         tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
     }
 

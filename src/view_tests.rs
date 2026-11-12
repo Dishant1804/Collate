@@ -560,13 +560,20 @@ fn the_sidebar_switches_views_and_the_file_menu_acts() {
     // Stage All's ⌄ holds what acts on every change; what throws work away asks first.
     click(&mut rt, "changes-more");
     let menu = rt.popup_menu().expect("the changes menu opened");
-    for id in ["stage", "unstage", "stash", "stash-tracked", "pop", "show", "discard-tracked", "discard-untracked"] {
+    for id in ["stage", "unstage", "stash", "stash-tracked", "pop-newest", "discard-tracked", "discard-untracked"] {
         assert!(menu.find(id).is_some(), "the changes menu has {id}");
     }
     rt.resolve_popup(Some("discard-tracked")).unwrap();
     rt.frame(1.0 / 60.0);
     assert_eq!(rt.state.risky, Some(Risky::DiscardTracked), "Discard Tracked Changes asks first");
     rt.update(|s, _| s.risky = None);
+    // Tags have their own menu, from Branch > Tags… or the palette, off the branch button.
+    rt.update(|s, tx| crate::commands::run(s, "tags", tx));
+    let menu = rt.popup_menu().expect("the tags menu opened");
+    assert!(menu.find("new-tag").is_some(), "a new tag can be made from it");
+    rt.resolve_popup(None).unwrap();
+    rt.update(|s, tx| crate::commands::run(s, "stashes", tx));
+    assert!(rt.popup_menu().is_none() && rt.state.notice.as_ref().is_some_and(|n| n.text.contains("No stashes")), "with none, Stashes… says so");
 }
 
 #[test]
