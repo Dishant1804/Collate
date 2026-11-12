@@ -344,6 +344,8 @@ struct Collate {
     /// Paths already shown once, so a large file folds the first time only.
     seen: HashSet<String>,
     show_help: bool,
+    /// What's typed into the shortcuts sheet's search.
+    help_query: String,
     /// History: recent commits (ids and labels, newest first) and the one shown.
     commit_ids: Vec<String>,
     graph_commits: Vec<graph::Commit>,
@@ -502,6 +504,7 @@ fn init() -> Collate {
         stale: HashSet::new(),
         seen: HashSet::new(),
         show_help: false,
+        help_query: String::new(),
         map_query: TextEdit::new(""),
         history_query: TextEdit::new(""),
         found: Vec::new(),
@@ -745,6 +748,11 @@ impl Collate {
             None => self.favorites.push(p.to_owned()),
         }
         save_paths("favorites", &self.favorites);
+    }
+
+    fn open_help(&mut self) {
+        self.show_help = true;
+        self.help_query.clear();
     }
 
     /// ⌘J: shows or hides the terminal drawer, starting a shell the first time.
@@ -1829,7 +1837,7 @@ impl Collate {
             }
             Some("comments") => s.copy_comments(tx),
             Some("add") => s.add_project(),
-            Some("keys") => s.show_help = true,
+            Some("keys") => s.open_help(),
             Some("settings") => s.screen = Screen::Settings,
             Some(id) => s.agent_menu_pick(id),
             None => {}
@@ -3319,58 +3327,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     };
 
     if s.show_help {
-        let keys: &[(&str, &str)] = &[
-            ("j  k", "Next / previous change"),
-            ("]  [", "Next / previous file"),
-            ("a  u  x", "Stage, unstage, discard the change at the top"),
-            ("Click line numbers", "Pick lines; a, u and x then act on just those (shift-click or drag for more)"),
-            ("p", "With one line and its replacement picked: pick single word changes"),
-            ("A  U  X", "Stage, unstage, discard the whole file in view"),
-            ("v", "Mark the file viewed"),
-            ("⇧↓  ⇧↑", "Select lines from the keyboard; ↓ and ↑ alone move the selection, Esc clears it"),
-            ("c", "Comment on the selected line"),
-            ("i", "Ask the agent about the selected lines, or to change them"),
-            ("y  Y", "Copy the selected lines' reference (path#L10-L25), or the lines as a diff for an agent"),
-            ("o", "Open the file in your editor"),
-            ("⌘F  ⌘K", "Search this view: the diff (⏎ next match, ⇧⏎ previous), the Map's files, History's commits and branches"),
-            ("⌘P", "Go to a file: type part of its path; add :line for a line"),
-            ("⌘L", "Go to a line of the file in view"),
-            ("n  N  ⌘G", "Next / previous search match"),
-            ("⌥⌘C  ⌥⌘W  ⌥⌘R", "Search: match case, whole words, regular expression"),
-            ("m", "Jump to the other end of a move (blue lines)"),
-            ("b", "Inline blame beside the line numbers"),
-            ("z  Z", "Collapse / expand every file"),
-            ("s", "Unified / split"),
-            ("w  W", "Wrap long lines / hide whitespace changes"),
-            ("1 2 3 4 5", "All changes, staged, unstaged, pull request preview, history"),
-            ("<  >", "Git Graph: older / newer commit"),
-            ("r", "Reread the repository"),
-            ("⌘↩", "Commit what's staged"),
-            ("⌘Z", "Undo the last commit, merge, rebase, pull, reset, cherry-pick, revert or switch"),
-            ("n p 1 2 3", "Merge editor: next or previous conflict, take ours, theirs or both"),
-            ("⌘O", "Add a local project (the project menu, top left, switches)"),
-            ("⌘,", "Settings"),
-            ("⇧⌘B", "Show / hide the views sidebar"),
-            ("⌥⌘0", "Show / hide the staging panel"),
-            ("⌘J", "Show / hide the terminal; ⌘K clears it"),
-        ];
-        let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
-        let rows = keys.iter().enumerate().map(|(i, (key, what))| {
-            row()
-                .key(format!("k{i}"))
-                .w_full()
-                .gap(16.0)
-                .items_start()
-                .child(text(key.to_string()).font(mono).color(k.c.text_base).w(150.0))
-                .child(text(what.to_string()).font(k.ty.text_small).color(k.c.text_muted).wrap().grow(1.0).min_w(0.0))
-        });
-        Dialog::new("help", "Keyboard shortcuts")
-            .open(true)
-            .fit()
-            .width(560.0)
-            .on_close(|s: &mut Collate| s.show_help = false)
-            .child(col().key("keys").w_full().px(24.0).pb(20.0).gap(8.0).children(rows))
-            .build(k, layer);
+        help_sheet(s, k, layer);
     }
 
     if let Some(w) = &s.words {
@@ -3656,6 +3613,117 @@ fn jump_palette(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             .child(field)
             .child(col().key("jump-list").w_full().max_h(360.0).scroll(rune::ScrollSpec { stick_bottom: false }).children(rows))
             .child(text(note).font(k.ty.text_small).color(k.c.text_muted)))
+        .build(k, layer);
+}
+
+/// The shortcuts sheet's sections: each key (as the keyboard shows it) and what it does.
+const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
+    ("Review", &[
+        ("j  k", "Next / previous change"),
+        ("]  [", "Next / previous file"),
+        ("a  u  x", "Stage, unstage, discard the change at the top"),
+        ("A  U  X", "Stage, unstage, discard the whole file in view"),
+        ("p", "With one line and its replacement picked: pick single word changes"),
+        ("v", "Mark the file viewed"),
+        ("⌘↩", "Commit what's staged"),
+        ("⌘Z", "Undo the last commit, merge, rebase, pull, reset, cherry-pick, revert or switch"),
+        ("r", "Reread the repository"),
+    ]),
+    ("Lines", &[
+        ("Click line numbers", "Pick lines; a, u and x then act on just those (shift-click or drag for more)"),
+        ("⇧↓  ⇧↑", "Select lines from the keyboard; ↓ and ↑ alone move the selection, Esc clears it"),
+        ("Right-click", "What acts on a line, a file, a commit or a project"),
+        ("c", "Comment on the selected line"),
+        ("i", "Ask the agent about the selected lines, or to change them"),
+        ("y  Y", "Copy the selected lines' reference (path#L10-L25), or the lines as a diff for an agent"),
+        ("o", "Open the file in your editor"),
+        ("m", "Jump to the other end of a move (blue lines)"),
+    ]),
+    ("Find and Go", &[
+        ("⌘F  ⌘K", "Search this view: the diff (⏎ next match, ⇧⏎ previous), the Map's files, History's commits and branches"),
+        ("n  N  ⌘G  ⇧⌘G", "Next / previous search match"),
+        ("⌥⌘C  ⌥⌘W  ⌥⌘R", "Search: match case, whole words, regular expression"),
+        ("⌘P", "Go to a file: type part of its path; add :line for a line"),
+        ("⌘L", "Go to a line of the file in view"),
+        ("⌘[  ⌘]", "Back / forward through the places you've been: views, the map, commits"),
+    ]),
+    ("View", &[
+        ("1 2 3 4 5", "All changes, staged, unstaged, pull request preview, history"),
+        ("s", "Unified / split"),
+        ("w  W", "Wrap long lines / hide whitespace changes"),
+        ("b", "Inline blame beside the line numbers"),
+        ("z  Z", "Collapse / expand every file"),
+        ("⇧⌘B", "Show / hide the views sidebar"),
+        ("⌥⌘0", "Show / hide the staging panel"),
+        ("⌘J", "Show / hide the terminal; ⌘K clears it"),
+    ]),
+    ("History", &[
+        ("<  >", "Older / newer commit"),
+        ("↩", "Open the chosen commit's diff"),
+        ("Esc", "Back to the Git Graph from a commit's diff"),
+    ]),
+    ("Merge Editor", &[
+        ("n  p", "Next / previous conflict"),
+        ("1  2  3", "Take ours, theirs or both"),
+    ]),
+    ("App", &[
+        ("⌘O", "Add a local project (the project menu, top left, switches)"),
+        ("⌘,", "Settings"),
+        ("?", "These shortcuts; every command is in the menu bar too"),
+    ]),
+];
+
+/// The shortcuts that match `query`: every word of it in the key, the description or the
+/// section's name, ignoring case.
+fn shortcuts(query: &str) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    let query = query.to_lowercase();
+    let words: Vec<&str> = query.split_whitespace().collect();
+    SHORTCUTS.iter().filter_map(|&(section, keys)| {
+        let keys: Vec<_> = keys.iter().copied()
+            .filter(|(key, what)| words.iter().all(|w| [section, key, what].iter().any(|t| t.to_lowercase().contains(w))))
+            .collect();
+        (!keys.is_empty()).then_some((section, keys))
+    }).collect()
+}
+
+/// `?`: every shortcut by section, narrowed as you type.
+fn help_sheet(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let typed = if s.help_query.is_empty() {
+        text("Search shortcuts".to_owned()).font(k.ty.ui).color(k.c.text_faint)
+    } else {
+        text(format!("{}\u{2502}", s.help_query)).font(k.ty.ui).color(k.c.text_base)
+    };
+    let field = row().key("help-field").w_full().h(32.0).px(10.0).gap(8.0).items_center().radius(k.radius.md).border(2.0, k.c.border_focus)
+        .child(icon(k.glyph.search, 14.0).color(k.c.icon_faint)).child(typed);
+    let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
+    let found = shortcuts(&s.help_query);
+    let mut list = col().key("keys").w_full().gap(8.0);
+    for (section, keys) in &found {
+        list = list.child(text(section.to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).key(format!("section-{section}")).pt(8.0));
+        for (key, what) in keys {
+            list = list.child(
+                row()
+                    .key(format!("k-{section}-{key}"))
+                    .w_full()
+                    .gap(16.0)
+                    .items_start()
+                    .child(text(key.to_string()).font(mono).color(k.c.text_base).w(150.0))
+                    .child(text(what.to_string()).font(k.ty.text_small).color(k.c.text_muted).wrap().grow(1.0).min_w(0.0)),
+            );
+        }
+    }
+    if found.is_empty() {
+        list = list.child(text("No shortcut matches; the menu bar's Help search finds every command".to_owned()).font(k.ty.text_small).color(k.c.text_muted).key("none"));
+    }
+    Dialog::new("help", "Keyboard Shortcuts")
+        .open(true)
+        .fit()
+        .width(600.0)
+        // Escape clears the search first, then closes.
+        .on_close(|s: &mut Collate| if s.help_query.is_empty() { s.show_help = false } else { s.help_query.clear() })
+        .child(col().key("help-body").w_full().px(16.0).pb(16.0).gap(8.0)
+            .child(field)
+            .child(col().key("help-list").w_full().max_h(480.0).px(8.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(list)))
         .build(k, layer);
 }
 
@@ -4656,7 +4724,7 @@ fn main() {
                 s.settings_tab = SETTINGS_TABS.len() - 1;
                 s.update = update::Status::Ready(update::Update::Release { version: "1.2.0".into(), zip: String::new(), sums: String::new(), name: String::new() });
             }),
-            ("help", |s: &mut Collate| s.show_help = true),
+            ("help", |s: &mut Collate| s.open_help()),
             ("staged", |s: &mut Collate| s.set_scope(Scope::Staged)),
             ("unstaged", |s: &mut Collate| s.set_scope(Scope::Unstaged)),
             ("branch", |s: &mut Collate| s.set_scope(Scope::Branch)),

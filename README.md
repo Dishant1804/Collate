@@ -55,10 +55,13 @@ lists), a commit in the Git Graph or a project for what acts on it.
 | `A` `U` `X` | The same for the whole file |
 | `v` | Mark the file viewed |
 | `c` | Comment on the selected line |
+| `i` | Ask the agent about the selected lines, or to change them |
+| `y` `Y` | Copy the selected lines' reference (`path#L10-L25`), or the lines as a diff for an agent |
 | `o` | Open the file in your editor |
 | `⌘F` or `⌘K`, `n` `N` | Search this view (the diff, the Map's files, History's commits and branches), next / previous match |
 | `⌥⌘C` `⌥⌘W` `⌥⌘R` | Search: match case, whole words, regular expression |
 | `⌘P` `⌘L` | Go to a file (`file:line` for a line), go to a line |
+| `⌘[` `⌘]` | Back / forward through the places you've been |
 | `m` | Jump to the other end of a move |
 | `b` | Inline blame: who last changed each line, beside the numbers |
 | `p` | Pick single word changes to stage |
@@ -66,12 +69,14 @@ lists), a commit in the Git Graph or a project for what acts on it.
 | `s` | Unified / split |
 | `w` `W` | Wrap long lines / hide whitespace changes |
 | `1` to `5` | All changes, staged, unstaged, pull request preview, history |
+| `<` `>`, `↩`, `Esc` | History: older / newer commit, open its diff, back to the graph |
+| `⇧⌘B` `⌥⌘0` `⌘J` | Show / hide the views sidebar, the staging panel, the terminal |
 | `⌘↩` | Commit what's staged |
 | `⌘Z` | Undo the last commit, merge, rebase, pull, reset, cherry-pick, revert or switch |
 | `n` `p`, `1` `2` `3` | Merge editor: next / previous conflict, take ours, theirs or both |
 | `⌘O` | Add a project |
 | `r` | Read everything again |
-| `?` | Every key |
+| `?` | Every key, by section; type to search them |
 | `⌘,` | Settings |
 
 ## What Collate stores and sends

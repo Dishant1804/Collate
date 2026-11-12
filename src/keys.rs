@@ -54,12 +54,17 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.dialog_open() {
         return false;
     }
+    // The shortcuts sheet: typing searches it. Its dialog takes Escape.
     if s.show_help {
-        if matches!(ev.key, Key::Escape) || matches!(&ev.key, Key::Text(t) if t == "?") {
-            s.show_help = false;
-            return true;
+        match &ev.key {
+            Key::Backspace => {
+                s.help_query.pop();
+            }
+            Key::Text(t) if t == "?" && s.help_query.is_empty() => s.show_help = false,
+            Key::Text(t) if !ev.mods.cmd && !ev.mods.ctrl => s.help_query.push_str(t),
+            _ => return false,
         }
-        return false;
+        return true;
     }
     if ev.is_command('j') && s.has_project {
         s.toggle_terminal();
@@ -242,7 +247,7 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
             true
         }
         "?" => {
-            s.show_help = true;
+            s.open_help();
             true
         }
         "A" | "U" if s.scope.read_only() || (t == "A" && s.scope == Scope::Staged) => {

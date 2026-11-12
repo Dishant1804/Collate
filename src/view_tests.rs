@@ -2379,3 +2379,28 @@ fn keys_that_do_nothing_here_say_why() {
         assert!(!said(&mut rt, key).is_empty(), "{key} in Branch says why it does nothing");
     }
 }
+
+#[test]
+fn the_shortcuts_sheet_is_sectioned_and_searchable() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    let press = |rt: &mut Runtime<Collate>, t: &str| {
+        rt.key(KeyEvent { key: Key::Text(t.into()), mods: Default::default() });
+        rt.frame(1.0 / 60.0);
+    };
+    press(&mut rt, "?");
+    assert!(rt.state.show_help);
+    assert!(rt.find("section-History").is_some() && rt.find("k-Find and Go-⌘[  ⌘]").is_some(), "History's keys and Back are listed");
+    // Typing searches; a key that's a shortcut elsewhere doesn't act behind the sheet.
+    for t in ["b", "l", "a", "m", "e"] {
+        press(&mut rt, t);
+    }
+    assert_eq!(rt.state.help_query, "blame");
+    assert!(rt.find("k-View-b").is_some() && rt.find("section-Review").is_none(), "only blame's row is left");
+    rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.show_help && rt.state.help_query.is_empty(), "Escape clears the search first: {} {:?}", rt.state.show_help, rt.state.help_query);
+    rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    assert!(!rt.state.show_help);
+}

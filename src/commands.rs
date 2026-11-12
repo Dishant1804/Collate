@@ -149,7 +149,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("send-comments", "Send Comments", "Agent", "", |s| ready(s) && !s.comments.is_empty(), |s, _| s.send_comments()),
     cmd("write-message", "Write the Commit Message", "Agent", "", |s| idle(s) && s.staged > 0 && !s.writing_message, |s, _| s.write_message()),
     cmd("checkpoint", "Save a Checkpoint", "Agent", "", idle, |s, _| s.save_checkpoint()),
-    cmd("keys", "Keyboard Shortcuts", "Help", "shift+slash", |s| ready(s) || !s.has_project, |s, _| s.show_help = true),
+    cmd("keys", "Keyboard Shortcuts", "Help", "shift+slash", |s| ready(s) || !s.has_project, |s, _| s.open_help()),
 ];
 
 thread_local! {
