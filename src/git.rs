@@ -974,6 +974,12 @@ impl Repo {
         self.run(&["pull", "--ff-only", "-q"], None)
     }
 
+    /// Pulls the upstream and replays this branch's own commits on top of it, for a branch that
+    /// has moved on both sides. What isn't committed is put aside and back.
+    pub fn pull_rebase(&self) -> Result<String, String> {
+        self.stopped(self.run(&["pull", "--rebase", "--autostash", "-q"], None))
+    }
+
     /// Push over the remote branch after a rebase or amend, but only if it's still where this
     /// clone last saw it: someone else's push in between makes it fail rather than vanish.
     pub fn force_push(&self) -> Result<String, String> {

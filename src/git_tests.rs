@@ -704,6 +704,29 @@ fn force_push_replaces_a_rewritten_branch_unless_the_remote_moved() {
 }
 
 #[test]
+fn a_diverged_branch_pulls_by_rebasing_its_own_commits() {
+    let (remote, _) = repo("pull-remote", &[("a.txt", "one\n")]);
+    sh(&remote, &["config", "receive.denyCurrentBranch", "ignore"]);
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("collate-pull-clone-{}-{nanos}", std::process::id()));
+    sh(&std::env::temp_dir(), &["clone", "-q", remote.to_str().unwrap(), dir.to_str().unwrap()]);
+    sh(&dir, &["config", "user.email", "t@t"]);
+    sh(&dir, &["config", "user.name", "t"]);
+    let r = Repo::open(&dir).unwrap();
+    write(&remote, "theirs.txt", "theirs\n");
+    sh(&remote, &["add", "-A"]);
+    sh(&remote, &["commit", "-qm", "theirs"]);
+    write(&dir, "mine.txt", "mine\n");
+    sh(&dir, &["add", "-A"]);
+    sh(&dir, &["commit", "-qm", "mine"]);
+    write(&dir, "a.txt", "uncommitted\n");
+    assert!(r.pull().is_err(), "a fast-forward-only pull refuses");
+    r.pull_rebase().unwrap();
+    assert_eq!(sh(&dir, &["log", "--format=%s"]), "mine\ntheirs\ninit\n");
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "uncommitted\n", "what wasn't committed comes back");
+}
+
+#[test]
 fn one_file_is_stashed_or_ignored_alone() {
     let (dir, r) = repo("stash-one", &[("a.txt", "one\n"), ("b.txt", "one\n")]);
     write(&dir, "a.txt", "two\n");

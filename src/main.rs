@@ -1584,6 +1584,7 @@ impl Collate {
             .separator()
             .item(PopupItem::new("fetch", "Fetch").enabled(idle))
             .item(PopupItem::new("pull", count("Pull", behind)).enabled(idle))
+            .item(PopupItem::new("pull-rebase", "Pull, Rebasing My Commits").enabled(idle && diverged && self.operation.is_none()))
             .item(PopupItem::new("agent-rebase", format!("Rebase Onto Upstream with {}", self.settings.agent.title())).enabled(idle && diverged && self.operation.is_none()))
             .item(PopupItem::new("push", count("Push", ahead)).enabled(idle))
             .item(PopupItem::new("force-push", "Force Push…").enabled(idle && self.ahead_behind.is_some()))
@@ -1611,7 +1612,8 @@ impl Collate {
                 "undo" => s.undo_move(),
                 "fetch" => s.act_bg("Fetching…", |r| r.fetch().map(|_| "Fetched every remote".to_owned())),
                 // A pull only fast-forwards; one that can't says what can.
-                "pull" if diverged => s.say(format!("This branch and its upstream have both moved, so a pull can't fast-forward: rebase or merge, or Rebase Onto Upstream with {}", s.settings.agent.title()), true),
+                "pull" if diverged => s.say(format!("This branch and its upstream have both moved, so a pull can't fast-forward: use Pull, Rebasing My Commits, or Rebase Onto Upstream with {}", s.settings.agent.title()), true),
+                "pull-rebase" => s.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull_rebase().map(|_| "Pulled, with your commits on top".to_owned())),
                 "pull" => s.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull().map(|_| "Pulled".to_owned())),
                 "agent-rebase" => s.settle_with_agent(agent::Settle::Diverged(ahead, behind)),
                 "push" => s.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
