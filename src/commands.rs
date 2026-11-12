@@ -152,6 +152,14 @@ pub const COMMANDS: &[Command] = &[
     cmd("send-comments", "Send Comments", "Agent", "", |s| ready(s) && !s.comments.is_empty(), |s, _| s.send_comments()),
     cmd("write-message", "Write the Commit Message", "Agent", "", |s| idle(s) && s.staged > 0 && !s.writing_message, |s, _| s.write_message()),
     cmd("checkpoint", "Save a Checkpoint", "Agent", "", idle, |s, _| s.save_checkpoint()),
+    cmd("updates", "Check for Updates…", "Help", "", |s| !s.update.busy(), |s, _| {
+        // Settings' Updates section shows what the check finds, and installs it.
+        s.screen = Screen::Settings;
+        s.settings_tab = crate::SETTINGS_TABS.len() - 1;
+        s.update = crate::update::Status::Idle;
+        s.check_update();
+    }),
+    cmd("git-tool", "Use Collate for git difftool and mergetool", "Help", "", always, |s, _| s.register_git_tool()),
     cmd("palette", "Command Palette…", "Help", "cmd+shift+p", |s| s.screen != Screen::Settings && !s.modal_open(), |s, _| s.open_palette()),
     cmd("keys", "Keyboard Shortcuts", "Help", "shift+slash", |s| ready(s) || !s.has_project, |s, _| s.open_help()),
 ];

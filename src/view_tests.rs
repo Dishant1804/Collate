@@ -2422,6 +2422,19 @@ fn greyed_items_say_why() {
 }
 
 #[test]
+fn the_pull_request_preview_offers_compare() {
+    let mut rt = loaded();
+    // The watcher doesn't run in tests, so the loaded changes stand in for the branch's.
+    rt.update(|s, _| s.scope = Scope::Branch);
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    // It reads the refs off the shared repository, which only the review loop's test sets, so
+    // this only checks it's offered.
+    assert!(rt.find("compare-any").is_some(), "Compare Others… sits by the base picker");
+}
+
+#[test]
 fn the_command_palette_finds_and_runs_a_command() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);

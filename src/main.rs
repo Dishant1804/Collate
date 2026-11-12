@@ -4272,7 +4272,10 @@ fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
                 .on_close(|s: &mut Collate| s.base_open = false)
                 .on_choose(|s: &mut Collate, v: &str, _: &mut Tx| s.set_base(v))
                 .build(k, layer);
-            Some(row().key("compare").gap(8.0).items_center().child(text("Compare against").font(k.ty.text_small).color(k.c.text_muted)).child(base))
+            // Any other two ends, from here as well as the Branch menu.
+            let any = Button::new("Compare Others…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Compare any two branches, tags or commits")
+                .on_press(|s: &mut Collate| s.start_compare()).build(k).key("compare-any");
+            Some(row().key("compare").gap(8.0).items_center().child(text("Compare against").font(k.ty.text_small).color(k.c.text_muted)).child(base).child(any))
         }
         // A pull request: all of it, what changed since the reader's review, or one commit.
         Scope::History if s.pulls.pr.is_some() => {

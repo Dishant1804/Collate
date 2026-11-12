@@ -37,9 +37,9 @@ commit authors' pictures.
 | `collate fix.patch`, `git diff \| collate` | a patch |
 | `collate --merge base local remote merged` | the merge editor, for `git mergetool` |
 
-Settings > Review > Git's diff and merge tool makes `git difftool` and `git mergetool` open
-Collate. Dropping a folder on the window opens it; a patch, or two files or folders, is shown
-on its own.
+Settings > Review > Git's diff and merge tool, or Help > Use Collate for git difftool and
+mergetool, makes `git difftool` and `git mergetool` open Collate. Dropping a folder on the
+window opens it; a patch, or two files or folders, is shown on its own.
 
 ## Keys
 
