@@ -233,6 +233,8 @@ enum Ask {
     Rename(String),
     /// A tag at a commit (HEAD when `None`).
     Tag(Option<String>),
+    /// A stash of the tracked files' changes, leaving untracked ones.
+    StashTracked,
 }
 
 /// A repository change that throws work away, waiting for the reader to confirm it.
@@ -249,6 +251,10 @@ enum Risky {
     ForcePush,
     /// Put the working tree back as a checkpoint (its commit and time) had it.
     RestoreCheckpoint(String, i64),
+    /// Every tracked file back to HEAD, staged changes too.
+    DiscardTracked,
+    /// Every untracked file removed.
+    DiscardUntracked,
 }
 
 struct Notice {
@@ -999,6 +1005,7 @@ impl Collate {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
             Ask::Branch(at) => self.act_undoable("Creating the branch…", format!("the switch to {name}"), git::Back::Switch, false, move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
+            Ask::StashTracked => self.act_bg("Stashing…", move |r| r.stash_tracked(&name).map(|_| "Stashed the tracked changes".to_owned())),
             Ask::Tag(_) if name.is_empty() => {}
             Ask::Tag(at) => {
                 // `v1.2 First stable release`: the name, then an optional message.
@@ -1239,6 +1246,14 @@ impl Collate {
             }),
             Some(Risky::DeleteBranch(name, _)) => self.act_bg("Deleting the branch…", move |r| r.delete_branch(&name).map(|_| format!("Deleted {name}"))),
             Some(Risky::RestoreCheckpoint(sha, _)) => self.restore_checkpoint(sha),
+            Some(Risky::DiscardTracked) => {
+                let Some(repo) = current_repo() else { return };
+                self.after_discard(repo.discard_tracked(), "Discarded the tracked changes".to_owned());
+            }
+            Some(Risky::DiscardUntracked) => {
+                let Some(repo) = current_repo() else { return };
+                self.after_discard(repo.discard_untracked(), "Removed the untracked files".to_owned());
+            }
             None => {}
         }
     }
@@ -1396,6 +1411,42 @@ impl Collate {
 
     fn unstage_all(&mut self) {
         self.act(|r| r.unstage_all().map(|_| "Unstaged everything".to_owned()));
+    }
+
+    /// The staging panel's ⌄ menu, as Zed's: what acts on every change at once, with what
+    /// throws work away (which asks) last.
+    fn changes_menu(&mut self, anchor: &str, tx: &mut Tx) {
+        let idle = self.busy.is_none();
+        let newest = current_repo().and_then(|r| r.stashes().into_iter().next());
+        let any = self.total > 0;
+        // The list knows a file is untracked only where it's listed: not in Staged.
+        let untracked = self.scope == Scope::Staged || self.info.iter().any(|i| !i.in_base && i.staged == Staged::No);
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("stage", "Stage All").enabled(self.unstaged > 0))
+            .item(PopupItem::new("unstage", "Unstage All").enabled(self.staged > 0))
+            .separator()
+            .item(PopupItem::new("stash", "Stash All…").enabled(any && idle))
+            .item(PopupItem::new("stash-tracked", "Stash Tracked…").enabled(any && idle))
+            .item(PopupItem::new("pop", "Stash Pop").enabled(newest.is_some() && idle))
+            .item(PopupItem::new("show", "View Stash").enabled(newest.is_some()))
+            .separator()
+            .item(PopupItem::new("discard-tracked", "Discard Tracked Changes…").enabled(any))
+            .item(PopupItem::new("discard-untracked", "Remove Untracked Files…").enabled(any && untracked));
+        tx.popup_menu(menu, anchor.to_owned(), move |s: &mut Collate, picked, _| match picked {
+            Some("stage") => s.stage_all(),
+            Some("unstage") => s.unstage_all(),
+            Some("stash") => s.ask(Ask::Stash),
+            Some("stash-tracked") => s.ask(Ask::StashTracked),
+            Some("pop") => s.act_bg("Applying the stash…", |r| r.stash_do("pop", "stash@{0}").map(|_| "Popped the newest stash".to_owned())),
+            Some("show") => {
+                if let Some(st) = &newest {
+                    s.open_commit(&st.id);
+                }
+            }
+            Some("discard-tracked") => s.risky = Some(Risky::DiscardTracked),
+            Some("discard-untracked") => s.risky = Some(Risky::DiscardUntracked),
+            _ => {}
+        });
     }
 
     fn stage_path(&mut self, path: String) {
@@ -3211,6 +3262,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
+            Ask::StashTracked => ("Stash tracked changes", "Changes to tracked files are put away and they go back to HEAD; untracked files stay.", "Stash", "Message (optional)"),
             Ask::Tag(None) => ("New tag", "Made at HEAD, here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Agent(_, true) => ("Ask the agent", "About the selected lines. It starts in a new terminal, with a checkpoint to go back to.", "Ask", "What do you want to know or change?"),
@@ -3312,6 +3364,16 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
                 format!("Restore the checkpoint from {}?", day(*time)),
                 "Every file goes back to how it was then, and files made since are removed. Commits and what's staged stay. The files as they are now are saved as a checkpoint first, so you can come back.".to_owned(),
                 "Restore",
+            ),
+            Risky::DiscardTracked => (
+                "Discard every tracked change?".to_owned(),
+                "Tracked files go back to HEAD, staged changes too, and files only added to the index are removed. Untracked files stay. Undo puts the files back, unstaged.".to_owned(),
+                "Discard",
+            ),
+            Risky::DiscardUntracked => (
+                "Remove every untracked file?".to_owned(),
+                "Files git doesn't track and doesn't ignore are deleted. Undo puts them back.".to_owned(),
+                "Remove Files",
             ),
             Risky::DeleteBranch(name, false) => (
                 format!("Delete {name}?"),
@@ -3589,8 +3651,9 @@ const PANEL_INSET: f32 = 12.0;
 /// diff's summary, the panel's filter) is a 28 pt band this far below the card's top edge.
 const COLUMN_TOP: f32 = 6.0;
 
-/// A list's bulk action: its label and what it does.
-type Bulk<'a> = (&'a str, fn(&mut Collate));
+/// A list's bulk action: its label, what it does, and whether the ⌄ of every bulk action
+/// follows it.
+type Bulk<'a> = (&'a str, fn(&mut Collate), bool);
 
 /// One list of the staging panel: a header with its count and its bulk action, then the
 /// files. A row's trailing button stages or unstages that file at once. `(key, title)` names
@@ -3629,10 +3692,19 @@ fn file_section(s: &Collate, k: &Kit, (key, title): (&'static str, &str), count:
         .px(PANEL_INSET)
         .items_center()
         .child(toggle);
-    if let Some((label, f)) = bulk.filter(|_| count > 0) {
+    let menu = bulk.is_some_and(|b| b.2);
+    if let Some((label, f, _)) = bulk.filter(|_| count > 0) {
         // A ghost button pads its label; pull it out by that much so the label, not the
         // invisible box, ends on the panel's edge with the filter above it.
-        head = head.child(Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(f).build(k).key(format!("{key}-bulk")).mr(-GHOST_PAD));
+        let bulk = Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(f).build(k).key(format!("{key}-bulk"));
+        head = head.child(if menu { bulk } else { bulk.mr(-GHOST_PAD) });
+    }
+    // Zed's split: the bulk action beside a ⌄ for the rest of what acts on every change. Its
+    // glyph, not its box, ends on the panel's edge.
+    if menu {
+        let more = IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label("More actions for every change")
+            .help("Stash, discard or unstage every change").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.changes_menu("changes-more", tx)).build(k).key("changes-more");
+        head = head.child(more.mr(-4.0));
     }
     // Folded, a list is its title alone and gives its space to the other.
     if folded {
@@ -3735,11 +3807,11 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     let foot = |p: El, lists_grow: bool| (if lists_grow { p } else { p.child(row().key("foot-spacer").w_full().grow(1.0)) }).child(commit_box(s, k));
     p = match s.scope {
         Scope::Uncommitted => p
-            .child(file_section(s, k, ("unstaged", "Unstaged Files"), unstaged_n, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged"))
+            .child(file_section(s, k, ("unstaged", "Unstaged Files"), unstaged_n, Some(("Stage All", Collate::stage_all, true)), file_list(s, k, false, Some(true)), "Nothing unstaged"))
             .child(col().key("between").w_full().h(1.0).fill(k.c.border_weak))
-            .child(file_section(s, k, ("staged", "Staged Files"), staged_n, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged yet")),
-        Scope::Unstaged => p.child(file_section(s, k, ("unstaged", "Unstaged Files"), all, Some(("Stage All", Collate::stage_all)), file_list(s, k, false, Some(true)), "Nothing unstaged")),
-        Scope::Staged => p.child(file_section(s, k, ("staged", "Staged Files"), all, Some(("Unstage All", Collate::unstage_all)), file_list(s, k, true, Some(false)), "Nothing staged")),
+            .child(file_section(s, k, ("staged", "Staged Files"), staged_n, Some(("Unstage All", Collate::unstage_all, false)), file_list(s, k, true, Some(false)), "Nothing staged yet")),
+        Scope::Unstaged => p.child(file_section(s, k, ("unstaged", "Unstaged Files"), all, Some(("Stage All", Collate::stage_all, true)), file_list(s, k, false, Some(true)), "Nothing unstaged")),
+        Scope::Staged => p.child(file_section(s, k, ("staged", "Staged Files"), all, Some(("Unstage All", Collate::unstage_all, true)), file_list(s, k, true, Some(false)), "Nothing staged")),
         Scope::Branch | Scope::History => return p.child(file_section(s, k, ("changed", "Changed Files"), all, None, file_list(s, k, false, None), "No files changed")),
     };
     let lists_grow = match s.scope {

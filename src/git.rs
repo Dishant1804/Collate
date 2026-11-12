@@ -777,16 +777,44 @@ impl Repo {
     /// Copies `path`'s working copy into `.git/collate-backup/<time>/` before it's changed, so a
     /// discard can be undone.
     pub fn backup(&self, path: &str) -> Result<PathBuf, String> {
+        self.backup_paths(&[path])
+    }
+
+    /// [`Repo::backup`] of several files into one folder, so one Undo puts them all back.
+    fn backup_paths(&self, paths: &[&str]) -> Result<PathBuf, String> {
         let git_dir = PathBuf::from(self.run(&["rev-parse", "--absolute-git-dir"], None)?);
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
         let dir = git_dir.join("collate-backup").join(stamp.to_string());
-        let src = self.root.join(path);
-        if src.is_file() {
-            let dst = dir.join(path);
-            std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| e.to_string())?;
-            std::fs::copy(&src, &dst).map_err(|e| format!("backing up {path}: {e}"))?;
+        for path in paths {
+            let src = self.root.join(path);
+            if src.is_file() {
+                let dst = dir.join(path);
+                std::fs::create_dir_all(dst.parent().unwrap()).map_err(|e| e.to_string())?;
+                std::fs::copy(&src, &dst).map_err(|e| format!("backing up {path}: {e}"))?;
+            }
         }
         Ok(dir)
+    }
+
+    /// Puts every tracked file back as HEAD has it, staged changes too; files only added to
+    /// the index go. Untracked files stay. The changed files are backed up first; returns where.
+    pub fn discard_tracked(&self) -> Result<PathBuf, String> {
+        let out = self.run(&["diff", "HEAD", "--name-only", "--no-renames", "-z"], None)?;
+        let backup = self.backup_paths(&out.split('\0').filter(|p| !p.is_empty()).collect::<Vec<_>>())?;
+        self.run(&["reset", "-q", "--hard"], None)?;
+        Ok(backup)
+    }
+
+    /// Removes every untracked file that isn't ignored, backed up first; returns where.
+    pub fn discard_untracked(&self) -> Result<PathBuf, String> {
+        let out = self.run(&["ls-files", "--others", "--exclude-standard", "-z"], None)?;
+        let paths: Vec<&str> = out.split('\0').filter(|p| !p.is_empty()).collect();
+        let backup = self.backup_paths(&paths)?;
+        for path in paths {
+            let p = self.root.join(path);
+            std::fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        Ok(backup)
     }
 
     /// Commits what's staged, or with `amend` rewrites the last commit with it; returns git's
@@ -893,6 +921,15 @@ impl Repo {
             let mut f = l.splitn(3, '\x1f');
             Some(Stash { name: f.next()?.to_owned(), id: f.next()?.to_owned(), message: f.next()?.to_owned() })
         }).collect()
+    }
+
+    /// Stashes the changes to tracked files, staged or not; untracked files stay.
+    pub fn stash_tracked(&self, message: &str) -> Result<String, String> {
+        let mut args = vec!["stash", "push"];
+        if !message.is_empty() {
+            args.extend(["-m", message]);
+        }
+        self.run(&args, None)
     }
 
     /// Applies a stash (`pop` also drops it), or with `how` "drop" only drops it.

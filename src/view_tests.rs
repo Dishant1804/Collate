@@ -557,6 +557,16 @@ fn the_sidebar_switches_views_and_the_file_menu_acts() {
     rt.resolve_popup(Some("viewed")).unwrap();
     rt.frame(1.0 / 60.0);
     assert!(rt.state.is_viewed(0), "picking Viewed marks the file");
+    // Stage All's ⌄ holds what acts on every change; what throws work away asks first.
+    click(&mut rt, "changes-more");
+    let menu = rt.popup_menu().expect("the changes menu opened");
+    for id in ["stage", "unstage", "stash", "stash-tracked", "pop", "show", "discard-tracked", "discard-untracked"] {
+        assert!(menu.find(id).is_some(), "the changes menu has {id}");
+    }
+    rt.resolve_popup(Some("discard-tracked")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.risky, Some(Risky::DiscardTracked), "Discard Tracked Changes asks first");
+    rt.update(|s, _| s.risky = None);
 }
 
 #[test]
@@ -659,8 +669,10 @@ fn the_staging_panel_lines_up() {
     let right = panel[0] + panel[2] - PANEL_INSET;
     assert!((filter[0] - left).abs() < 1.0, "the filter starts on the inset: {} vs {left}", filter[0]);
     assert!((filter[0] + filter[2] - right).abs() < 1.0, "and ends on it: {} vs {right}", filter[0] + filter[2]);
-    let label_end = bulk[0] + bulk[2] - GHOST_PAD;
-    assert!((label_end - right).abs() < 1.5, "Stage All's label ends on the same edge: {label_end} vs {right}");
+    // Stage All sits against its ⌄, whose box is pulled 4 pt past the edge so its glyph ends on it.
+    let more = rect("changes-more");
+    assert!((bulk[0] + bulk[2] - more[0]).abs() < 1.0, "Stage All meets its ⌄: {bulk:?} vs {more:?}");
+    assert!((more[0] + more[2] - 4.0 - right).abs() < 1.0, "the ⌄ ends on the same edge: {} vs {right}", more[0] + more[2] - 4.0);
     assert!((filter[3] - search[3]).abs() < 0.5, "the filter is as tall as the diff's search");
     // A row's chevron: its ink (4.5 pt into its 16 pt box) starts on the inset. `find`
     // takes a path (the key alone also matches the diff's chevrons) and gives the centre.

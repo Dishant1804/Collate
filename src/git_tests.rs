@@ -128,6 +128,35 @@ fn discarding_a_hunk_reverts_it_on_disk_and_keeps_a_backup() {
 }
 
 #[test]
+fn discarding_tracked_and_untracked_files_keeps_a_backup_of_each() {
+    let (dir, r) = repo("discard-all", &[("a.txt", "one\n"), ("b.txt", "two\n")]);
+    write(&dir, "a.txt", "one changed\n");
+    write(&dir, "b.txt", "two changed\n");
+    r.stage("b.txt").unwrap();
+    write(&dir, "new/c.txt", "new\n");
+    let backup = r.discard_tracked().unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+    assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "two\n", "staged changes go too");
+    assert!(dir.join("new/c.txt").exists(), "untracked files stay");
+    assert_eq!(std::fs::read_to_string(backup.join("b.txt")).unwrap(), "two changed\n");
+    let backup = r.discard_untracked().unwrap();
+    assert!(!dir.join("new/c.txt").exists());
+    assert_eq!(std::fs::read_to_string(backup.join("new/c.txt")).unwrap(), "new\n");
+    assert_eq!(r.restore(&backup).unwrap(), 1);
+    assert!(dir.join("new/c.txt").exists(), "Undo puts it back");
+}
+
+#[test]
+fn stashing_tracked_changes_leaves_untracked_files() {
+    let (dir, r) = repo("stash-tracked", &[("a.txt", "one\n")]);
+    write(&dir, "a.txt", "one\ntwo\n");
+    write(&dir, "c.txt", "new\n");
+    r.stash_tracked("").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+    assert!(dir.join("c.txt").exists());
+}
+
+#[test]
 fn a_change_at_the_end_without_a_newline_stages() {
     let (dir, r) = repo("eof", &[("b.txt", "one\ntwo")]);
     write(&dir, "b.txt", "one\nTWO");
