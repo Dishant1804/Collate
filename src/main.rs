@@ -3045,10 +3045,12 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         Some(bar) => col().key("with-operation").w_full().grow(1.0).min_h(0.0).child(bar).child(body),
         None => body,
     };
-    let body = match status_bar(s, k) {
-        Some(bar) => col().key("body").w_full().grow(1.0).min_h(0.0).child(body).child(bar),
-        None => body,
-    };
+    // Always wrapped, so the bar coming and going doesn't move the body to a new path, which
+    // would reset the diff's scroll.
+    let mut body = col().key("body").w_full().grow(1.0).min_h(0.0).child(body);
+    if let Some(bar) = status_bar(s, k) {
+        body = body.child(bar);
+    }
     let body = if s.terminals.open && s.has_project {
         let window_h = rune::memo::layout_with("window", |r| r[3]).unwrap_or(840.0);
         let drawer = terminal::drawer(&s.terminals, k, window_h, |s: &mut Collate| &mut s.terminals, |s: &mut Collate| s.new_terminal());
