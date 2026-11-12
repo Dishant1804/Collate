@@ -53,7 +53,7 @@ pub fn history_graph(s: &Collate, k: &Kit) -> El {
     let refresh = IconButton::new(&REFRESH_ICON)
         .variant(IconButtonVariant::GhostMuted)
         .label("Refresh history")
-        .help("Read the history again (⌘R)")
+        .help("Read the history again").shortcut("⌘R")
         .on_press(|s: &mut Collate| { s.load_history(); refresh(); })
         .build(k)
         .key("graph-refresh");
@@ -168,7 +168,7 @@ pub fn commit_card(s: &Collate, k: &Kit) -> Option<El> {
 /// the hash to copy.
 pub fn commit_header(s: &Collate, k: &Kit) -> El {
     let back = Button::new("‹ All Commits").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-        .help("Back to the commit list (Esc)")
+        .help("Back to the commit list").shortcut("Esc")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_commit_diff(tx)).build(k).key("history-back");
     let mut r = row().key("commit-header").w_full().px(EDGE).py(10.0).gap(12.0).items_center().child(back.ml(-GHOST_PAD));
     if let Some(range) = s.commit.as_deref().filter(|c| c.contains("..")) {

@@ -136,8 +136,8 @@ pub fn comment_row(s: &Collate, k: &Kit, n: usize) -> El {
     let head = row().w_full().gap(8.0).items_center()
         .child(text("Comment".to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted))
         .child(text(day(c.time)).font(k.ty.text_small).color(k.c.text_faint).grow(1.0))
-        .child(action(k, "edit", "Edit", "Change this comment", false, move |s| s.edit_comment(n)))
-        .child(action(k, "delete", "Delete", "Delete this comment", true, move |s| s.delete_comment(n)).mr(-GHOST_PAD));
+        .child(action(k, "edit", "Edit", "Change this comment", "", false, move |s| s.edit_comment(n)))
+        .child(action(k, "delete", "Delete", "Delete this comment", "", true, move |s| s.delete_comment(n)).mr(-GHOST_PAD));
     let bubble = col().key("bubble").w_full().max_w(720.0).px(12.0).py(8.0).gap(4.0).radius(k.radius.md)
         .border(1.0, k.c.border_weak).fill(k.alpha(k.c.text_accent, 0.06))
         .child(head)

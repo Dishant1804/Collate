@@ -3034,8 +3034,12 @@ fn welcome(s: &Collate, k: &Kit) -> El {
 }
 
 /// A small text button for file and hunk actions.
-fn action(k: &Kit, key: &str, label: &str, help: &str, danger: bool, f: impl Fn(&mut Collate) + 'static) -> El {
-    let b = Button::new(label.to_owned()).variant(if danger { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost }).control_size(ControlSize::Small).help(help.to_owned());
+/// `keys`, when not empty, is its shortcut, shown in its tooltip.
+fn action(k: &Kit, key: &str, label: &str, help: &str, keys: &str, danger: bool, f: impl Fn(&mut Collate) + 'static) -> El {
+    let mut b = Button::new(label.to_owned()).variant(if danger { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost }).control_size(ControlSize::Small).help(help.to_owned());
+    if !keys.is_empty() {
+        b = b.shortcut(keys.to_owned());
+    }
     b.on_press(f).build(k).key(key.to_owned())
 }
 
@@ -3052,15 +3056,15 @@ fn selection_bar(s: &Collate, k: &Kit) -> Option<El> {
     let agent = s.settings.agent.title();
     let copy = Button::new("Copy…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Copy the lines' reference (y), or the lines for an agent (Y)")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.copy_menu(tx)).build(k).key("copy-sel");
-    let close = IconButton::new(&rune_kit::glyphs::CLOSE).variant(IconButtonVariant::GhostMuted).label("Clear the selection").help("Clear the selection (Esc)")
+    let close = IconButton::new(&rune_kit::glyphs::CLOSE).variant(IconButtonVariant::GhostMuted).label("Clear the selection").help("Clear the selection").shortcut("Esc")
         .on_press(|s: &mut Collate| s.diff.set_selection(None)).build(k).key("selection-clear");
     let bar = row().key("selection-bar").h(36.0).pl(12.0).pr(4.0).gap(4.0).items_center().radius(k.radius.md)
         .border(1.0, k.c.border_weak).fill(k.c.bg_base);
     let bar = k.elevate(bar, &k.elevation.floating)
         .role("toolbar").label(format!("{what}: {reference}"))
         .child(text(what).font(k.ty.text_xsmall_medium).color(k.c.text_muted).mr(8.0))
-        .child(action(k, "comment", "Comment…", "Comment under the last selected line (c)", false, |s| s.ask_comment()))
-        .child(action(k, "ask-agent", &format!("Ask {agent}…"), &format!("Ask {agent} about these lines, or to change them (i)"), false, |s| s.ask_question()))
+        .child(action(k, "comment", "Comment…", "Comment under the last selected line", "c", false, |s| s.ask_comment()))
+        .child(action(k, "ask-agent", &format!("Ask {agent}…"), &format!("Ask {agent} about these lines, or to change them"), "i", false, |s| s.ask_question()))
         .child(copy)
         .child(close);
     // Over the diff's foot, clear of the edge.
@@ -3088,15 +3092,15 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
     let staged = s.info.get(f).map_or(Staged::No, |i| i.staged);
     if s.info.get(f).is_some_and(|i| i.conflicted) && !s.scope.read_only() {
         // A merge stopped on this file: settle it with a side, both, or by hand and mark it.
-        let keep = |key: &str, label: &str, help: &str, how: patch::Keep| action(k, key, label, help, false, move |s| s.resolve(f, None, how));
+        let keep = |key: &str, label: &str, help: &str, how: patch::Keep| action(k, key, label, help, "", false, move |s| s.resolve(f, None, how));
         r = r.child(row().key("conflict").h(20.0).px(6.0).mr(4.0).items_center().radius(4.0).fill(k.alpha(k.c.danger.fg, 0.14))
                 .help("A merge couldn't combine both sides' changes here. Keep a side, both, or edit it and mark it resolved.")
                 .child(text("Conflict").font(k.ty.text_xsmall_medium).color(k.c.danger.fg)))
-            .child(action(k, "merge-editor", "Merge…", "Settle each conflict side by side, line by line, in the merge editor", false, move |s| s.open_merge(f)))
+            .child(action(k, "merge-editor", "Merge…", "Settle each conflict side by side, line by line, in the merge editor", "", false, move |s| s.open_merge(f)))
             .child(keep("ours", "Use Ours", "Keep this branch's version of the whole file, and mark it resolved", patch::Keep::Ours))
             .child(keep("theirs", "Use Theirs", "Keep the incoming version of the whole file, and mark it resolved", patch::Keep::Theirs))
             .child(keep("both", "Use Both", "Keep both sides of every conflict, ours first, and mark it resolved", patch::Keep::Both))
-            .child(action(k, "resolved", "Mark Resolved", "Stage the file as it is now", false, move |s| s.stage_file(f)));
+            .child(action(k, "resolved", "Mark Resolved", "Stage the file as it is now", "", false, move |s| s.stage_file(f)));
         let more_key = format!("file-more-{f}");
         let anchor = more_key.clone();
         let more = IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).label("More actions for this file").help("More actions")
@@ -3104,9 +3108,9 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
         return r.child(more).child(viewed_toggle(k, f, s.is_viewed(f)));
     }
     let primary = match s.scope {
-        Scope::Uncommitted if staged == Staged::Fully => Some(action(k, "unstage", "Unstage File", "Unstage the whole file (U)", false, move |s| s.unstage_file(f))),
-        Scope::Uncommitted | Scope::Unstaged => Some(action(k, "stage", "Stage File", "Stage the whole file (A)", false, move |s| s.stage_file(f))),
-        Scope::Staged => Some(action(k, "unstage", "Unstage File", "Unstage the whole file (U)", false, move |s| s.unstage_file(f))),
+        Scope::Uncommitted if staged == Staged::Fully => Some(action(k, "unstage", "Unstage File", "Unstage the whole file", "U", false, move |s| s.unstage_file(f))),
+        Scope::Uncommitted | Scope::Unstaged => Some(action(k, "stage", "Stage File", "Stage the whole file", "A", false, move |s| s.stage_file(f))),
+        Scope::Staged => Some(action(k, "unstage", "Unstage File", "Unstage the whole file", "U", false, move |s| s.unstage_file(f))),
         Scope::Branch | Scope::History => None,
     };
     if let Some(p) = primary {
@@ -3139,7 +3143,7 @@ fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
     let conflict = s.info.get(f).is_some_and(|i| i.conflicted)
         && s.diff.files().get(f).and_then(|file| file.hunks.get(h)).is_some_and(|hunk| hunk.lines.iter().any(|l| l.text.starts_with("<<<<<<<")));
     if conflict && s.scope != Scope::Staged {
-        let keep = |key: &str, label: &str, help: &str, how: patch::Keep| action(k, key, label, help, false, move |s| s.resolve(f, Some(h), how));
+        let keep = |key: &str, label: &str, help: &str, how: patch::Keep| action(k, key, label, help, "", false, move |s| s.resolve(f, Some(h), how));
         return r
             .child(keep("ours", "Ours", "Keep this branch's side of the conflicts in this hunk", patch::Keep::Ours))
             .child(keep("theirs", "Theirs", "Keep the incoming side of the conflicts in this hunk", patch::Keep::Theirs))
@@ -3148,17 +3152,17 @@ fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
     // With lines selected in this hunk, its actions act on them alone.
     let lines = s.picked(f, h).is_some();
     let (st, un, di) = if lines { ("Stage Lines", "Unstage Lines", "Discard Lines…") } else { ("Stage Hunk", "Unstage Hunk", "Discard Hunk…") };
-    let stage = action(k, "stage", st, "Stage (a)", false, move |s| {
+    let stage = action(k, "stage", st, "Stage", "a", false, move |s| {
         let p = s.picked(f, h);
         s.stage_hunk(f, h, p)
     });
-    let unstage = action(k, "unstage", un, "Unstage (u)", false, move |s| {
+    let unstage = action(k, "unstage", un, "Unstage", "u", false, move |s| {
         let p = s.picked(f, h);
         s.unstage_hunk(f, h, p)
     });
-    let discard = action(k, "discard", di, "Discard (x); asks first", true, move |s| s.ask_discard(f, Some(h)));
+    let discard = action(k, "discard", di, "Discard; asks first", "x", true, move |s| s.ask_discard(f, Some(h)));
     let words = s.word_candidate().filter(|w| w.file == f && w.hunk == h).is_some();
-    let r = if words { r.child(action(k, "words", "Pick Words…", "Stage, unstage or discard single word changes in this line (p)", false, |s| s.pick_words())) } else { r };
+    let r = if words { r.child(action(k, "words", "Pick Words…", "Stage, unstage or discard single word changes in this line", "p", false, |s| s.pick_words())) } else { r };
     match s.scope {
         // All of a file staged: its HEAD → working tree hunks are exactly what's in the index.
         Scope::Uncommitted if staged == Staged::Fully => r.child(unstage).child(discard),
@@ -3225,7 +3229,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .variant(IconButtonVariant::GhostMuted)
         .expanded(s.inspector.is_open())
         .label(if s.inspector.is_open() { "Hide staging panel" } else { "Show staging panel" })
-        .help("Staging panel (⌥⌘0)")
+        .help("Staging panel").shortcut("⌥⌘0")
         .on_press(|s: &mut Collate| s.inspector.toggle())
         .build(k)
         .key("panel-toggle");
@@ -3249,7 +3253,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     // No title: the sidebar already marks the view shown.
     let toolbar = Toolbar::new()
         .leading(leading)
-        .trailing(row().gap(6.0).items_center().child(toolbar_search(s, k, layer)).child(modes.build(k)).child(term).child(panel).child(more));
+        .trailing(row().gap(6.0).items_center().child(toolbar_search(s, k, layer)).child(modes.build(k).help("Diff layout").help_keys(["s"])).child(term).child(panel).child(more));
 
     let n = s.diff.files().len();
     let body = if !s.has_project {
@@ -3820,6 +3824,7 @@ const NAV_W: f32 = 24.0 * 2.0 + 2.0;
 /// isn't committed; Review is what is.
 fn views_sidebar(s: &Collate, k: &Kit) -> El {
     let place = |key: &str, label: &str, glyph: &'static Icon, scope: Scope, badge: Option<usize>, detail: Option<String>| {
+        let number = Scope::ALL.iter().position(|&a| a == scope).map_or(0, |i| i + 1);
         let elsewhere = s.map.open || s.pulls.open || s.pulls.pr.is_some();
         let mut r = SidebarRow::new(label.to_owned()).icon(glyph).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| s.show_scope(scope));
         if let Some(n) = badge.filter(|&n| n > 0) {
@@ -3828,7 +3833,7 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
         if let Some(d) = detail {
             r = r.detail(d);
         }
-        r.build(k).key(key.to_owned())
+        r.build(k).key(key.to_owned()).help(format!("Show {label}")).help_keys([number.to_string()])
     };
     let working = SidebarSection::new("Working Copy").rows([
         place("view-all", "All Changes", &ALL_ICON, Scope::Uncommitted, Some(s.total), None),
@@ -3843,7 +3848,7 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
             if s.pulls.asked() > 0 {
                 r = r.badge(s.pulls.asked().to_string());
             }
-            r.build(k).key("view-pulls")
+            r.build(k).key("view-pulls").help("The repository's open pull requests")
         },
         // The whole repository, with this view's changes on it.
         SidebarRow::new("Map").icon(&MAP_ICON).selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
@@ -4182,8 +4187,8 @@ fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
         }
         Scope::History => {
             let at = s.commit.as_ref().and_then(|c| s.commit_ids.iter().position(|x| x == c));
-            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help("Older commit (<)").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).key("older");
-            let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help("Newer commit (>)").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).key("newer");
+            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help("Older commit").shortcut("<").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).key("older");
+            let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help("Newer commit").shortcut(">").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).key("newer");
             Some(row().key("compare").gap(6.0).items_center().child(older).child(newer))
         }
         _ => None,
@@ -4416,7 +4421,7 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
     if note.end.is_some() {
         r = r
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Keep the terminal running").on_press(|s: &mut Collate| s.notice = None).build(k).key("end-cancel"))
-            .child(Button::new("End Terminal").variant(ButtonVariant::Danger).control_size(ControlSize::Small).help("End the shell and what runs in it (⌘W)").on_press(|s: &mut Collate| s.confirm_end_terminal()).build(k).key("end-terminal"));
+            .child(Button::new("End Terminal").variant(ButtonVariant::Danger).control_size(ControlSize::Small).help("End the shell and what runs in it").shortcut("⌘W").on_press(|s: &mut Collate| s.confirm_end_terminal()).build(k).key("end-terminal"));
     }
     Some(r)
 }
@@ -4462,7 +4467,8 @@ fn viewed_toggle(k: &Kit, f: usize, viewed: bool) -> El {
         .role("checkbox")
         .label("Viewed")
         .checked(viewed)
-        .help(if viewed { "Mark as not viewed (v)" } else { "Mark as viewed (v)" })
+        .help(if viewed { "Mark as not viewed" } else { "Mark as viewed" })
+        .help_keys(["v"])
         .on_press_tx(move |s: &mut Collate, tx| s.toggle_viewed(f, tx))
         .child(icon(k.glyph.check_small, 14.0).color(glyph))
 }
@@ -4548,7 +4554,8 @@ fn find_extras(s: &Collate, k: &Kit) -> El {
             .cursor(Cursor::Pointer)
             .role("checkbox")
             .label(format!("{name}{}", if on { ", on" } else { ", off" }))
-            .help(format!("{name} ({keys})"))
+            .help(name.to_owned())
+            .help_keys([keys])
             .on_press(move |s: &mut Collate| s.search_option(flip))
     };
     row()
