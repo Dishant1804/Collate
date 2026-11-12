@@ -907,11 +907,38 @@ impl Repo {
 
     /// Stashes every change, untracked files included.
     pub fn stash(&self, message: &str) -> Result<String, String> {
+        self.stash_paths(message, &[])
+    }
+
+    /// Stashes the changes to `paths` alone, untracked ones too; every change when it's empty.
+    pub fn stash_paths(&self, message: &str, paths: &[&str]) -> Result<String, String> {
         let mut args = vec!["stash", "push", "-u"];
         if !message.is_empty() {
             args.extend(["-m", message]);
         }
+        if !paths.is_empty() {
+            args.push("--");
+            args.extend(paths);
+        }
         self.run(&args, None)
+    }
+
+    /// Adds `path` to the repository's top `.gitignore`, anchored to the root so it names
+    /// this file and not every file of that name.
+    pub fn ignore(&self, path: &str) -> Result<String, String> {
+        let file = self.root.join(".gitignore");
+        let mut text = std::fs::read_to_string(&file).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(String::new()) } else { Err(e.to_string()) })?;
+        let line = format!("/{path}");
+        if text.lines().any(|l| l.trim() == line) {
+            return Ok(String::new());
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&line);
+        text.push('\n');
+        std::fs::write(&file, text).map_err(|e| format!(".gitignore: {e}"))?;
+        Ok(String::new())
     }
 
     /// The stashes, newest first: their name (`stash@{0}`), commit and message.

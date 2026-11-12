@@ -233,6 +233,8 @@ enum Ask {
     Rename(String),
     /// A tag at a commit (HEAD when `None`).
     Tag(Option<String>),
+    /// A stash of one file's changes, by its path.
+    StashFile(String),
     /// A stash of the tracked files' changes, leaving untracked ones.
     StashTracked,
 }
@@ -1005,6 +1007,7 @@ impl Collate {
             Ask::Branch(_) if name.is_empty() => self.say("A branch needs a name", true),
             Ask::Branch(at) => self.act_undoable("Creating the branch…", format!("the switch to {name}"), git::Back::Switch, false, move |r| r.new_branch(&name, at.as_deref(), true).map(|_| format!("Switched to the new branch {name}"))),
             Ask::Stash => self.act_bg("Stashing…", move |r| r.stash(&name).map(|_| "Stashed every change".to_owned())),
+            Ask::StashFile(path) => self.act_bg("Stashing…", move |r| r.stash_paths(&name, &[&path]).map(|_| format!("Stashed {path}"))),
             Ask::StashTracked => self.act_bg("Stashing…", move |r| r.stash_tracked(&name).map(|_| "Stashed the tracked changes".to_owned())),
             Ask::Tag(_) if name.is_empty() => {}
             Ask::Tag(at) => {
@@ -1480,7 +1483,12 @@ impl Collate {
             .item(PopupItem::new("blame", "Blame").enabled(file.new_path.is_some()))
             .item(PopupItem::new("log", "File History"));
         if matches!(self.scope, Scope::Uncommitted | Scope::Unstaged) {
-            menu = menu.separator().item(PopupItem::new("discard", "Discard Changes…"));
+            // Untracked: neither in the base nor staged.
+            let untracked = !info.in_base && info.staged == Staged::No;
+            menu = menu.separator()
+                .item(PopupItem::new("stash", "Stash File…"))
+                .item(PopupItem::new("ignore", "Ignore File").enabled(untracked))
+                .item(PopupItem::new("discard", "Discard Changes…"));
         }
         tx.popup_menu(menu, anchor.to_owned(), move |s: &mut Collate, picked, tx| match picked {
             Some("stage") => s.stage_file(f),
@@ -1494,6 +1502,11 @@ impl Collate {
             Some("blame") => s.show_blame(f),
             Some("log") => s.show_file_log(f),
             Some("discard") => s.ask_discard(f, None),
+            Some("stash") => s.ask(Ask::StashFile(path.clone())),
+            Some("ignore") => {
+                let path = path.clone();
+                s.act(move |r| r.ignore(&path).map(|_| format!("Ignored {path}: it's in .gitignore")));
+            }
             _ => {}
         });
     }
@@ -3262,6 +3275,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Branch(None) => ("New branch", "Made at HEAD and switched to. What isn't committed comes along.", "Create Branch", "Branch name"),
             Ask::Branch(Some(_)) => ("New branch here", "Made at this commit and switched to.", "Create Branch", "Branch name"),
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
+            Ask::StashFile(_) => ("Stash this file", "Its changes are put away and it goes back to HEAD; the other files stay as they are.", "Stash", "Message (optional)"),
             Ask::StashTracked => ("Stash tracked changes", "Changes to tracked files are put away and they go back to HEAD; untracked files stay.", "Stash", "Message (optional)"),
             Ask::Tag(None) => ("New tag", "Made at HEAD, here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),

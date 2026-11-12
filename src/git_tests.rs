@@ -704,6 +704,22 @@ fn force_push_replaces_a_rewritten_branch_unless_the_remote_moved() {
 }
 
 #[test]
+fn one_file_is_stashed_or_ignored_alone() {
+    let (dir, r) = repo("stash-one", &[("a.txt", "one\n"), ("b.txt", "one\n")]);
+    write(&dir, "a.txt", "two\n");
+    write(&dir, "b.txt", "two\n");
+    r.stash_paths("just a", &["a.txt"]).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+    assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "two\n", "the other file stays");
+    write(&dir, "build/out.log", "x\n");
+    write(&dir, ".gitignore", "*.tmp");
+    r.ignore("build/out.log").unwrap();
+    r.ignore("build/out.log").unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), "*.tmp\n/build/out.log\n", "once, on its own line");
+    assert!(!sh(&dir, &["status", "--porcelain"]).contains("out.log"));
+}
+
+#[test]
 fn operations_that_move_head_undo() {
     use crate::git::Back;
     let (dir, r) = repo("undo", &[("a.txt", "one\n")]);
