@@ -589,10 +589,10 @@ fn picking_a_theme_in_settings_repaints_the_app_and_the_code() {
     assert!(rt.find("theme-preview").is_some(), "the chosen theme shows");
     let pick = |rt: &mut Runtime<Collate>, t: crate::themes::Theme| {
         click(rt, "theme-trigger");
-        assert!(rt.state.theme_open, "the dropdown opens");
+        assert_eq!(rt.state.settings_menu, Some("theme"), "the dropdown opens");
         let i = crate::themes::Theme::ALL.iter().position(|x| *x == t).unwrap();
         click(rt, &format!("option{i}"));
-        assert!(!rt.state.theme_open, "and closes on a choice");
+        assert_eq!(rt.state.settings_menu, None, "and closes on a choice");
         assert_eq!(rt.state.settings.theme, t);
     };
     let was = rt.state.diff.style();
@@ -2098,4 +2098,40 @@ fn a_long_dialog_description_wraps_inside_the_dialog() {
     assert!(what[3] > 20.0, "it wraps onto a second line: {what:?}");
     assert!(close[0] + close[2] <= right, "the close button is in the dialog: {close:?} in {dialog:?}");
     assert!((field[0] - dialog[0] - EDGE).abs() < 0.5 && (right - field[0] - field[2] - EDGE).abs() < 0.5, "the field is inset like the title: {field:?} in {dialog:?}");
+}
+
+#[test]
+fn the_theme_menu_opens_under_its_dropdown() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.screen = Screen::Settings;
+        s.settings_menu = Some("theme");
+    });
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+    let (trigger, menu) = (rect("theme-trigger"), rect("theme-content"));
+    assert!(menu[1] >= trigger[1] + trigger[3] && menu[1] < trigger[1] + trigger[3] + 8.0, "the menu starts just under the dropdown: {menu:?} under {trigger:?}");
+    assert!((menu[0] - trigger[0]).abs() < 0.5 && (menu[2] - trigger[2]).abs() < 0.5, "and as wide as it: {menu:?} under {trigger:?}");
+}
+
+#[test]
+fn a_setting_with_more_than_three_choices_is_a_dropdown() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.screen = Screen::Settings;
+        s.settings_tab = 1;
+    });
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("layout-trigger").is_none(), "two choices stay a segmented control");
+    click(&mut rt, "context-trigger");
+    assert_eq!(rt.state.settings_menu, Some("context"), "four choices are a dropdown");
+    let rect = |rt: &Runtime<Collate>, key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+    let (trigger, menu) = (rect(&rt, "context-trigger"), rect(&rt, "context-content"));
+    assert!((menu[0] - trigger[0]).abs() < 0.5 && (menu[2] - trigger[2]).abs() < 0.5 && menu[1] >= trigger[1] + trigger[3], "its menu opens under it, as wide: {menu:?} under {trigger:?}");
+    click(&mut rt, "option1");
+    assert_eq!((rt.state.settings_menu, rt.state.settings.context), (None, crate::settings::CONTEXT_LINES[1]), "a choice applies and closes it");
 }

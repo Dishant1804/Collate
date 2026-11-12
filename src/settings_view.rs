@@ -72,12 +72,12 @@ fn languages_settings(s: &Collate, k: &Kit) -> Vec<El> {
 
 /// The Agent section: which agent CLI Collate hands work to, how it runs it, and the files
 /// that tell it what to ask and how to write.
-fn agent_settings(s: &Collate, k: &Kit) -> Vec<El> {
+fn agent_settings(s: &Collate, k: &Kit, menus: &mut Vec<El>) -> Vec<El> {
     let st = &s.settings;
     let edit = |key: &'static str, pick: &'static str| Button::new("Edit…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Open the file in the editor from Review settings").on_press(move |s: &mut Collate| s.agent_menu_pick(pick)).build(k).key(key);
     let runs = format!("{} in the terminal under the diff (⌘J); {} for what it fills in, like a commit message", st.agent.command(), st.agent.print_command());
     vec![
-        setting(k, "agent", "Coding agent", &[], "Gets your comments, review questions, commit messages and conflicts; it never pushes", pick(k, &Agent::ALL.map(Agent::title), &Agent::ALL, st.agent, |c, v| c.agent = v)),
+        setting(k, "agent", "Coding agent", &[], "Gets your comments, review questions, commit messages and conflicts; it never pushes", pick(s, k, menus, "agent", "Coding agent", &Agent::ALL.map(Agent::title), &Agent::ALL, st.agent, |c, v| c.agent = v)),
         setting(k, "agent-runs", "Runs as", &[], &runs, row()),
         setting(k, "agent-checkpoint", "Checkpoint first", &[], "The working tree is saved before the agent starts, to restore from Checkpoints in the sidebar", row()),
         setting(k, "agent-questions", "Review questions", &[], "What Review Change asks about the change in view, one a line", edit("edit-questions", "ask:edit")),
@@ -86,7 +86,7 @@ fn agent_settings(s: &Collate, k: &Kit) -> Vec<El> {
 }
 
 /// The Updates section: the running version and how it stands, then how updates come.
-fn update_settings(s: &Collate, k: &Kit) -> Vec<El> {
+fn update_settings(s: &Collate, k: &Kit, menus: &mut Vec<El>) -> Vec<El> {
     use update::Status;
     static CHANNELS: [Channel; 2] = [Channel::Release, Channel::Source];
     let st = &s.settings;
@@ -118,15 +118,51 @@ fn update_settings(s: &Collate, k: &Kit) -> Vec<El> {
         row().key("version").w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(button.control_size(ControlSize::Small).build(k))),
         setting(k, "check", "Check for updates", &[], "Look for a new version when Collate opens and every few hours", switch(k, "Check for updates", st.check_updates, |c, v| c.check_updates = v)),
         setting(k, "auto-update", "Install automatically", &[], "Install a new version in the background; it opens when Collate next starts", switch(k, "Install automatically", st.auto_update, |c, v| c.auto_update = v)),
-        setting(k, "from", "Update from", &[], "Latest source builds the newest commit on main, which needs Rust", pick(k, &["Releases", "Latest source"], &CHANNELS, st.update_from, |c, v| c.update_from = v)),
+        setting(k, "from", "Update from", &[], "Latest source builds the newest commit on main, which needs Rust", pick(s, k, menus, "from", "Update from", &["Releases", "Latest source"], &CHANNELS, st.update_from, |c, v| c.update_from = v)),
     ]
 }
 
-fn pick<T: Copy + PartialEq + 'static>(k: &Kit, labels: &[&str], values: &'static [T], current: T, set: fn(&mut Settings, T)) -> El {
-    SegmentedControl::new(labels, values.iter().position(|v| *v == current))
+#[allow(clippy::too_many_arguments)]
+fn pick<T: Copy + PartialEq + 'static>(s: &Collate, k: &Kit, menus: &mut Vec<El>, key: &'static str, title: &str, labels: &[&str], values: &'static [T], current: T, set: fn(&mut Settings, T)) -> El {
+    let at = values.iter().position(|v| *v == current);
+    // More than three segments crowd the row and read as tabs: past that, a dropdown.
+    if labels.len() > 3 {
+        let current = at.map(|i| labels[i]);
+        return dropdown(s, k, menus, key, title, labels, current, move |s: &mut Collate, i| s.configure(|c| set(c, values[i])));
+    }
+    SegmentedControl::new(labels, at)
         .fit()
         .on_pick(move |s: &mut Collate, i, _: &mut Tx| s.configure(|c| set(c, values[i])))
         .build(k)
+}
+
+/// A settings dropdown, `THEME_W` wide, its menu as wide and opening under it. `key` names it
+/// in `Collate::settings_menu` while it's open; `choose` gets the picked option's index.
+#[allow(clippy::too_many_arguments)]
+fn dropdown(s: &Collate, k: &Kit, menus: &mut Vec<El>, key: &'static str, title: &str, labels: &[&str], current: Option<&str>, choose: impl Fn(&mut Collate, usize) + Clone + 'static) -> El {
+    let open = s.settings_menu == Some(key);
+    let owned: Vec<String> = labels.iter().map(|l| (*l).to_owned()).collect();
+    let select = Select::new(key, labels)
+        .appearance(SelectAppearance::Field)
+        .width(THEME_W)
+        .current(current)
+        .label(title.to_owned())
+        .open(open)
+        .on_toggle(move |s: &mut Collate| s.settings_menu = if s.settings_menu == Some(key) { None } else { Some(key) })
+        .on_close(|s: &mut Collate| s.settings_menu = None)
+        .on_choose(move |s: &mut Collate, v: &str, _: &mut Tx| {
+            s.settings_menu = None;
+            if let Some(i) = owned.iter().position(|l| l == v) {
+                choose(s, i);
+            }
+        })
+        .build(k, menus);
+    // The kit's menu is at least 160 wide and ends on the trigger's right edge; as wide as the
+    // trigger, it reads as the dropdown opening. The menu is the last thing the select layers.
+    if open && let Some(menu) = menus.pop() {
+        menus.push(menu.w(THEME_W));
+    }
+    select
 }
 
 /// The Theme setting: a dropdown of every theme, and under it a preview of the chosen one.
@@ -156,21 +192,7 @@ fn theme_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
     }
     let preview = row().key("theme-preview").w(THEME_W).padding(1.0).radius(k.radius.md).fill(k.c.border_weak).a11y_hidden().child(preview.grow(1.0));
     let names = Theme::ALL.map(Theme::name);
-    let select = Select::new("theme", &names)
-        .appearance(SelectAppearance::Field)
-        .width(THEME_W)
-        .current(Some(current.name()))
-        .label("Theme")
-        .open(s.theme_open)
-        .on_toggle(|s: &mut Collate| s.theme_open = !s.theme_open)
-        .on_close(|s: &mut Collate| s.theme_open = false)
-        .on_choose(|s: &mut Collate, v: &str, _: &mut Tx| {
-            s.theme_open = false;
-            if let Some(t) = Theme::ALL.into_iter().find(|t| t.name() == v) {
-                s.configure(|c| c.theme = t);
-            }
-        })
-        .build(k, layer);
+    let select = dropdown(s, k, layer, "theme", "Theme", &names, Some(current.name()), |s: &mut Collate, i| s.configure(|c| c.theme = Theme::ALL[i]));
     // Top-aligned rather than centred like the other rows, so the name sits by the dropdown
     // and the preview hangs below.
     let words = col().grow(1.0).min_w(0.0).gap(4.0).child(text("Theme".to_owned()).font(k.ty.ui_medium).color(k.c.text_base)).child(text("System follows macOS between Light and Dark".to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap());
@@ -217,17 +239,21 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     static LAYOUTS: [DiffMode; 2] = [DiffMode::Unified, DiffMode::Split];
     static NUMBERS: [bool; 2] = [true, false];
     let tab = s.settings_tab.min(SETTINGS_TABS.len() - 1);
+    // A dropdown's menu is placed by its trigger, which must be laid out first: menus go on
+    // the layer after the dialog, or the menu can't find the trigger and opens at the corner.
+    let mut menu_layer = Vec::new();
+    let menus = &mut menu_layer;
     let rows: Vec<El> = match tab {
         0 => vec![
-            theme_picker(s, k, layer),
-            setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(k, &["11", "12", "13", "14", "16"], &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
-            setting(k, "density", "Line spacing", &[], "", pick(k, &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
-            setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(k, &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),
+            theme_picker(s, k, menus),
+            setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(s, k, menus, "font", "Code size", &["11", "12", "13", "14", "16"], &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
+            setting(k, "density", "Line spacing", &[], "", pick(s, k, menus, "density", "Line spacing", &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
+            setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(s, k, menus, "motion", "Animations", &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),
         ],
         1 => vec![
-            setting(k, "layout", "Layout", &["S"], "Split shows old and new side by side", pick(k, &["Unified", "Split"], &LAYOUTS, st.layout, |c, v| c.layout = v)),
-            setting(k, "numbers", "Line numbers", &[], "Unified view: new numbers only, or both", pick(k, &["One column", "Old and new"], &NUMBERS, st.one_number, |c, v| c.one_number = v)),
-            setting(k, "context", "Context lines", &[], "Unchanged lines kept around each change", pick(k, &["3", "10", "25", "Full file"], &CONTEXT_LINES, st.context, |c, v| c.context = v)),
+            setting(k, "layout", "Layout", &["S"], "Split shows old and new side by side", pick(s, k, menus, "layout", "Layout", &["Unified", "Split"], &LAYOUTS, st.layout, |c, v| c.layout = v)),
+            setting(k, "numbers", "Line numbers", &[], "Unified view: new numbers only, or both", pick(s, k, menus, "numbers", "Line numbers", &["One column", "Old and new"], &NUMBERS, st.one_number, |c, v| c.one_number = v)),
+            setting(k, "context", "Context lines", &[], "Unchanged lines kept around each change", pick(s, k, menus, "context", "Context lines", &["3", "10", "25", "Full file"], &CONTEXT_LINES, st.context, |c, v| c.context = v)),
             setting(k, "ws", "Ignore whitespace", &["⇧", "W"], "Hides indent-only changes; stage whole files while on", switch(k, "Ignore whitespace", st.ignore_whitespace, |c, v| c.ignore_whitespace = v)),
             setting(k, "moved", "Highlight moved code", &["M"], "Moved blocks show in blue, M jumps between their ends", switch(k, "Highlight moved code", st.show_moved, |c, v| c.show_moved = v)),
             setting(k, "wrap", "Wrap long lines", &["W"], "Off scrolls them sideways; split view always wraps", switch(k, "Wrap long lines", st.wrap, |c, v| c.wrap = v)),
@@ -237,17 +263,17 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         ],
         2 => languages_settings(s, k),
         3 => vec![
-            setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(k, &["All", "Staged", "Unstaged", "PR Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
-            setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(k, &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
+            setting(k, "scope", "Open to", &[], "The view a new window starts on", pick(s, k, menus, "scope", "Open to", &["All", "Staged", "Unstaged", "PR Preview", "Git Graph"], &Scope::ALL, st.default_scope, |c, v| c.default_scope = v)),
+            setting(k, "editor", "Open files in", &["O"], "Where Open in Editor sends a file", pick(s, k, menus, "editor", "Open files in", &["Default", "Zed", "VS Code", "Cursor"], &Editor::ALL, st.editor, |c, v| c.editor = v)),
             setting(k, "collapse", "Fold viewed files", &["V"], "Marking a file viewed folds it away", switch(k, "Fold viewed files", st.collapse_viewed, |c, v| c.collapse_viewed = v)),
-            setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(k, &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
+            setting(k, "large", "Fold large files", &[], "Files above this many changed lines start folded", pick(s, k, menus, "large", "Fold large files", &["Never", "300", "1000", "3000"], &FOLD_LARGE, st.fold_large, |c, v| c.fold_large = v)),
             setting(k, "notify", "Review requests", &[], "A notification when someone asks for your review, checked every few minutes", switch(k, "Review requests", st.notify_reviews, |c, v| c.notify_reviews = v)),
             setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
             setting(k, "order", "Source files first", &[], "Then tests, then lockfiles and generated files", switch(k, "Source files first", st.source_first, |c, v| c.source_first = v)),
             setting(k, "git-tool", "Git's diff and merge tool", &[], "git difftool and git mergetool open Collate", Button::new("Use Collate").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
                 .help("Sets diff.tool and merge.tool in your global git config").on_press(|s: &mut Collate| s.register_git_tool()).build(k).key("register-tool")),
         ],
-        AGENT_TAB => agent_settings(s, k),
+        AGENT_TAB => agent_settings(s, k, menus),
         PROJECTS_TAB => {
             let labels = project_labels(&s.projects);
             let mut rows: Vec<El> = s
@@ -272,9 +298,9 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         }
         6 => vec![
             setting(k, "auto", "Watch for changes", &[], "Reread when files change on disk", switch(k, "Watch for changes", st.auto_refresh, |c, v| c.auto_refresh = v)),
-            setting(k, "every", "Check every", &[], "Only when file events aren't available", pick(k, &["0.5 s", "1 s", "2 s", "5 s"], &REFRESH_MS, st.refresh_ms, |c, v| c.refresh_ms = v)),
+            setting(k, "every", "Check every", &[], "Only when file events aren't available", pick(s, k, menus, "every", "Check every", &["0.5 s", "1 s", "2 s", "5 s"], &REFRESH_MS, st.refresh_ms, |c, v| c.refresh_ms = v)),
         ],
-        _ => update_settings(s, k),
+        _ => update_settings(s, k, menus),
     };
     let hairline = |key: String| col().key(key).w_full().h(1.0).fill(k.c.border_weak).a11y_hidden();
     // Left: the sections, on the panel's own surface, the chosen one a quiet step brighter.
@@ -335,6 +361,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         .child(row().key("settings-body").w_full().h(560.0).child(nav).child(col().key("settings-split").w(1.0).h_full().fill(k.c.border_weak)).child(right));
     Dialog::new("settings", "Settings").open(true).fit().width(880.0).on_close(|s: &mut Collate| {
         s.screen = Screen::Review;
-        s.theme_open = false;
+        s.settings_menu = None;
     }).child(body).build(k, layer);
+    layer.append(&mut menu_layer);
 }
