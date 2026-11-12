@@ -28,46 +28,68 @@ fn setting(k: &Kit, key: &str, title: &str, keys: &[&str], detail: &str, control
     row().key(key.to_owned()).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().items_center().child(control))
 }
 
-/// The Languages section: whether to download grammars, what's built in, and every grammar on
-/// offer with how it stands and what to do with it.
+/// The Languages section: whether to download grammars, what's built in, then every grammar on
+/// offer as a pill. Installed ones are solid, with an × to remove them; the rest are dashed,
+/// with a + that installs them on a click.
 fn languages_settings(s: &Collate, k: &Kit) -> Vec<El> {
+    let mut installed = row().key("lang-installed").w_full().gap(8.0).flex_wrap();
+    let mut offered = row().key("lang-offered").w_full().gap(8.0).flex_wrap();
+    let (mut any_installed, mut errors) = (false, col().key("lang-errors").w_full().gap(4.0));
+    for g in grammars::CATALOGUE {
+        let status = s.languages.status(g);
+        let files = g.files.iter().map(|f| if f.contains('.') || f.chars().next().is_some_and(char::is_uppercase) { (*f).to_owned() } else { format!(".{f}") }).collect::<Vec<_>>().join(", ");
+        let pill = row().key(format!("lang-{}", g.id)).h(28.0).px(10.0).gap(6.0).items_center().radius(14.0);
+        let name = |color| text(g.title.to_owned()).font(k.ty.text_small).color(color);
+        match status {
+            grammars::Status::Installed | grammars::Status::Outdated => {
+                any_installed = true;
+                let outdated = status == grammars::Status::Outdated;
+                let state = if outdated { "Update available" } else if s.languages.loaded.contains_key(g.id) { "In use" } else { "Installed" };
+                let mut pill = pill.pr(4.0).border(1.0, if outdated { k.c.warning.icon } else { k.c.border_weak }).fill(k.alpha(k.c.text_base, 0.04))
+                    .role("group").label(format!("{} - {state}", g.title)).help(format!("{files} - {state}")).child(name(k.c.text_base));
+                if outdated {
+                    pill = pill.child(icon_hit(k, &REFRESH_TAB_ICON, format!("Update {}", g.title), "Build the version this Collate expects", move |s: &mut Collate| s.prepare_language(g)));
+                }
+                installed = installed.child(pill.child(icon_hit(k, k.glyph.close, format!("Remove {}", g.title), "Delete the grammar; its files draw plain until it's installed again", move |s: &mut Collate| s.remove_language(g))));
+            }
+            grammars::Status::Working => {
+                offered = offered.child(pill.border(1.0, k.c.border_weak).border_dash(4.0, 3.0).opacity(0.6)
+                    .role("button").label(format!("Installing {}", g.title)).help(format!("{files} - installing…"))
+                    .child(icon(&PLUS_ICON, 12.0).color(k.c.icon_muted).a11y_hidden()).child(name(k.c.text_muted)).child(text("…".to_owned()).font(k.ty.text_small).color(k.c.text_faint)));
+            }
+            grammars::Status::Available | grammars::Status::Failed(_) => {
+                let failed = matches!(status, grammars::Status::Failed(_));
+                if let grammars::Status::Failed(e) = &status {
+                    errors = errors.child(text(format!("{} - {e}", g.title)).font(k.ty.text_small).color(k.c.danger.icon).wrap());
+                }
+                let edge = if failed { k.c.danger.icon } else { k.c.border_weak };
+                offered = offered.child(pill.border(1.0, edge).border_dash(4.0, 3.0).hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer)
+                    .role("button").label(format!("{} {}", if failed { "Retry" } else { "Install" }, g.title))
+                    .help(format!("{files} - {}", if failed { "try fetching and building it again" } else { "fetch and build this grammar" }))
+                    .on_press(move |s: &mut Collate| s.prepare_language(g))
+                    .child(icon(&PLUS_ICON, 12.0).color(k.c.icon_base).a11y_hidden()).child(name(k.c.text_muted)));
+            }
+        }
+    }
+    let section = |key: &str, title: &str, detail: &str, pills: El| col().key(key.to_owned()).w_full().py(14.0).gap(12.0)
+        .child(col().gap(4.0).child(text(title.to_owned()).font(k.ty.ui_medium).color(k.c.text_base)).child(text(detail.to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap()))
+        .child(pills);
     let mut rows = vec![
         setting(k, "download", "Download languages", &[], "Fetch a language's grammar from GitHub the first time a diff shows it; building it needs Xcode's command line tools", switch(k, "Download languages", s.settings.download_languages, |c, v| c.download_languages = v)),
         setting(k, "built-in", "Built in", &[], grammars::BUILT_IN, row()),
     ];
-    for g in grammars::CATALOGUE {
-        let status = s.languages.status(g);
-        let files = g.files.iter().map(|f| if f.contains('.') || f.chars().next().is_some_and(char::is_uppercase) { (*f).to_owned() } else { format!(".{f}") }).collect::<Vec<_>>().join(", ");
-        let mut name = row().gap(8.0).items_center().child(text(g.title.to_owned()).font(k.ty.ui_medium).color(k.c.text_base));
-        let state = match status {
-            grammars::Status::Installed if s.languages.loaded.contains_key(g.id) => "In use",
-            grammars::Status::Installed => "Installed",
-            grammars::Status::Outdated => "Update available",
-            _ => "",
-        };
-        if !state.is_empty() {
-            name = name.child(text(state.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint));
-        }
-        let mut words = col().grow(1.0).min_w(0.0).gap(4.0).child(name).child(text(files).font(k.ty.text_small).color(k.c.text_muted).truncate());
-        if let grammars::Status::Failed(e) = &status {
-            words = words.child(text(e.clone()).font(k.ty.text_small).color(k.c.danger.icon).wrap());
-        }
-        let (label, help) = match status {
-            grammars::Status::Available => ("Install", "Fetch and build this grammar"),
-            grammars::Status::Installed => ("Remove", "Delete the grammar; its files draw plain until it's installed again"),
-            grammars::Status::Outdated => ("Update", "Build the version this Collate expects"),
-            grammars::Status::Working => ("Installing…", ""),
-            grammars::Status::Failed(_) => ("Retry", "Try fetching and building it again"),
-        };
-        let installed = status == grammars::Status::Installed;
-        let mut button = Button::new(label).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(status == grammars::Status::Working);
-        if !help.is_empty() {
-            button = button.help(help);
-        }
-        let button = button.on_press(move |s: &mut Collate| if installed { s.remove_language(g) } else { s.prepare_language(g) }).build(k);
-        rows.push(row().key(format!("lang-{}", g.id)).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(button)));
+    if any_installed {
+        rows.push(section("lang-installed-section", "Installed", "Hover one for the files it colours; × removes it", installed));
     }
+    rows.push(section("lang-offered-section", "More languages", "Click one to fetch and build its grammar", offered.child(errors)));
     rows
+}
+
+/// A small icon that acts, inside a pill.
+fn icon_hit<S: 'static>(k: &Kit, glyph: &'static Icon, label: String, help: &str, act: impl Fn(&mut S) + 'static) -> El {
+    rune::el().size(20.0, 20.0).center().radius(10.0).hover(k.alpha(k.c.text_base, 0.08)).cursor(Cursor::Pointer)
+        .role("button").label(label).help(help.to_owned()).on_press(act)
+        .child(icon(glyph, 12.0).color(k.c.icon_muted).a11y_hidden())
 }
 
 /// The Agent section: which agent CLI Collate hands work to, how it runs it, and the files
@@ -221,6 +243,7 @@ lucide!(LANGUAGES_ICON, "collate-languages", r#"<path d="m5 8 6 6"/><path d="m4 
 lucide!(REVIEW_ICON, "collate-eye", r#"<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>"#);
 lucide!(PROJECTS_ICON, "collate-folder-git", r#"<circle cx="12" cy="13" r="2"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M14 13h3"/><path d="M7 13h3"/>"#);
 lucide!(REFRESH_TAB_ICON, "collate-refresh-cw", r#"<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>"#);
+lucide!(PLUS_ICON, "collate-plus", r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#);
 lucide!(UPDATES_ICON, "collate-download", r#"<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>"#);
 /// Each settings section's Lucide icon, in `SETTINGS_TABS` order.
 static SETTINGS_ICONS: [&Icon; 8] = [&APPEARANCE_ICON, &ALL_ICON, &LANGUAGES_ICON, &REVIEW_ICON, &AGENT_ICON, &PROJECTS_ICON, &REFRESH_TAB_ICON, &UPDATES_ICON];

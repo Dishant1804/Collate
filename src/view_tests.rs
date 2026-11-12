@@ -2117,6 +2117,24 @@ fn the_theme_menu_opens_under_its_dropdown() {
 }
 
 #[test]
+fn languages_on_offer_are_pills_that_wrap_in_the_settings() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.screen = Screen::Settings;
+        s.settings_tab = 2;
+    });
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+    let (pills, c, cs) = (rect("lang-offered"), rect("lang-c"), rect("lang-c_sharp"));
+    assert!((c[3] - 28.0).abs() < 0.5 && c[2] < 120.0, "a language is a pill, not a row: {c:?}");
+    assert!((cs[1] - c[1]).abs() < 0.5 && cs[0] > c[0] + c[2], "the next sits beside it: {cs:?} after {c:?}");
+    assert!(pills[3] > 2.0 * 28.0, "and they wrap onto more lines: {pills:?}");
+    assert!(rt.find("lang-c").is_some(), "the pill is pressable");
+}
+
+#[test]
 fn a_setting_with_more_than_three_choices_is_a_dropdown() {
     let mut rt = loaded();
     rt.update(|s, _| {
