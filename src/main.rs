@@ -2804,6 +2804,34 @@ fn action(k: &Kit, key: &str, label: &str, help: &str, danger: bool, f: impl Fn(
     b.on_press(f).build(k).key(key.to_owned())
 }
 
+/// The bar over the diff's foot while lines are selected: what's selected, and what to do with
+/// it, each with its key, so the lines picked with the pointer or Shift-↑↓ needn't be left to act.
+fn selection_bar(s: &Collate, k: &Kit) -> Option<El> {
+    if s.diff.selecting() {
+        return None;
+    }
+    let reference = s.selection_reference()?;
+    let (_, a, b) = s.diff.selected_span()?;
+    let count = b.abs_diff(a) + 1;
+    let what = format!("{count} line{} selected", if count == 1 { "" } else { "s" });
+    let agent = s.settings.agent.title();
+    let copy = Button::new("Copy…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Copy the lines' reference (y), or the lines for an agent (Y)")
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.copy_menu(tx)).build(k).key("copy-sel");
+    let close = IconButton::new(&rune_kit::glyphs::CLOSE).variant(IconButtonVariant::GhostMuted).label("Clear the selection").help("Clear the selection (Esc)")
+        .on_press(|s: &mut Collate| s.diff.set_selection(None)).build(k).key("selection-clear");
+    let bar = row().key("selection-bar").h(36.0).pl(12.0).pr(4.0).gap(4.0).items_center().radius(k.radius.md)
+        .border(1.0, k.c.border_weak).fill(k.c.bg_base);
+    let bar = k.elevate(bar, &k.elevation.floating)
+        .role("toolbar").label(format!("{what}: {reference}"))
+        .child(text(what).font(k.ty.text_xsmall_medium).color(k.c.text_muted).mr(8.0))
+        .child(action(k, "comment", "Comment…", "Comment under the last selected line (c)", false, |s| s.ask_comment()))
+        .child(action(k, "ask-agent", &format!("Ask {agent}…"), &format!("Ask {agent} about these lines, or to change them (i)"), false, |s| s.ask_question()))
+        .child(copy)
+        .child(close);
+    // Over the diff's foot, clear of the edge.
+    Some(row().key("selection-dock").pin(Some(0.0), None, Some(0.0), Some(EDGE)).justify_center().child(bar))
+}
+
 /// A file header's controls: its one likely action (Stage File or Unstage File), a "⋯" menu
 /// with the rest (the destructive one last), and the viewed check.
 fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
@@ -2864,13 +2892,7 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
 /// A hunk header's controls: its likely action, Discard after it with less weight (it asks
 /// first), and Pick Words when one line pair is selected.
 fn hunk_actions(s: &Collate, k: &Kit, f: usize, h: usize) -> El {
-    let mut r = row().gap(2.0).items_center();
-    // A comment, in any view, on the lines picked in this hunk.
-    if s.picked(f, h).is_some() || s.diff.selection().is_some_and(|sel| sel.file == f && s.diff.current_hunk() == Some((f, h))) {
-        r = r.child(action(k, "comment", "Comment…", "Comment on the selected line (c)", false, |s| s.ask_comment()));
-        let copy = Button::new("Copy…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Copy the selected lines' reference (y), or the lines for an agent (Y)");
-        r = r.child(copy.on_press_tx(|s: &mut Collate, tx: &mut Tx| s.copy_menu(tx)).build(k).key("copy-sel"));
-    }
+    let r = row().gap(2.0).items_center();
     if s.scope.read_only() {
         return r;
     }
@@ -3026,6 +3048,12 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
                 }
             })
             .build(s, k);
+        // Always wrapped, so the bar coming and going doesn't move the diff's rows to new
+        // paths, which would reset its scroll and text selection.
+        let mut diff = col().key("diff-area").w_full().grow(1.0).min_h(0.0).child(diff);
+        if let Some(bar) = selection_bar(s, k) {
+            diff = diff.child(bar);
+        }
         col().key("review").w_full().grow(1.0).min_h(0.0).child(summary(s, k, layer)).child(diff)
     };
     let body = if s.has_project && s.scope == Scope::History && s.error.is_none() {
@@ -3068,6 +3096,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("p", "With one line and its replacement picked: pick single word changes"),
             ("A  U  X", "Stage, unstage, discard the whole file in view"),
             ("v", "Mark the file viewed"),
+            ("⇧↓  ⇧↑", "Select lines from the keyboard; ↓ and ↑ alone move the selection, Esc clears it"),
             ("c", "Comment on the selected line"),
             ("i", "Ask the agent about the selected lines, or to change them"),
             ("y  Y", "Copy the selected lines' reference (path#L10-L25), or the lines as a diff for an agent"),

@@ -1402,7 +1402,7 @@ fn the_selection_copies_as_a_reference_or_as_lines_for_an_agent() {
     assert_eq!((lines[1], lines[2]), ("-    let value_10 = original(10);", "+    let value_10 = changed(10);"), "removed before added");
     rt.update(|s, _| s.diff.set_selection(Some(diff::LineRange::line(0, LineRef::new(diff::Side::Old, 13)))));
     assert_eq!(rt.state.selection_reference().as_deref(), Some(format!("{path}#L13 (before the change)").as_str()));
-    // The hunk header offers both, in a menu, beside Comment.
+    // The selection bar offers both, in a menu, beside Comment.
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
@@ -1414,6 +1414,89 @@ fn the_selection_copies_as_a_reference_or_as_lines_for_an_agent() {
     assert!(rt.state.notice.as_ref().is_some_and(|n| n.text.contains("#L13")), "says what it copied");
     rt.update(|s, _| s.diff.set_selection(None));
     assert_eq!(rt.state.selection_reference(), None);
+}
+
+#[test]
+fn the_keyboard_selects_lines_and_the_selection_bar_acts_on_them() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    // Keys wait for the next frame.
+    let press = |rt: &mut Runtime<Collate>, key, shift| {
+        rt.key(KeyEvent { key, mods: rune::Mods { shift, ..Default::default() } });
+        rt.frame(1.0 / 60.0);
+    };
+    let frames = |rt: &mut Runtime<Collate>| for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    };
+    frames(&mut rt);
+    assert!(rt.find("selection-bar").is_none(), "no bar without a selection");
+    // Shift-↓ with nothing selected picks the first line at the top, then takes the next ones.
+    press(&mut rt, Key::Down, true);
+    let first = rt.state.diff.selection().expect("Shift-↓ selects a line");
+    press(&mut rt, Key::Down, true);
+    press(&mut rt, Key::Down, true);
+    let sel = rt.state.diff.selection().unwrap();
+    assert_eq!((sel.start, sel.end.line), (first.start, first.end.line + 2), "Shift-↓ extends past each line");
+    press(&mut rt, Key::Up, true);
+    assert_eq!(rt.state.diff.selection().unwrap().end.line, first.end.line + 1, "Shift-↑ takes one back");
+    // ↓ alone moves one line, alone.
+    press(&mut rt, Key::Down, false);
+    let moved = rt.state.diff.selection().unwrap();
+    assert_eq!((moved.start, moved.end), (moved.end, LineRef::new(first.end.side, first.end.line + 2)));
+    frames(&mut rt);
+    assert!(rt.find("selection-bar").is_some(), "a selection shows the bar");
+    assert!(rt.find("comment").is_some() && rt.find("ask-agent").is_some() && rt.find("copy-sel").is_some());
+    // Ask: the question goes with the lines; an empty one can't be sent.
+    click(&mut rt, "ask-agent");
+    let Some(Ask::Agent(lines, true)) = rt.state.prompt.clone() else { panic!("Ask asks for a question about the lines") };
+    assert_eq!(lines, rt.state.selection_for_agent().unwrap());
+    rt.update(|s, _| s.prompt = None);
+    press(&mut rt, Key::Text("i".into()), false);
+    assert!(matches!(rt.state.prompt, Some(Ask::Agent(_, true))), "i asks too");
+    rt.update(|s, _| s.prompt = None);
+    frames(&mut rt);
+    click(&mut rt, "selection-clear");
+    assert_eq!(rt.state.diff.selection(), None);
+    assert!(rt.find("selection-bar").is_none());
+}
+
+#[test]
+fn text_dragged_across_the_code_selects_its_lines() {
+    let mut rt = loaded();
+    rt.update(|s, tx| s.diff.scroll_to_line(0, LineRef::new(diff::Side::New, 12), tx));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let text_of = |rt: &Runtime<Collate>, n: u32| {
+        let d = &rt.state.diff;
+        let r = (0..d.rows.len()).find(|&r| d.rows[r].file() == 0 && d.row_line(d.rows[r], diff::Side::New) == Some(n)).unwrap();
+        let path = format!("/{}/code/text", d.row_key(r));
+        let r = rt.elements().into_iter().find(|e| e.path.ends_with(&path)).unwrap_or_else(|| panic!("line {n}'s text is on screen")).rect;
+        (r[0] + 2.0, r[0] + r[2] - 2.0, r[1] + r[3] / 2.0)
+    };
+    // From the start of line 12 to the end of 14.
+    let ((x0, _, y0), (_, x1, y1)) = (text_of(&rt, 12), text_of(&rt, 14));
+    rt.pointer_move(x0, y0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_down(x0, y0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_move(x1, y1);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.diff.selection(), None, "not while the press is still selecting");
+    rt.pointer_up(x1, y1);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let sel = rt.state.diff.selection().expect("the text's lines are selected");
+    assert_eq!((sel.start, sel.end), (LineRef::new(diff::Side::New, 12), LineRef::new(diff::Side::New, 14)));
+    assert!(rt.find("selection-bar").is_some(), "and the bar offers Comment and Ask");
+    // A click elsewhere in the code ends the text selection, and the lines with it.
+    rt.pointer_down(x0, y0);
+    rt.pointer_up(x0, y0);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.diff.selection(), None);
 }
 
 #[test]

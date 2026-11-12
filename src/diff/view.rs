@@ -145,6 +145,7 @@ impl<S: 'static> DiffView<S> {
         let tail = rune::memo::layout(&format!("{key}/scroll")).map_or(0.0, |r| (r[3] - HEADER_H).max(0.0));
         let build = v.clone();
         let vis_mut = v.d.get_mut.clone();
+        let sel_mut = v.d.get_mut.clone();
         let on_file = v.d.on_visible_file.clone();
         let list = list
             .virtual_rows(count, v.look.line_h, keys(v.d.get.clone()), move |s: &S, i| build.row(s, i))
@@ -156,6 +157,21 @@ impl<S: 'static> DiffView<S> {
                     return true;
                 }
                 sticky_changed
+            })
+            // Text dragged across the code selects its lines too, once the press lets go.
+            .on_selection_change(move |s: &mut S, change, _| {
+                let st = sel_mut(s);
+                match change.selection() {
+                    Some(sel) if !change.dragging() => {
+                        let mut picked = sel.texts().iter().filter(|t| t.is_selected());
+                        if let Some(first) = picked.next() {
+                            let last = picked.next_back().unwrap_or(first);
+                            st.select_from_text(first.path(), last.path());
+                        }
+                    }
+                    Some(_) => {}
+                    None => st.text_selection_cleared(),
+                }
             });
         let scroll = col().key("scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false });
         let scroll = if wrap { scroll } else { scroll.scroll_xy() };
@@ -594,7 +610,8 @@ impl<S: 'static> View<S> {
         }
         if let Some(n) = n {
             let color = if selected { l.text } else { l.tints(kind, moved).map_or(l.faint, |t| t.number) };
-            c = c.child(text(n.to_string()).font(l.font).color(color));
+            // Brightens with its row: the number is what to press to pick the line.
+            c = c.child(text(n.to_string()).font(l.font).color(color).group_color(l.text));
         }
         let at = n.map(|n| LineRef::new(side, n)).or_else(|| {
             let other = if side == Side::Old { Side::New } else { Side::Old };
@@ -603,7 +620,7 @@ impl<S: 'static> View<S> {
         let Some(at) = at else { return c };
         let get = self.d.get_mut.clone();
         let row_at = i as u32;
-        c.cursor(Cursor::Pointer).on_drag(move |s: &mut S, d: &mut Drag, _| {
+        c.cursor(Cursor::Pointer).help("Select this line: drag for more, ⇧-click to extend. Then comment (c) or ask the agent (i)").on_drag(move |s: &mut S, d: &mut Drag, _| {
             let st = get(s);
             match d.phase {
                 Phase::Down => st.press_line(f, at),

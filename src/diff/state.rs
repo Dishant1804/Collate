@@ -179,6 +179,8 @@ pub struct DiffState {
     selection_at_press: Option<LineRange>,
     /// The press was on the one selected line: it clears the selection unless it drags.
     unselect: bool,
+    /// The selection follows a text selection in the code, and goes when that does.
+    from_text: bool,
     shift: bool,
     /// The side text selection copies, which follows the pointer.
     copy_side: Side,
@@ -264,6 +266,7 @@ impl DiffState {
             selecting: false,
             selection_at_press: None,
             unselect: false,
+            from_text: false,
             shift: false,
             copy_side: Side::New,
             hovered: Vec::new(),
@@ -568,6 +571,51 @@ impl DiffState {
 
     pub fn set_selection(&mut self, sel: Option<LineRange>) {
         self.selection = sel;
+        self.from_text = false;
+    }
+
+    /// A text selection in the code settled, from the text at element path `first` to the one
+    /// at `last`: its lines, on the side it copies, become the selection, so Comment, Ask and
+    /// staging act on them as on lines picked by their numbers. Returns whether it did.
+    pub(crate) fn select_from_text(&mut self, first: &str, last: &str) -> bool {
+        let side = self.copy_side;
+        let (Some(a), Some(b)) = (self.row_in_path(first), self.row_in_path(last)) else { return false };
+        let f = self.rows[a].file();
+        if self.rows[b].file() != f {
+            return false;
+        }
+        // A selection may start or end on a row without a line on its side: step inward.
+        let start = (a..=b).find_map(|r| self.line_ref(r, side));
+        let end = (a..=b).rev().find_map(|r| self.line_ref(r, side));
+        let (Some(start), Some(end)) = (start, end) else { return false };
+        self.set_selection(Some(LineRange { file: f, start, end }));
+        self.from_text = true;
+        true
+    }
+
+    /// The text selection the line selection followed went away.
+    pub(crate) fn text_selection_cleared(&mut self) {
+        if self.from_text {
+            self.set_selection(None);
+        }
+    }
+
+    /// The row whose key is a segment of element path `path`.
+    fn row_in_path(&self, path: &str) -> Option<usize> {
+        path.split('/').filter(|s| s.starts_with("df")).find_map(|seg| {
+            let digits = seg[2..].find(|c: char| !c.is_ascii_digit()).map_or(&seg[2..], |n| &seg[2..2 + n]);
+            let f: usize = digits.parse().ok()?;
+            let start = *self.file_rows.get(f)? as usize;
+            let end = self.file_rows.get(f + 1).map_or(self.rows.len(), |&r| r as usize);
+            (start..end).find(|&i| self.row_key(i) == seg)
+        })
+    }
+
+    /// Row `r`'s line on `side`; in unified, a removed or added line holds only the other.
+    fn line_ref(&self, r: usize, side: Side) -> Option<LineRef> {
+        let other = if side == Side::Old { Side::New } else { Side::Old };
+        self.row_line(self.rows[r], side).map(|n| LineRef::new(side, n))
+            .or_else(|| (self.mode() == DiffMode::Unified).then(|| self.row_line(self.rows[r], other).map(|n| LineRef::new(other, n))).flatten())
     }
 
     /// The selected lines' text on the side the selection started on, one per line, without
@@ -707,6 +755,39 @@ impl DiffState {
         }
         self.selecting = false;
         self.selection
+    }
+
+    /// Whether a press on the line numbers is still selecting: the selection isn't settled yet.
+    pub fn selecting(&self) -> bool {
+        self.selecting
+    }
+
+    /// ↓ or ↑ (`forward`) with lines selected: the selection's end moves to the next line on
+    /// its side, taking the lines passed when `extend` (Shift), else alone. With nothing
+    /// selected, Shift picks the first line at the top. Returns whether it moved.
+    pub fn step_selection(&mut self, forward: bool, extend: bool, tx: &mut Tx) -> bool {
+        let Some(sel) = self.selection else {
+            if !extend {
+                return false;
+            }
+            let from = self.position() as usize;
+            let Some((r, at)) = (from..self.rows.len()).find_map(|r| self.line_ref(r, Side::New).map(|at| (r, at))) else { return false };
+            self.set_selection(Some(LineRange::line(self.rows[r].file(), at)));
+            tx.scroll_into_view(self.row_key(r));
+            return true;
+        };
+        let Some(from) = self.row_at(sel.file, sel.end) else { return false };
+        let mut next = (from as usize).checked_add_signed(if forward { 1 } else { -1 });
+        let to = loop {
+            let Some(r) = next.filter(|&r| r < self.rows.len() && self.rows[r].file() == sel.file) else { return false };
+            if let Some(at) = self.line_ref(r, sel.end.side) {
+                break (r, at);
+            }
+            next = r.checked_add_signed(if forward { 1 } else { -1 });
+        };
+        self.set_selection(Some(if extend { LineRange { end: to.1, ..sel } } else { LineRange::line(sel.file, to.1) }));
+        tx.scroll_into_view(self.row_key(to.0));
+        true
     }
 
     pub(crate) fn cancel_line(&mut self) {
@@ -882,6 +963,10 @@ impl DiffState {
                 "[" => self.next_file(false, tx),
                 _ => false,
             },
+            // Shift-↓ and ↑ select from the keyboard; ↓ and ↑ alone move a selection there is.
+            Key::Up | Key::Down if !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt && (ev.mods.shift || self.selection.is_some()) => {
+                self.step_selection(ev.key == Key::Down, ev.mods.shift, tx)
+            }
             Key::Escape if self.selection.is_some() => {
                 self.set_selection(None);
                 true
