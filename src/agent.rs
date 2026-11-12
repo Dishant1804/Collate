@@ -8,7 +8,7 @@ use rune::{PopupItem, PopupMenu, TextEdit, Tx};
 use crate::diff::Side;
 use crate::git::Operation;
 use crate::settings::Agent;
-use crate::{Collate, HANDLE, Scope, abbrev, current_repo, paths_file};
+use crate::{Ask, Collate, HANDLE, Scope, abbrev, current_repo, paths_file};
 
 /// How a commit message should read until the reader writes their own instructions.
 const COMMIT_RULES: &str = "A subject line of at most 72 characters in the imperative mood, then, only if the subject doesn't make the reason clear, a blank line and a short body saying why.";
@@ -267,6 +267,16 @@ impl Collate {
         let said = if agent { "Copied the lines for an agent".to_owned() } else { format!("Copied {text}") };
         tx.copy(text);
         self.say(said, false);
+    }
+
+    /// Asks for a question to put to the agent: about the selected lines, or else about the
+    /// whole change in view, so asking never waits on knowing how to select.
+    pub fn ask_question(&mut self) {
+        let about = match self.selection_for_agent() {
+            Some(lines) => Ask::Agent(lines, true),
+            None => Ask::Agent(self.compared_text(), false),
+        };
+        self.ask(about);
     }
 
     /// The prompt that asks the agent to address the reader's comments.

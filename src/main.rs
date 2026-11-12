@@ -153,6 +153,7 @@ lucide!(UNSTAGED_ICON, "collate-circle-dashed", r#"<path d="M10.1 2.182a10 10 0 
 lucide!(CHECKLIST_ICON, "collate-list-checks", r#"<path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/>"#);
 lucide!(COMMENTS_ICON, "collate-message-square-text", r#"<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/>"#);
 lucide!(CHECKPOINTS_ICON, "collate-history", r#"<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>"#);
+lucide!(ASK_ICON, "collate-message-circle-question", r#"<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>"#);
 lucide!(AGENT_ICON, "collate-bot", r#"<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>"#);
 lucide!(STAGED_ICON, "collate-circle-check", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
 lucide!(GRAPH_ICON, "collate-git-graph", r#"<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>"#);
@@ -225,6 +226,9 @@ enum Ask {
     Stash,
     /// A comment on a line, or a new text for comment `n`.
     Comment(diff::Anchor, Option<usize>),
+    /// A question for the agent about what the text names: the selected lines, as
+    /// `selection_for_agent` reads them, when the flag is set, else the change in view.
+    Agent(String, bool),
     /// A new name for a branch.
     Rename(String),
     /// A tag at a commit (HEAD when `None`).
@@ -1002,6 +1006,8 @@ impl Collate {
                 let at = at.unwrap_or_else(|| "HEAD".to_owned());
                 self.act_bg("Tagging…", move |r| r.tag(&tag, &at, &message).map(|_| format!("Tagged {} as {tag}", abbrev(&at))));
             }
+            Ask::Agent(..) if name.is_empty() => {}
+            Ask::Agent(about, _) => self.run_agent(&format!("{name}\n\nAbout {about}")),
             Ask::Rename(from) if name.is_empty() || name == from => {}
             Ask::Rename(from) => self.act_bg("Renaming…", move |r| r.rename_branch(&from, &name).map(|_| format!("Renamed {from} to {name}"))),
             Ask::Comment(_, Some(n)) if name.is_empty() => self.delete_comment(n),
@@ -3061,6 +3067,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             ("A  U  X", "Stage, unstage, discard the whole file in view"),
             ("v", "Mark the file viewed"),
             ("c", "Comment on the selected line"),
+            ("i", "Ask the agent about the selected lines, or to change them"),
             ("y  Y", "Copy the selected lines' reference (path#L10-L25), or the lines as a diff for an agent"),
             ("o", "Open the file in your editor"),
             ("⌘F  ⌘K", "Search this view: the diff (⏎ next match, ⇧⏎ previous), the Map's files, History's commits and branches"),
@@ -3179,6 +3186,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Stash => ("Stash all changes", "Every change, untracked files too, is put away and the working tree goes back to HEAD.", "Stash", "Message (optional)"),
             Ask::Tag(None) => ("New tag", "Made at HEAD, here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
+            Ask::Agent(_, true) => ("Ask the agent", "About the selected lines. It starts in a new terminal, with a checkpoint to go back to.", "Ask", "What do you want to know or change?"),
+            Ask::Agent(_, false) => ("Ask the agent", "About the change in view; select lines first to ask about just those. It starts in a new terminal, with a checkpoint to go back to.", "Ask", "What do you want to know or change?"),
             Ask::Rename(_) => ("Rename branch", "Only here: a pushed branch keeps its old name on the remote.", "Rename", "Branch name"),
             // In a pull request, a comment goes with the next review, if GitHub takes it on that line.
             Ask::Comment(_, None) if s.pulls.pr.is_some() && !s.pr_whole() => ("Comment",
@@ -3197,7 +3206,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k)
             .key("prompt-field")
             .w_full();
-        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Rename(_) | Ask::Tag(_));
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Agent(..) | Ask::Rename(_) | Ask::Tag(_));
         let mut buttons = row().key("prompt-buttons").w_full().gap(8.0).justify_end();
         // On a pull request's line: suggest what it should say instead, starting from what it says.
         if let Ask::Comment(at, None) = ask
@@ -3506,25 +3515,36 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
     ]);
     // The coding agent's part of the loop, always in sight: ask it about the change, hand it
     // the comments, go back to before it ran, and have it settle what git stopped on.
+    // Each row says what it starts, since a click runs the agent at once.
     let agent = s.settings.agent.title();
+    let asked = if s.diff.selection().is_some() { "the selected lines" } else { "the change in view; select lines to ask about just those" };
+    let comments = match s.comments.len() {
+        0 => "No comments yet: select lines and press c to write one".to_owned(),
+        n => format!("{agent} addresses your {n} comment{} in a new terminal", if n == 1 { "" } else { "s" }),
+    };
     let mut agent_rows = vec![
-        SidebarRow::new("Review Change").icon(&CHECKLIST_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.ask_checklist(None)).build(k).key("agent-review"),
+        SidebarRow::new(format!("Ask {agent}…")).icon(&ASK_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.ask_question()).build(k).key("agent-ask").help(format!("Ask about {asked}")).help_keys(["i"]),
+        SidebarRow::new("Review Change").icon(&CHECKLIST_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.ask_checklist(None)).build(k).key("agent-review")
+            .help(format!("{agent} answers the review questions about this change in a new terminal; edit them under {agent} below")),
         {
             let mut r = SidebarRow::new("Send Comments").icon(&COMMENTS_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.send_comments());
             if !s.comments.is_empty() {
                 r = r.badge(s.comments.len().to_string());
             }
-            r.build(k).key("agent-comments")
+            r.build(k).key("agent-comments").help(comments)
         },
-        SidebarRow::new("Checkpoints").icon(&CHECKPOINTS_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.checkpoints_menu("agent-checkpoints")).build(k).key("agent-checkpoints"),
+        SidebarRow::new("Checkpoints").icon(&CHECKPOINTS_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.checkpoints_menu("agent-checkpoints")).build(k).key("agent-checkpoints")
+            .help(format!("Put the working tree back as it was before {agent} ran")),
     ];
     let (ahead, behind) = s.ahead_behind.unwrap_or((0, 0));
     let settle = s.stopped_settle().or((ahead > 0 && behind > 0).then_some(agent::Settle::Diverged(ahead, behind)));
     if let Some(settle) = settle {
-        agent_rows.push(SidebarRow::new("Settle Conflicts").icon(&MERGE_ICON).on_select(move |s: &mut Collate, _: &mut Tx| s.settle_with_agent(settle.clone())).build(k).key("agent-settle"));
+        agent_rows.push(SidebarRow::new("Settle Conflicts").icon(&MERGE_ICON).on_select(move |s: &mut Collate, _: &mut Tx| s.settle_with_agent(settle.clone())).build(k).key("agent-settle")
+            .help(format!("{agent} resolves the conflicts in a new terminal")));
     }
     let agents = SidebarSection::new("Agent").rows(agent_rows);
-    let picker = SidebarRow::new(agent).icon(&AGENT_ICON).detail("Change").on_select(|s: &mut Collate, tx: &mut Tx| s.agent_picker(tx)).build(k).key("agent-pick");
+    let picker = SidebarRow::new(agent).icon(&AGENT_ICON).detail("Change").on_select(|s: &mut Collate, tx: &mut Tx| s.agent_picker(tx)).build(k).key("agent-pick")
+        .help("The agent these run, and its instructions");
     let apart = |key: &str| col().key(key.to_owned()).w_full().h(12.0).a11y_hidden();
     // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
     // 24 pt row, so 2 less here centres "Working Copy" in the same 28 pt band.
