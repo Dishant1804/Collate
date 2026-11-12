@@ -157,6 +157,22 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     letter(s, t, tx)
 }
 
+/// Says why staging key `t` does nothing for file `f` in this view, so the key isn't just
+/// ignored.
+fn not_here(s: &mut Collate, t: &str, f: usize) {
+    let staged = s.info.get(f).map_or(Staged::No, |i| i.staged);
+    let why = match (t, s.scope) {
+        (_, Scope::Branch) => "Branch shows what the branch committed: nothing in it can be staged or discarded. All Changes (1) can.",
+        (_, Scope::History) => "History shows commits: nothing in it can be staged or discarded. All Changes (1) can.",
+        ("a" | "A", Scope::Staged) => "That's staged already; u unstages it",
+        ("u" | "U", Scope::Unstaged) => "Nothing here is staged; Staged (2) shows what is",
+        ("u", Scope::Uncommitted) if staged == Staged::Partly => "Part of this file is staged: unstage those lines in Staged (2), or the whole file with U",
+        ("u", Scope::Uncommitted) => "Nothing of this file is staged",
+        _ => return,
+    };
+    s.say(why, false);
+}
+
 /// What a key without ⌘, ⌃ or ⌥ does in the review, whether typed or picked from the menu bar,
 /// which names the same keys. False when it does nothing here.
 pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
@@ -174,7 +190,11 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
                 Some((f, h, p)) => (f, h, Some(p)),
                 None => match hunk {
                     Some((f, h)) => (f, h, None),
-                    None => return false,
+                    None => {
+                        let verb = match t { "a" => "stage", "u" => "unstage", _ => "discard" };
+                        s.say(format!("No change at or below the top of the view to {verb}"), false);
+                        return true;
+                    }
                 },
             };
             if s.settings.ignore_whitespace && t != "x" {
@@ -186,7 +206,7 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
                 ("u", Scope::Staged) => s.unstage_hunk(f, h, picked),
                 ("u", Scope::Uncommitted) if s.info.get(f).is_some_and(|i| i.staged == Staged::Fully) => s.unstage_hunk(f, h, picked),
                 ("x", _) => s.ask_discard(f, Some(h)),
-                _ => return false,
+                _ => not_here(s, t, f),
             }
             true
         }
@@ -225,11 +245,15 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
             s.show_help = true;
             true
         }
-        "A" if !s.scope.read_only() && s.scope != Scope::Staged => {
+        "A" | "U" if s.scope.read_only() || (t == "A" && s.scope == Scope::Staged) => {
+            not_here(s, t, file);
+            true
+        }
+        "A" => {
             s.stage_file(file);
             true
         }
-        "U" if !s.scope.read_only() => {
+        "U" => {
             s.unstage_file(file);
             true
         }
@@ -272,6 +296,10 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
         }
         ">" if s.scope == Scope::History => {
             s.step_commit(-1, tx);
+            true
+        }
+        "<" | ">" => {
+            s.say("< and > step through commits in History (5)", false);
             true
         }
         "1" | "2" | "3" | "4" | "5" => {

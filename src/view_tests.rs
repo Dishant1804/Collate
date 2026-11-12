@@ -2359,3 +2359,23 @@ fn right_clicks_open_the_menus_for_a_line_a_file_and_a_listed_file() {
     let f = rt.state.diff.file_index("src/api/file3.rs").unwrap();
     assert!(rt.state.is_viewed(f), "its pick acts on the file right-clicked");
 }
+
+#[test]
+fn keys_that_do_nothing_here_say_why() {
+    let mut rt = loaded();
+    let said = |rt: &mut Runtime<Collate>, key: &'static str| {
+        rt.update(move |s, tx| {
+            s.notice = None;
+            assert!(keys::letter(s, key, tx), "{key} is taken");
+        });
+        rt.state.notice.as_ref().map(|n| n.text.clone()).unwrap_or_default()
+    };
+    assert!(said(&mut rt, ">").contains("History"), "< and > point to History");
+    rt.update(|s, _| s.show_scope(Scope::Staged));
+    assert!(said(&mut rt, "A").contains("staged already"));
+    assert!(said(&mut rt, "x").contains("unstage this first"));
+    rt.update(|s, _| s.show_scope(Scope::Branch));
+    for key in ["a", "U", "X"] {
+        assert!(!said(&mut rt, key).is_empty(), "{key} in Branch says why it does nothing");
+    }
+}

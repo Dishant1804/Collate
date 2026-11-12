@@ -1398,8 +1398,11 @@ impl Collate {
     }
 
     fn pick_words(&mut self) {
-        if self.scope.read_only() || self.settings.ignore_whitespace {
-            return;
+        if self.scope.read_only() {
+            return self.say("Words stage from All Changes, Staged or Unstaged, not from commits", false);
+        }
+        if self.settings.ignore_whitespace {
+            return self.say("Whitespace is hidden, so lines don't match the file; show whitespace (W) to pick words", true);
         }
         match self.word_candidate() {
             Some(w) => self.words = Some(w),
@@ -2061,8 +2064,10 @@ impl Collate {
             self.say("Whitespace is hidden, so hunks don't match the file; discard the whole file or show whitespace.", true);
             return;
         }
-        if !matches!(self.scope, Scope::Uncommitted | Scope::Unstaged) {
-            return;
+        match self.scope {
+            Scope::Uncommitted | Scope::Unstaged => {}
+            Scope::Staged => return self.say("Discard throws away unstaged changes: unstage this first (u)", false),
+            Scope::Branch | Scope::History => return self.say("Committed changes can't be discarded here; revert a commit from its menu in History", false),
         }
         if let Some((file, _)) = self.file(f) {
             self.confirm = Some(Discard { file: f, hunk, path: file.path().to_owned() });
