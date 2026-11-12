@@ -2083,3 +2083,19 @@ fn a_dropped_patch_shows_on_its_own_until_closed() {
     assert_eq!(rt.state.diff.files().len(), files, "back to the changes");
     let _ = std::fs::remove_file(patch);
 }
+
+#[test]
+fn a_long_dialog_description_wraps_inside_the_dialog() {
+    let mut rt = loaded();
+    rt.update(|s, _| s.ask(Ask::Agent("the change".into(), false)));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+    let (dialog, what, close, field) = (rect("prompt-dialog"), rect("prompt-what"), rect("close"), rect("prompt-field"));
+    let right = dialog[0] + dialog[2];
+    assert!(what[0] + what[2] <= right - EDGE + 0.5, "the description ends inside the dialog: {what:?} in {dialog:?}");
+    assert!(what[3] > 20.0, "it wraps onto a second line: {what:?}");
+    assert!(close[0] + close[2] <= right, "the close button is in the dialog: {close:?} in {dialog:?}");
+    assert!((field[0] - dialog[0] - EDGE).abs() < 0.5 && (right - field[0] - field[2] - EDGE).abs() < 0.5, "the field is inset like the title: {field:?} in {dialog:?}");
+}

@@ -3170,12 +3170,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .justify_end()
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.confirm = None).build(k))
             .child(Button::new("Discard").variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_discard()).build(k).key("confirm-discard"));
-        Dialog::new("discard", title)
-            .open(true)
-            .fit()
-            .description(format!("{what} A copy of the file is kept in .git/collate-backup."))
+        described_dialog(k, "discard", title, format!("{what} A copy of the file is kept in .git/collate-backup."), buttons)
             .on_close(|s: &mut Collate| s.confirm = None)
-            .child(buttons)
             .build(k, layer);
     }
 
@@ -3223,12 +3219,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let buttons = buttons
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.prompt = None).build(k))
             .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(empty).on_press(|s: &mut Collate| s.answer_prompt()).build(k).key("prompt-ok"));
-        Dialog::new("prompt", title)
-            .open(true)
-            .fit()
-            .description(what)
+        described_dialog(k, "prompt", title, what, col().key("prompt-body").w_full().gap(12.0).child(field).child(buttons))
             .on_close(|s: &mut Collate| s.prompt = None)
-            .child(col().key("prompt-body").w_full().gap(12.0).child(field).child(buttons))
             .build(k, layer);
     }
 
@@ -3253,12 +3245,9 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .justify_end()
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.compare = None).build(k))
             .child(Button::new("Compare").variant(ButtonVariant::Contrast).disabled(!ready).on_press(|s: &mut Collate| s.run_compare()).build(k).key("compare-ok"));
-        Dialog::new("compare", "Compare")
-            .open(true)
-            .fit()
-            .description("What changed from one branch, tag or commit to another.")
+        let body = col().key("compare-body").w_full().gap(10.0).child(end("compare-from", "From", from, false)).child(end("compare-to", "To", to, true)).child(buttons.pt(4.0));
+        described_dialog(k, "compare", "Compare", "What changed from one branch, tag or commit to another.", body)
             .on_close(|s: &mut Collate| s.compare = None)
-            .child(col().key("compare-body").w_full().gap(10.0).child(end("compare-from", "From", from, false)).child(end("compare-to", "To", to, true)).child(buttons.pt(4.0)))
             .build(k, layer);
     }
 
@@ -3306,7 +3295,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .justify_end()
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.risky = None).build(k))
             .child(Button::new(button).variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_risky()).build(k).key("risky-ok"));
-        Dialog::new("risky", title).open(true).fit().description(what).on_close(|s: &mut Collate| s.risky = None).child(buttons).build(k, layer);
+        described_dialog(k, "risky", title, what, buttons).on_close(|s: &mut Collate| s.risky = None).build(k, layer);
     }
 
     let lights = cx.titlebar_inset();
@@ -3346,6 +3335,17 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
 /// when it doesn't. Runs of letters, letters starting a word and letters in the file name
 /// count most, as editors' quick open scores them.
 /// ⌘P: the files of the diff matching what's typed, best first; Return goes to the one picked.
+/// A dialog that says what it does under its title, with `body` under that. The kit's own
+/// description stays on one line, so a long one ran past the dialog's edge; this one wraps.
+/// The body is inset to line up with the title.
+fn described_dialog(k: &Kit, key: &str, title: impl Into<String>, what: impl Into<String>, body: El) -> Dialog {
+    let what = what.into();
+    // The header's 16 pt under the title, less the kit's 4 pt between title and description.
+    let what_el = text(what.clone()).font(k.ty.ui.lh(20.0)).color(k.c.text_muted).wrap().w_full().mt(-12.0).key(format!("{key}-what"));
+    Dialog::new(key, title).open(true).fit()
+        .child(col().key(format!("{key}-inset")).w_full().px(EDGE).pb(EDGE).gap(12.0).description(what).child(what_el).child(body))
+}
+
 fn jump_palette(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let (matches, line) = s.jump_matches();
     let typed = if s.jump.is_empty() {

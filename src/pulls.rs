@@ -1083,8 +1083,7 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     buttons = buttons.child(row().grow(1.0))
         .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.pulls.compose = None).build(k))
         .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(blocked).on_press(|s: &mut Collate| s.send_compose()).build(k).key("compose-ok"));
-    Dialog::new("compose", title).open(true).width(520.0).fit().description(what).on_close(|s: &mut Collate| s.pulls.compose = None)
-        .child(body.child(buttons)).build(k, layer);
+    crate::described_dialog(k, "compose", title, what, body.child(buttons)).width(520.0).on_close(|s: &mut Collate| s.pulls.compose = None).build(k, layer);
 }
 
 /// A line of `git range-diff`: a pair of commits and whether the second kept the first's
