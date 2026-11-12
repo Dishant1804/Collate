@@ -2410,6 +2410,18 @@ fn an_empty_view_offers_somewhere_else_to_look() {
 }
 
 #[test]
+fn greyed_items_say_why() {
+    let mut rt = loaded();
+    rt.update(|s, _| s.configure(|c| c.layout = DiffMode::Split));
+    rt.frame(1.0 / 60.0);
+    rt.update(|s, tx| s.more_menu(tx));
+    let menu = rt.popup_menu().expect("the ⋯ menu opened");
+    let blame = menu.find("blame").expect("Inline Blame is listed");
+    assert!(!blame.is_enabled() && blame.title().contains("Unified"), "split greys blame and says where it works: {}", blame.title());
+    rt.resolve_popup(None).unwrap();
+}
+
+#[test]
 fn the_command_palette_finds_and_runs_a_command() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);

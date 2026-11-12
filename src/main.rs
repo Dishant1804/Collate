@@ -1738,7 +1738,7 @@ impl Collate {
             .item(PopupItem::new("rename", format!("Rename {}…", self.branch)).enabled(idle && !detached))
             .submenu_enabled("Delete Branch", deletes, idle)
             .submenu_enabled(format!("Merge Into {}", self.branch), merges, idle && !detached && self.operation.is_none())
-            .submenu_enabled(format!("Rebase {} Onto", self.branch), rebases, idle && !detached && self.operation.is_none() && self.total == 0)
+            .submenu_enabled(if self.total > 0 { format!("Rebase {} Onto (Commit or Stash First)", self.branch) } else { format!("Rebase {} Onto", self.branch) }, rebases, idle && !detached && self.operation.is_none() && self.total == 0)
             .separator()
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
             .submenu("Compare Against", bases);
@@ -1851,7 +1851,12 @@ impl Collate {
             .item(PopupItem::new("ws", "Ignore Whitespace").checked(st.ignore_whitespace))
             .item(PopupItem::new("moved", "Highlight Moved Code").checked(st.show_moved))
             .item(PopupItem::new("wrap", "Wrap Long Lines").checked(st.wrap))
-            .item(PopupItem::new("blame", "Inline Blame").checked(self.diff.blame_shown()).enabled(self.loose.is_none() && self.diff.mode() == DiffMode::Unified))
+            // Greyed, it says why, as a menu item has no tooltip.
+            .item(PopupItem::new("blame", match (self.loose.is_some(), self.diff.mode()) {
+                (true, _) => "Inline Blame (Needs a Repository)",
+                (_, DiffMode::Unified) => "Inline Blame",
+                _ => "Inline Blame (Unified Layout Only)",
+            }).checked(self.diff.blame_shown()).enabled(self.loose.is_none() && self.diff.mode() == DiffMode::Unified))
             .separator()
             .item(PopupItem::new("collapse", "Collapse All Files"))
             .item(PopupItem::new("expand", "Expand All Files"))
@@ -3284,7 +3289,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .variant(IconButtonVariant::GhostMuted)
         .expanded(s.terminals.open)
         .label(if s.terminals.open { "Hide terminal" } else { "Show terminal" })
-        .help("Terminal")
+        .help(if no_project { "Terminal: open a project first" } else { "Terminal" })
         .shortcut("⌘J")
         .disabled(no_project)
         .on_press(|s: &mut Collate| s.toggle_terminal())
@@ -3411,12 +3416,13 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         });
         let preview = apply_edits(&w.old, &w.new, &w.edits, &w.picked);
         let any = w.picked.iter().any(|&p| p);
+        let pick_first = if any { "" } else { "Pick a word change above first" };
         let mut buttons = row().key("word-buttons").w_full().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.words = None).build(k));
         buttons = match s.scope {
-            Scope::Staged => buttons.child(Button::new("Unstage picked").variant(ButtonVariant::Contrast).disabled(!any).on_press(|s: &mut Collate| s.act_on_words(Scope::Staged)).build(k).key("words-unstage")),
+            Scope::Staged => buttons.child(Button::new("Unstage picked").variant(ButtonVariant::Contrast).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Staged)).build(k).key("words-unstage")),
             _ => buttons
-                .child(Button::new("Discard picked").variant(ButtonVariant::Danger).disabled(!any).on_press(|s: &mut Collate| s.act_on_words(Scope::Uncommitted)).build(k).key("words-discard"))
-                .child(Button::new("Stage picked").variant(ButtonVariant::Contrast).disabled(!any).on_press(|s: &mut Collate| s.act_on_words(Scope::Unstaged)).build(k).key("words-stage")),
+                .child(Button::new("Discard picked").variant(ButtonVariant::Danger).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Uncommitted)).build(k).key("words-discard"))
+                .child(Button::new("Stage picked").variant(ButtonVariant::Contrast).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Unstaged)).build(k).key("words-stage")),
         };
         let body = col()
             .key("words")
@@ -3526,7 +3532,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .gap(8.0)
             .justify_end()
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.compare = None).build(k))
-            .child(Button::new("Compare").variant(ButtonVariant::Contrast).disabled(!ready).on_press(|s: &mut Collate| s.run_compare()).build(k).key("compare-ok"));
+            .child(Button::new("Compare").variant(ButtonVariant::Contrast).disabled(!ready)
+                .help(if ready { "" } else if from == to && !from.is_empty() { "Pick two different ends" } else { "Pick both ends first" }).on_press(|s: &mut Collate| s.run_compare()).build(k).key("compare-ok"));
         let body = col().key("compare-body").w_full().gap(10.0).child(end("compare-from", "From", from, false)).child(end("compare-to", "To", to, true)).child(buttons.pt(4.0));
         described_dialog(k, "compare", "Compare", "What changed from one branch, tag or commit to another.", body)
             .on_close(|s: &mut Collate| s.compare = None)
@@ -3614,7 +3621,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .variant(IconButtonVariant::GhostMuted)
             .disabled(!s.can_go(back))
             .label(label.to_owned())
-            .help(label.to_owned())
+            .help(if s.can_go(back) { label.to_owned() } else { format!("{label}: nowhere {} yet", if back { "back" } else { "forward" }) })
             .shortcut(keys.to_owned())
             .on_press(move |s: &mut Collate| s.go(back))
             .build(k)
@@ -4214,7 +4221,8 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         _ => "Commit what's staged (⌘↩)",
     };
     let button = Button::new(label).variant(ButtonVariant::Contrast).shortcut("⌘↩").disabled(!ready).help(help).on_press(|s: &mut Collate| s.commit()).build(k).key("commit").w_full();
-    let amend = Checkbox::new(s.amend).label("Amend last commit").disabled(s.head.is_none() || s.committing).on_toggle(|s: &mut Collate| s.toggle_amend()).build(k).key("amend");
+    let amend = Checkbox::new(s.amend).label("Amend last commit").disabled(s.head.is_none() || s.committing).on_toggle(|s: &mut Collate| s.toggle_amend()).build(k).key("amend")
+        .help(if s.head.is_none() { "There's no commit yet to amend" } else { "Rewrite the last commit instead of making a new one" });
     // Set as the lists above are: an edge-to-edge hairline, as between them, then a 28 pt title
     // right under it.
     let agent = s.settings.agent.title();
@@ -4223,6 +4231,7 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
     let stage_first = s.staged == 0 && !s.amend;
     let (label, help) = match (s.writing_message, stage_first) {
         (true, _) => ("Writing…".to_owned(), String::new()),
+        (_, true) if s.total == 0 => ("Stage All and Write".to_owned(), "Nothing has changed to write about".to_owned()),
         (_, true) => ("Stage All and Write".to_owned(), format!("Stages every change, then {agent} drafts the message from it; you commit it")),
         _ => (format!("Write with {agent}"), format!("{agent} drafts the message from what's staged, keeping the intent of what you've typed; you commit it")),
     };
@@ -4285,8 +4294,8 @@ fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
         }
         Scope::History => {
             let at = s.commit.as_ref().and_then(|c| s.commit_ids.iter().position(|x| x == c));
-            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help("Older commit").shortcut("<").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).key("older");
-            let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help("Newer commit").shortcut(">").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).key("newer");
+            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help(if at.is_none_or(|i| i + 1 >= s.commit_ids.len()) { "The oldest commit the graph has read" } else { "Older commit" }).shortcut("<").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).key("older");
+            let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help(if at.is_none_or(|i| i == 0) { "The newest commit" } else { "Newer commit" }).shortcut(">").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).key("newer");
             Some(row().key("compare").gap(6.0).items_center().child(older).child(newer))
         }
         _ => None,
@@ -4491,7 +4500,7 @@ fn operation_bar(s: &Collate, k: &Kit) -> Option<El> {
             .help("Leave out the commit the rebase stopped at").on_press(step("skip", "Skipped a commit of")).build(k).key("op-skip"));
     }
     Some(r.child(Button::new("Continue").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!idle || conflicts > 0)
-        .help("Commit the settled files and go on").on_press(step("continue", "Continued")).build(k).key("op-continue")))
+        .help(if conflicts > 0 { format!("Settle the {conflicts} conflicted file{} first", if conflicts == 1 { "" } else { "s" }) } else { "Commit the settled files and go on".to_owned() }).on_press(step("continue", "Continued")).build(k).key("op-continue")))
 }
 
 fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
