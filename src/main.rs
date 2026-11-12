@@ -323,6 +323,8 @@ struct Collate {
     writing_message: bool,
     confirm: Option<Discard>,
     notice: Option<Notice>,
+    /// The path a header's copy button last copied, which shows a check while its notice is up.
+    copied: Option<String>,
     sidebar: PaneState,
     /// Text searched for in the diff, the lines holding it, and the one last jumped to.
     search: TextEdit,
@@ -485,6 +487,7 @@ fn init() -> Collate {
         writing_message: false,
         confirm: None,
         notice: None,
+        copied: None,
         sidebar: PaneState::new(290.0).range(180.0, 560.0),
         search: TextEdit::new(""),
         find_case: false,
@@ -918,6 +921,7 @@ impl Collate {
 
     fn say(&mut self, text: impl Into<String>, error: bool) {
         self.notice = Some(Notice { text: text.into(), error, until: None, undo: None, end: None });
+        self.copied = None;
     }
 
     /// Run a change to the repository, report how it went and reread.
@@ -1494,10 +1498,7 @@ impl Collate {
             Some("stage") => s.stage_file(f),
             Some("unstage") => s.unstage_file(f),
             Some("open") => s.open_file(f),
-            Some("copy") => {
-                tx.copy(path.clone());
-                s.say(format!("Copied {path}"), false);
-            }
+            Some("copy") => s.copy_path(f, tx),
             Some("viewed") => s.toggle_viewed(f, tx),
             Some("blame") => s.show_blame(f),
             Some("log") => s.show_file_log(f),
@@ -1946,6 +1947,19 @@ impl Collate {
             }
             None => self.discard_file(d.file),
         }
+    }
+
+    fn copy_path(&mut self, f: usize, tx: &mut Tx) {
+        let Some((file, _)) = self.file(f) else { return };
+        let path = file.path().to_owned();
+        tx.copy(path.clone());
+        self.say(format!("Copied {path}"), false);
+        self.copied = Some(path);
+    }
+
+    /// Whether file `f`'s path is the one just copied, while the notice saying so is up.
+    fn copied_path(&self, f: usize) -> bool {
+        self.notice.is_some() && self.copied.as_deref().is_some_and(|p| self.diff.files().get(f).is_some_and(|file| file.path() == p))
     }
 
     fn open_file(&mut self, f: usize) {
@@ -3106,6 +3120,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .header_actions(move |s: &Collate, f| file_actions(s, &fk, f))
             .hunk_actions(move |s: &Collate, f, h| hunk_actions(s, &hk, f, h))
             .dim(|s: &Collate, f| s.is_viewed(f))
+            .copy_path(|s: &mut Collate, f, tx| s.copy_path(f, tx), |s: &Collate, f| s.copied_path(f))
             .on_visible_file(|s: &mut Collate, f| {
                 if let Some(p) = s.diff.files().get(f).map(|f| f.path().to_owned()) {
                     s.select_in_lists(&p);

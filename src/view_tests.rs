@@ -2180,6 +2180,32 @@ fn a_dropped_patch_shows_on_its_own_until_closed() {
 }
 
 #[test]
+fn the_copy_button_in_a_file_header_copies_its_path() {
+    let mut rt = loaded();
+    // Read down into the diff, then copy from the header held at its top.
+    for _ in 0..20 {
+        rt.wheel(700.0, 500.0, -120.0);
+        rt.frame(1.0 / 60.0);
+    }
+    let f = rt.state.diff.sticky().expect("a file's header held at the top");
+    let path = rt.state.diff.files()[f].path().to_owned();
+    let (x, y) = rt.find("sticky/inner/copy-path").expect("the held header's copy button");
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.text == format!("Copied {path}")), "says what it copied");
+    assert!(rt.find("sticky/inner/copy-path/copied").is_some(), "the button shows it copied");
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.diff.sticky(), Some(f), "the diff stays where it was");
+    // The check goes back to the copy icon with the notice.
+    rt.update(|s, _| s.notice = None);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("sticky/inner/copy-path/copy").is_some(), "the button reads Copy again");
+}
+
+#[test]
 fn a_long_dialog_description_wraps_inside_the_dialog() {
     let mut rt = loaded();
     rt.update(|s, _| s.ask(Ask::Agent("the change".into(), false)));

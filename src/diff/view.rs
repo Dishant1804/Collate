@@ -11,6 +11,7 @@ use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, Phase, ScrollSpec, Span, T
 
 use super::model::{FileStatus, LineKind, Side};
 use super::state::{DiffMode, DiffState, EXPAND_STEP, Expand, GAP_H, HEADER_H, LineRef, NOTE_H, Row, Style};
+use crate::lucide;
 use rune_kit::Kit;
 use rune_kit::syntax::SyntaxTheme;
 
@@ -67,6 +68,7 @@ pub struct DiffView<S> {
     dim: Option<Rc<dyn Fn(&S, usize) -> bool>>,
     hunk: Option<Rc<dyn Fn(&S, usize, usize) -> El>>,
     on_visible_file: Option<Rc<dyn Fn(&mut S, usize)>>,
+    copy_path: Option<(Rc<dyn Fn(&mut S, usize, &mut Tx)>, Rc<dyn Fn(&S, usize) -> bool>)>,
     images: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
     comments: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
 }
@@ -81,6 +83,7 @@ impl<S: 'static> DiffView<S> {
             dim: None,
             hunk: None,
             on_visible_file: None,
+            copy_path: None,
             images: None,
             comments: None,
         }
@@ -95,6 +98,13 @@ impl<S: 'static> DiffView<S> {
     /// Controls at the end of each hunk's header row (stage, discard), by file and hunk.
     pub fn hunk_actions(mut self, f: impl Fn(&S, usize, usize) -> El + 'static) -> Self {
         self.hunk = Some(Rc::new(f));
+        self
+    }
+
+    /// Puts a copy button after each file's path: `copy` runs on a press, and the button
+    /// shows a check while `copied` holds for the file.
+    pub fn copy_path(mut self, copy: impl Fn(&mut S, usize, &mut Tx) + 'static, copied: impl Fn(&S, usize) -> bool + 'static) -> Self {
+        self.copy_path = Some((Rc::new(copy), Rc::new(copied)));
         self
     }
 
@@ -830,6 +840,23 @@ impl<S: 'static> View<S> {
         // The chevron's glyph, not its box, starts on the edge; the viewed box (bordered, so
         // its edge shows) ends on it.
         let mut inner = row().key("inner").w_full().grow(1.0).pl(EDGE - GLYPH_INSET).pr(EDGE).gap(8.0).items_center().child(toggle).child(name);
+        if let Some((on_copy, copied)) = &self.d.copy_path {
+            let on_copy = on_copy.clone();
+            let glyph = if copied(s, f) { icon(&CHECK_ICON, 14.0).color(l.add.count).key("copied") } else { icon(&COPY_ICON, 14.0).color(l.muted).key("copy") };
+            let copy = row()
+                .key("copy-path")
+                .size(20.0, 20.0)
+                .center()
+                .radius(4.0)
+                .hover(l.hover)
+                .cursor(Cursor::Pointer)
+                .role("button")
+                .label("Copy path")
+                .help("Copy the file's path")
+                .child(glyph)
+                .on_press_tx(move |s: &mut S, tx| on_copy(s, f, tx));
+            inner = inner.child(copy);
+        }
         if let Some((word, color)) = status {
             let badge = row().key("status").h(18.0).px(6.0).items_center().radius(4.0).border(1.0, l.border).child(text(word).font(l.small).color(color));
             inner = inner.child(badge.opacity(faded));
@@ -868,6 +895,9 @@ impl<S: 'static> View<S> {
         h.child(inner).child(line("bottom", l.border))
     }
 }
+
+lucide!(COPY_ICON, "collate-copy", r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#);
+lucide!(CHECK_ICON, "collate-check", r#"<path d="M20 6 9 17l-5-5"/>"#);
 
 /// A proportional added/removed bar, as a review list shows beside each file; empty when
 /// nothing changed line by line.
