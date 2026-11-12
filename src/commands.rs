@@ -6,6 +6,7 @@ use rune::{MenuError, MenuItem, PopupItem, Tx};
 
 use crate::diff::DiffMode;
 use crate::git::Scope;
+use crate::search::{self, fuzzy};
 use crate::{Collate, HANDLE, Screen, keys, refresh};
 
 pub struct Command {
@@ -149,6 +150,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("send-comments", "Send Comments", "Agent", "", |s| ready(s) && !s.comments.is_empty(), |s, _| s.send_comments()),
     cmd("write-message", "Write the Commit Message", "Agent", "", |s| idle(s) && s.staged > 0 && !s.writing_message, |s, _| s.write_message()),
     cmd("checkpoint", "Save a Checkpoint", "Agent", "", idle, |s, _| s.save_checkpoint()),
+    cmd("palette", "Command Palette…", "Help", "cmd+shift+p", |s| s.screen != Screen::Settings && !s.modal_open(), |s, _| s.open_palette()),
     cmd("keys", "Keyboard Shortcuts", "Help", "shift+slash", |s| ready(s) || !s.has_project, |s, _| s.open_help()),
 ];
 
@@ -176,6 +178,58 @@ pub fn run(s: &mut Collate, id: &str, tx: &mut Tx) {
     if let Some(c) = find(id) {
         (c.run)(s, tx);
     }
+}
+
+/// The commands the palette lists for `q`: those that can run now, the best match first, or
+/// in menu order with nothing typed.
+pub fn palette_matches(s: &Collate, q: &str) -> Vec<&'static Command> {
+    let mut scored: Vec<(i32, usize)> = COMMANDS.iter().enumerate()
+        .filter(|(_, c)| !c.id.is_empty() && c.id != "palette" && (c.enabled)(s))
+        // Its menu's name counts too, less than its own: "view" finds the View menu's commands.
+        .filter_map(|(i, c)| fuzzy(q, c.title).map(|sc| sc + 1000).or_else(|| fuzzy(q, &format!("{} {}", c.menu, c.title))).map(|sc| (sc, i)))
+        .collect();
+    if !q.trim().is_empty() {
+        scored.sort_by_key(|&(sc, i)| (std::cmp::Reverse(sc), i));
+    }
+    scored.into_iter().take(search::LIMIT).map(|(_, i)| &COMMANDS[i]).collect()
+}
+
+/// A command's key as the app writes it: `j`, `A`, `?`, `⇧⌘G`.
+pub fn keycap(key: &str) -> String {
+    if key.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<&str> = key.split('+').collect();
+    let (mods, name) = parts.split_at(parts.len() - 1);
+    let has = |m: &str| mods.contains(&m);
+    let plain = match name[0] {
+        "comma" => ",",
+        "period" => ".",
+        "slash" => "/",
+        "bracketleft" => "[",
+        "bracketright" => "]",
+        "enter" => "↩",
+        n => n,
+    };
+    // Shift alone types the shifted character, as the app names those keys.
+    if mods == ["shift"] {
+        return match plain {
+            "," => "<".into(),
+            "." => ">".into(),
+            "/" => "?".into(),
+            p => p.to_uppercase(),
+        };
+    }
+    if mods.is_empty() {
+        return plain.into();
+    }
+    let mut out = String::new();
+    for (m, sym) in [("ctrl", "⌃"), ("alt", "⌥"), ("shift", "⇧"), ("cmd", "⌘")] {
+        if has(m) {
+            out.push_str(sym);
+        }
+    }
+    out + &plain.to_uppercase()
 }
 
 /// Gives the menu bar the commands' current state when it changed. Called each frame.
@@ -213,6 +267,13 @@ mod tests {
         for c in COMMANDS.iter().filter(|c| !c.id.is_empty()) {
             assert!(ids.insert(c.id), "{} twice", c.id);
             assert!(c.key.is_empty() || c.key.parse::<rune::Shortcut>().is_ok(), "{}: {}", c.id, c.key);
+        }
+    }
+
+    #[test]
+    fn keycaps_read_as_the_app_writes_keys() {
+        for (key, cap) in [("j", "j"), ("shift+a", "A"), ("shift+slash", "?"), ("shift+comma", "<"), ("cmd+shift+g", "⇧⌘G"), ("cmd+enter", "⌘↩"), ("cmd+alt+0", "⌥⌘0"), ("cmd+bracketleft", "⌘["), ("", "")] {
+            assert_eq!(keycap(key), cap, "{key}");
         }
     }
 }

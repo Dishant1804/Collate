@@ -17,6 +17,33 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.screen == Screen::Settings {
         return false;
     }
+    if ev.is_command('p') && ev.mods.shift {
+        if s.palette {
+            s.palette = false;
+        } else if !s.modal_open() {
+            s.open_palette();
+        }
+        return true;
+    }
+    // The command palette takes every key while it's up, but the window's own.
+    if s.palette {
+        match &ev.key {
+            Key::Escape => s.palette = false,
+            Key::Enter => s.run_palette(None, tx),
+            Key::Up => s.palette_pick = s.palette_pick.saturating_sub(1),
+            Key::Down => s.palette_pick = (s.palette_pick + 1).min(crate::commands::palette_matches(s, &s.palette_query).len().saturating_sub(1)),
+            Key::Backspace => {
+                s.palette_query.pop();
+                s.palette_pick = 0;
+            }
+            Key::Text(t) if !ev.mods.cmd && !ev.mods.ctrl => {
+                s.palette_query.push_str(t);
+                s.palette_pick = 0;
+            }
+            _ => return !(ev.is_command('w') || ev.is_command('q')),
+        }
+        return true;
+    }
     if s.jumping {
         match &ev.key {
             Key::Escape => s.jumping = false,

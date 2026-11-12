@@ -432,6 +432,11 @@ struct Collate {
     jumping: bool,
     jump: String,
     jump_pick: usize,
+    /// ⇧⌘P's command palette is up: what's typed into it and the command picked. It isn't
+    /// modal to the commands, so it can tell which of them can run.
+    palette: bool,
+    palette_query: String,
+    palette_pick: usize,
     /// The toolbar search's text in the Map and in History (the diff's is `search`), what it
     /// found there, best first, and the row picked.
     map_query: TextEdit,
@@ -514,6 +519,9 @@ fn init() -> Collate {
         jumping: false,
         jump: String::new(),
         jump_pick: 0,
+        palette: false,
+        palette_query: String::new(),
+        palette_pick: 0,
         words: None,
         projects: load_projects(),
         favorites: load_paths("favorites"),
@@ -748,6 +756,21 @@ impl Collate {
             None => self.favorites.push(p.to_owned()),
         }
         save_paths("favorites", &self.favorites);
+    }
+
+    fn open_palette(&mut self) {
+        self.palette = true;
+        self.palette_query.clear();
+        self.palette_pick = 0;
+    }
+
+    /// Runs the palette's pick (or match `pick`), closing it first so the command acts on the
+    /// review rather than on the palette.
+    fn run_palette(&mut self, pick: Option<usize>, tx: &mut Tx) {
+        let matches = commands::palette_matches(self, &self.palette_query);
+        let Some(c) = matches.get(pick.unwrap_or(self.palette_pick)) else { return };
+        self.palette = false;
+        (c.run)(self, tx);
     }
 
     fn open_help(&mut self) {
@@ -3480,6 +3503,9 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     if s.jumping {
         jump_palette(s, k, layer);
     }
+    if s.palette {
+        command_palette(s, k, layer);
+    }
 
     if let Some((path, lines)) = &s.blame {
         blame_dialog(k, path, lines.len(), layer);
@@ -3672,6 +3698,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("App", &[
         ("⌘O", "Add a local project (the project menu, top left, switches)"),
+        ("⇧⌘P", "Find and run any command by name"),
         ("⌘,", "Settings"),
         ("?", "These shortcuts; every command is in the menu bar too"),
     ]),
@@ -3728,6 +3755,44 @@ fn help_sheet(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         .child(col().key("help-body").w_full().px(16.0).pb(16.0).gap(8.0)
             .child(field)
             .child(col().key("help-list").w_full().max_h(480.0).px(8.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(list)))
+        .build(k, layer);
+}
+
+/// ⇧⌘P: every command that can run now, found by typing part of its name.
+fn command_palette(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let matches = commands::palette_matches(s, &s.palette_query);
+    let typed = if s.palette_query.is_empty() {
+        text("Type a command".to_owned()).font(k.ty.ui).color(k.c.text_faint)
+    } else {
+        text(format!("{}\u{2502}", s.palette_query)).font(k.ty.ui).color(k.c.text_base)
+    };
+    let field = row().key("palette-field").w_full().h(32.0).px(10.0).gap(8.0).items_center().radius(k.radius.md).border(2.0, k.c.border_focus)
+        .child(icon(k.glyph.search, 14.0).color(k.c.icon_faint)).child(typed);
+    let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
+    let rows = matches.iter().enumerate().map(|(n, c)| {
+        let picked = n == s.palette_pick;
+        let menu = if c.menu.is_empty() { "Collate" } else { c.menu };
+        let mut r = row().key(format!("palette-{}", c.id)).w_full().h(28.0).px(10.0).gap(8.0).items_center().radius(k.radius.sm)
+            .fill(if picked { k.alpha(k.c.text_base, 0.10) } else { k.alpha(k.c.text_base, 0.0) })
+            .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("option").label(c.title)
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.run_palette(Some(n), tx))
+            .child(text(c.title.to_owned()).font(k.ty.ui).color(k.c.text_base));
+        if (c.checked)(s) {
+            r = r.child(icon(k.glyph.check_small, 14.0).color(k.c.icon_base));
+        }
+        r.child(text(menu.to_owned()).font(k.ty.text_small).color(k.c.text_faint).grow(1.0).min_w(0.0).truncate())
+            .child(text(commands::keycap(c.key)).font(mono).color(k.c.text_muted))
+    });
+    let note = if matches.is_empty() { "No command here matches" } else { "↑ ↓ to pick, Return to run, esc to close" };
+    Dialog::new("palette", "Commands")
+        .open(true)
+        .fit()
+        .width(560.0)
+        .on_close(|s: &mut Collate| s.palette = false)
+        .child(col().key("palette-body").w_full().px(16.0).pb(16.0).gap(8.0)
+            .child(field)
+            .child(col().key("palette-list").w_full().max_h(360.0).scroll(rune::ScrollSpec { stick_bottom: false }).children(rows))
+            .child(text(note.to_owned()).font(k.ty.text_small).color(k.c.text_muted)))
         .build(k, layer);
 }
 

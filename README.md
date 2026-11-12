@@ -44,7 +44,7 @@ on its own.
 ## Keys
 
 Every command is also in the menu bar (File, View, Go, Changes, Branch, Agent), with its key
-beside it; Help's search finds one by name. Right-click a line, a file (in the diff or the
+beside it; `⇧⌘P` finds and runs one by name. Right-click a line, a file (in the diff or the
 lists), a commit in the Git Graph or a project for what acts on it.
 
 | Key | Action |
@@ -61,6 +61,7 @@ lists), a commit in the Git Graph or a project for what acts on it.
 | `⌘F` or `⌘K`, `n` `N` | Search this view (the diff, the Map's files, History's commits and branches), next / previous match |
 | `⌥⌘C` `⌥⌘W` `⌥⌘R` | Search: match case, whole words, regular expression |
 | `⌘P` `⌘L` | Go to a file (`file:line` for a line), go to a line |
+| `⇧⌘P` | Find and run any command by name |
 | `⌘[` `⌘]` | Back / forward through the places you've been |
 | `m` | Jump to the other end of a move |
 | `b` | Inline blame: who last changed each line, beside the numbers |

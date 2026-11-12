@@ -2381,6 +2381,32 @@ fn keys_that_do_nothing_here_say_why() {
 }
 
 #[test]
+fn the_command_palette_finds_and_runs_a_command() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    let key = |rt: &mut Runtime<Collate>, key: Key, cmd: bool, shift: bool| {
+        rt.key(KeyEvent { key, mods: rune::Mods { cmd, shift, ..Default::default() } });
+        rt.frame(1.0 / 60.0);
+    };
+    key(&mut rt, Key::Command('p'), true, true);
+    assert!(rt.state.palette && !rt.state.jumping, "⇧⌘P opens the commands, not the files");
+    assert!(rt.find("palette-split").is_some(), "with nothing typed, every command that can run is listed");
+    let wrap = rt.state.settings.wrap;
+    // A letter that's a shortcut elsewhere types into the palette instead.
+    for c in "wrap".chars() {
+        key(&mut rt, Key::Text(c.to_string()), false, false);
+    }
+    assert_eq!(rt.state.palette_query, "wrap");
+    assert_eq!(rt.state.settings.wrap, wrap, "w didn't act behind the palette");
+    assert_eq!(crate::commands::palette_matches(&rt.state, "wrap")[0].id, "wrap", "the closest title first");
+    key(&mut rt, Key::Enter, false, false);
+    assert!(!rt.state.palette && rt.state.settings.wrap != wrap, "Return runs it and closes");
+    key(&mut rt, Key::Command('p'), true, true);
+    key(&mut rt, Key::Escape, false, false);
+    assert!(!rt.state.palette);
+}
+
+#[test]
 fn the_shortcuts_sheet_is_sectioned_and_searchable() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);
