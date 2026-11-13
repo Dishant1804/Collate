@@ -1,6 +1,6 @@
 //! What a diff is: files of hunks of lines, parsed from a patch or computed from two texts.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -407,7 +407,7 @@ pub(crate) fn columns(line: &str) -> u32 {
 fn hunks(old: &Source, new: &Source, context: u32, ignore_whitespace: bool) -> Vec<Hunk> {
     // Intern lines; a last line without its break differs from the same text with one.
     // Sized for the longer side (the other mostly repeats it), so filling it doesn't rehash.
-    let mut ids: HashMap<(std::borrow::Cow<str>, bool), u32> = HashMap::with_capacity(old.len().max(new.len()) as usize);
+    let mut ids: FxHashMap<(std::borrow::Cow<str>, bool), u32> = FxHashMap::with_capacity_and_hasher(old.len().max(new.len()) as usize, Default::default());
     let (a, b) = (intern(old, &mut ids, ignore_whitespace), intern(new, &mut ids, ignore_whitespace));
     let ops = myers::diff(&a, &b);
     // Changes as (old range, new range), 0-based.
@@ -496,7 +496,7 @@ fn hunks(old: &Source, new: &Source, context: u32, ignore_whitespace: bool) -> V
         .collect()
 }
 
-fn intern<'a>(s: &'a Source, ids: &mut HashMap<(std::borrow::Cow<'a, str>, bool), u32>, ignore_whitespace: bool) -> Vec<u32> {
+fn intern<'a>(s: &'a Source, ids: &mut FxHashMap<(std::borrow::Cow<'a, str>, bool), u32>, ignore_whitespace: bool) -> Vec<u32> {
     let last = s.len();
     (1..=last)
         .map(|n| {
@@ -830,7 +830,7 @@ pub fn mark_moved(files: &mut [FileDiff]) {
     let (removed, added) = (runs(LineKind::Removed), runs(LineKind::Added));
     // Where each meaningful added text starts a candidate: (run, offset in it).
     // Sized for every added line, so filling it doesn't rehash.
-    let mut starts: std::collections::HashMap<&str, Vec<(usize, usize)>> = std::collections::HashMap::with_capacity(added.iter().map(|r| r.3).sum());
+    let mut starts: FxHashMap<&str, Vec<(usize, usize)>> = FxHashMap::with_capacity_and_hasher(added.iter().map(|r| r.3).sum(), Default::default());
     for (r, &(f, h, start, len)) in added.iter().enumerate() {
         for k in 0..len {
             let t = files[f].hunks[h].lines[start + k].text.trim();

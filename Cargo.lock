@@ -597,6 +597,7 @@ dependencies = [
  "regex",
  "rune",
  "rune-kit",
+ "rustc-hash 2.1.3",
  "serde_json",
  "tree-sitter",
  "tree-sitter-highlight",

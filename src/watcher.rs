@@ -118,19 +118,23 @@ pub fn prepare(mut snap: Snapshot, opts: DiffOpts, cache: &mut DiffCache) -> Opt
     if snap.changes.iter().any(|c| c.reused && !cache.contains_key(&key(c))) {
         return None;
     }
-    // Diff what the cache lacks, in parallel: each file is independent.
+    // Diff what the cache lacks, in parallel from two files on: each file is independent, and two
+    // large ones would otherwise wait for each other.
     let missing: Vec<usize> = (0..snap.changes.len()).filter(|&i| !cache.contains_key(&key(&snap.changes[i]))).collect();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
-    let built: Vec<(usize, FileDiff)> = if missing.len() < 8 {
+    let built: Vec<(usize, FileDiff)> = if missing.len() < 2 {
         missing.iter().map(|&i| (i, file_diff(&snap.changes[i], opts.context, opts.ignore_whitespace))).collect()
     } else {
-        let changes = &snap.changes;
+        let (changes, missing) = (&snap.changes, &missing);
+        // Each thread takes the next file when it's done with one: big files sit together in
+        // tree order, and fixed shares left one thread with most of them.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let next = &next;
         std::thread::scope(|scope| {
-            let jobs: Vec<_> = missing
-                .chunks(missing.len().div_ceil(threads))
-                .map(|part| {
+            let jobs: Vec<_> = (0..threads.min(missing.len()))
+                .map(|_| {
                     scope.spawn(move || {
-                        part.iter()
+                        std::iter::from_fn(|| missing.get(next.fetch_add(1, Ordering::Relaxed)))
                             .map(|&i| {
                                 let f = file_diff(&changes[i], opts.context, opts.ignore_whitespace);
                                 // Measured once here, so the cached copy carries it to every later refresh.

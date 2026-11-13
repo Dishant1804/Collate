@@ -10,6 +10,27 @@ use std::process::{Command, Stdio};
 /// Files larger than this show as "too large" instead of being diffed.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// A `git` to run. On macOS `/usr/bin/git` is xcrun's shim, which looks up the developer tools
+/// on every call and doubles the cost of each spawn (about 5 ms); the git it would run is
+/// found once and run directly. Any other git on the `PATH` runs as it is.
+pub fn command() -> Command {
+    static GIT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    Command::new(GIT.get_or_init(|| {
+        let first = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("git")).find(|g| g.is_file()));
+        if first.as_deref() == Some(Path::new("/usr/bin/git"))
+            && let Ok(out) = Command::new("/usr/bin/xcrun").args(["--find", "git"]).stderr(Stdio::null()).output()
+            && out.status.success()
+        {
+            let found = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            if found.is_file() {
+                return found;
+            }
+        }
+        // No shim, or xcrun can't say: `git` from the `PATH`, whose own error shows if it's missing.
+        PathBuf::from("git")
+    }))
+}
+
 /// Which two versions of each file to compare.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
@@ -270,7 +291,7 @@ struct Plan {
 
 impl Repo {
     pub fn open(dir: &Path) -> Result<Repo, String> {
-        let out = Command::new("git").arg("-C").arg(dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| format!("can't run git: {e}"))?;
+        let out = command().arg("-C").arg(dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| format!("can't run git: {e}"))?;
         if !out.status.success() {
             return Err(format!("{} is not inside a git repository", dir.display()));
         }
@@ -314,7 +335,7 @@ impl Repo {
     }
 
     fn git(&self) -> Command {
-        let mut c = Command::new("git");
+        let mut c = command();
         // Never take the index lock: an editor or a commit in another app must not fail because we looked.
         c.arg("--no-optional-locks").arg("-C").arg(&self.root);
         c
@@ -502,20 +523,28 @@ impl Repo {
                 }
             }
         }
-        let mut blobs = self.cat_files_parallel(&specs)?.into_iter();
-        let mut read: Vec<(Option<Blob>, Option<Blob>)> = (0..plans.len()).map(|_| (None, None)).collect();
-        for &(i, is_old) in &wanted {
-            let b = blobs.next().flatten();
-            if is_old { read[i].0 = b } else { read[i].1 = b }
-        }
         // `linguist-generated`, asked of git only for paths not seen before (all of them again
         // when a `.gitattributes` changed).
         if plans.iter().zip(&fresh).any(|(p, &f)| f && p.path.rsplit('/').next() == Some(".gitattributes")) {
             memo.generated.clear();
         }
         let unknown: Vec<&str> = plans.iter().map(|p| p.path.as_str()).filter(|p| !memo.generated.contains_key(*p)).collect();
-        if !unknown.is_empty() {
-            let marked = self.generated(unknown.iter().copied());
+        // The blobs, the attributes and the working files at once: the first two wait on git,
+        // the last on the disk.
+        let (blobs, marked, mut on_disk) = std::thread::scope(|scope| {
+            let blobs = scope.spawn(|| self.cat_files_parallel(&specs));
+            let marked = (!unknown.is_empty()).then(|| scope.spawn(|| self.generated(unknown.iter().copied())));
+            let on_disk: Vec<Option<Blob>> = plans.iter().zip(&fresh).map(|(p, &f)| if f && matches!(p.new, Source::Worktree) { self.read_worktree(&p.path) } else { None }).collect();
+            let panicked = |_| "a git reader panicked".to_owned();
+            Ok::<_, String>((blobs.join().map_err(panicked)??, marked.map(|m| m.join().map_err(panicked)).transpose()?, on_disk))
+        })?;
+        let mut blobs = blobs.into_iter();
+        let mut read: Vec<(Option<Blob>, Option<Blob>)> = (0..plans.len()).map(|_| (None, None)).collect();
+        for &(i, is_old) in &wanted {
+            let b = blobs.next().flatten();
+            if is_old { read[i].0 = b } else { read[i].1 = b }
+        }
+        if let Some(marked) = marked {
             for p in unknown {
                 memo.generated.insert(p.to_owned(), marked.contains(p));
             }
@@ -532,7 +561,7 @@ impl Repo {
             }
             let (old, git_new) = std::mem::take(&mut read[i]);
             let new = match p.new {
-                Source::Worktree => self.read_worktree(&p.path),
+                Source::Worktree => std::mem::take(&mut on_disk[i]),
                 _ => git_new,
             };
             if old.is_none() && new.is_none() {
@@ -652,7 +681,7 @@ impl Repo {
 
     /// [`Repo::run`] with environment variables set, as `GIT_INDEX_FILE`.
     fn run_env(&self, args: &[&str], stdin: Option<&str>, env: &[(&str, &Path)]) -> Result<String, String> {
-        let mut c = Command::new("git");
+        let mut c = command();
         // No terminal to ask on: a fetch or push that needs a password fails instead of waiting.
         // Nor an editor: continuing a merge or rebase keeps the message git prepared. `env`
         // comes after, so a caller can name its own editor.
@@ -1340,7 +1369,7 @@ pub struct Moved {
 /// `git diff` of two files or folders outside any repository. It exits 1 when they differ,
 /// which isn't a failure.
 pub fn diff_no_index(a: &Path, b: &Path) -> Result<String, String> {
-    let out = Command::new("git").args(["diff", "--no-index", "--no-color", "--no-ext-diff", "--"]).arg(a).arg(b).output().map_err(|e| format!("can't run git: {e}"))?;
+    let out = command().args(["diff", "--no-index", "--no-color", "--no-ext-diff", "--"]).arg(a).arg(b).output().map_err(|e| format!("can't run git: {e}"))?;
     match out.status.code() {
         Some(0 | 1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         _ => Err(String::from_utf8_lossy(&out.stderr).trim().lines().take(3).collect::<Vec<_>>().join(" ")),
@@ -1359,7 +1388,7 @@ pub fn register_tool(exe: &Path) -> Result<(), String> {
         ("merge.tool", "collate".into()),
     ];
     for (key, value) in settings {
-        let out = Command::new("git").args(["config", "--global", key, &value]).output().map_err(|e| format!("can't run git: {e}"))?;
+        let out = command().args(["config", "--global", key, &value]).output().map_err(|e| format!("can't run git: {e}"))?;
         if !out.status.success() {
             return Err(format!("git config {key}: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }

@@ -27,6 +27,9 @@ tree-sitter-highlight = "0.27"
 tree-sitter-language = "0.1"
 # Reads the GitHub CLI's JSON for pull requests (src/github.rs); Rune already builds it.
 serde_json = "1"
+# Fast hashing for the diff's line interning, where SipHash was a fifth of diffing; Rune
+# already builds it.
+rustc-hash = "2"
 # Opens a compiled grammar.
 libloading = "0.8"
 

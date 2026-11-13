@@ -9,7 +9,6 @@
 //! wrong one.
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -82,7 +81,7 @@ const READ_LIMIT: u64 = 2 << 20;
 /// in the working tree, less low-signal ones (lockfiles, bundles), which would crowd it.
 pub fn build(root: &Path) -> Result<RepoMap, String> {
     let list = |which: &str| -> Result<Vec<String>, String> {
-        let out = Command::new("git").args(["ls-files", "-z", which, "--exclude-standard"]).current_dir(root).output().map_err(|e| format!("couldn't run git: {e}"))?;
+        let out = crate::git::command().args(["ls-files", "-z", which, "--exclude-standard"]).current_dir(root).output().map_err(|e| format!("couldn't run git: {e}"))?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
         }

@@ -371,7 +371,7 @@ impl Gh {
     }
 
     fn git(&self, args: &[&str]) -> Result<String, String> {
-        let out = Command::new("git").args(args).current_dir(&self.root).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("can't run git: {e}"))?;
+        let out = crate::git::command().args(args).current_dir(&self.root).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("can't run git: {e}"))?;
         if out.status.success() { Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
     }
 
