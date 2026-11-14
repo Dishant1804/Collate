@@ -872,6 +872,20 @@ fn the_three_columns_start_on_one_line() {
 }
 
 #[test]
+fn swapped_sidebars_trade_sides_and_keep_their_toggles() {
+    let mut rt = loaded();
+    let x = |rt: &Runtime<Collate>, key: &str| rt.presented(key).map(|p| p.0[0]).unwrap_or_else(|| panic!("{key} is drawn"));
+    assert!(x(&rt, "sidebar") < x(&rt, "main-pane") && x(&rt, "main-pane") < x(&rt, "staging"), "views lead, staging trails");
+    // Set directly: `configure` would save over the reader's settings.
+    rt.update(|s, _| s.settings.swap_panes = true);
+    rt.frame(0.0);
+    assert!(x(&rt, "staging") < x(&rt, "main-pane") && x(&rt, "main-pane") < x(&rt, "sidebar"), "staging leads, views trail");
+    // The toolbar's button now hides the views, which trail.
+    click(&mut rt, "panel-toggle");
+    assert!(!rt.state.sidebar.is_open() && rt.state.inspector.is_open(), "the trailing views hid, the staging panel stayed");
+}
+
+#[test]
 fn a_partly_staged_file_is_in_both_lists() {
     let mut rt = loaded();
     rt.update(|s, tx| {

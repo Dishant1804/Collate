@@ -271,6 +271,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             theme_picker(s, k, menus),
             setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(s, k, menus, "font", "Code size", &["11", "12", "13", "14", "16"], &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
             setting(k, "density", "Line spacing", &[], "", pick(s, k, menus, "density", "Line spacing", &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
+            setting(k, "swap", "Swap sidebars", &[], "The staging panel on the left, the views on the right", switch(k, "Swap sidebars", st.swap_panes, |c, v| c.swap_panes = v)),
             setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(s, k, menus, "motion", "Animations", &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),
         ],
         1 => vec![

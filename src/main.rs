@@ -3270,19 +3270,23 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     // (the toolbar pads 12; the trigger pads its label 8).
     // With the sidebar closed the toolbar starts just past its toggle, where back and forward
     // sit: it starts past them instead.
-    let past_arrows = if s.sidebar.is_open() { 0.0 } else { NAV_W + 8.0 };
+    let swap = s.settings.swap_panes;
+    let leading_open = if swap { s.inspector.is_open() } else { s.sidebar.is_open() };
+    let past_arrows = if leading_open { 0.0 } else { NAV_W + 8.0 };
     let leading = row().key("toolbar-leading").gap(10.0).items_center().min_w(0.0).shrink().ml(EDGE - 12.0 - 8.0 + past_arrows).child(project_switcher(s, k, layer)).child(branch);
     let split = s.diff.mode() == DiffMode::Split;
     let modes = SegmentedControl::new(&["Unified", "Split"], Some(split as usize)).label("Diff layout").fit().on_pick(|s: &mut Collate, i, tx: &mut Tx| {
         tx.motion(rune::tok::motion::SNAPPY);
         s.configure(|c| c.layout = if i == 1 { DiffMode::Split } else { DiffMode::Unified });
     });
+    // The toolbar's button toggles the trailing pane, whichever that is; the kit's toggle the leading.
+    let (trailing_open, name, keys) = if swap { (s.sidebar.is_open(), "views sidebar", "⇧⌘B") } else { (s.inspector.is_open(), "staging panel", "⌥⌘0") };
     let panel = IconButton::new(&shell::INSPECTOR)
         .variant(IconButtonVariant::GhostMuted)
-        .expanded(s.inspector.is_open())
-        .label(if s.inspector.is_open() { "Hide staging panel" } else { "Show staging panel" })
-        .help("Staging panel").shortcut("⌥⌘0")
-        .on_press(|s: &mut Collate| s.inspector.toggle())
+        .expanded(trailing_open)
+        .label(format!("{} {name}", if trailing_open { "Hide" } else { "Show" }))
+        .help(if swap { "Views sidebar" } else { "Staging panel" }).shortcut(keys)
+        .on_press(move |s: &mut Collate| if swap { s.sidebar.toggle() } else { s.inspector.toggle() })
         .build(k)
         .key("panel-toggle");
     let term = IconButton::new(&terminal::TERMINAL_ICON)
@@ -3601,9 +3605,13 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     }
 
     let lights = cx.titlebar_inset();
-    let split = SplitView::new(body)
-        .sidebar(&s.sidebar, |s: &mut Collate| &mut s.sidebar, sidebar)
-        .inspector(&s.inspector, |s: &mut Collate| &mut s.inspector, inspector)
+    // Swapped, each pane keeps its own state (width, open) and only changes side.
+    let split = if swap {
+        SplitView::new(body).sidebar(&s.inspector, |s: &mut Collate| &mut s.inspector, inspector).inspector(&s.sidebar, |s: &mut Collate| &mut s.sidebar, sidebar)
+    } else {
+        SplitView::new(body).sidebar(&s.sidebar, |s: &mut Collate| &mut s.sidebar, sidebar).inspector(&s.inspector, |s: &mut Collate| &mut s.inspector, inspector)
+    };
+    let split = split
         .toolbar(toolbar)
         .titlebar_inset(lights)
         // Room after the traffic lights, as T3 Code leaves, so the toggle doesn't crowd them.

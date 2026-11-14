@@ -93,6 +93,7 @@ pub const COMMANDS: &[Command] = &[
     sep("View"),
     check(cmd("sidebar", "Sidebar", "View", "cmd+shift+b", ready, |s, _| s.sidebar.toggle()), |s| s.sidebar.is_open()),
     check(cmd("panel", "Staging Panel", "View", "cmd+alt+0", ready, |s, _| s.inspector.toggle()), |s| s.inspector.is_open()),
+    check(cmd("swap-panes", "Swap Sidebars", "View", "", ready, |s, _| s.configure(|c| c.swap_panes = !c.swap_panes)), |s| s.settings.swap_panes),
     check(cmd("terminal", "Terminal", "View", "cmd+j", |s| s.has_project && !s.modal_open(), |s, _| s.toggle_terminal()), |s| s.terminals.open),
     cmd("next-change", "Next Change", "Go", "j", diffing, |s, tx| letter(s, "j", tx)),
     cmd("prev-change", "Previous Change", "Go", "k", diffing, |s, tx| letter(s, "k", tx)),

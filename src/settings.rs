@@ -188,6 +188,8 @@ pub struct Settings {
     /// Install a new version as soon as it's found.
     pub auto_update: bool,
     pub update_from: Channel,
+    /// The staging panel leads and the views sidebar trails, for readers who stage on the left.
+    pub swap_panes: bool,
 }
 
 impl Default for Settings {
@@ -220,6 +222,7 @@ impl Default for Settings {
             check_updates: true,
             auto_update: true,
             update_from: Channel::Release,
+            swap_panes: false,
         }
     }
 }
@@ -337,6 +340,7 @@ impl Settings {
                         "show_moved" => s.show_moved = b,
                         "check_updates" => s.check_updates = b,
                         "auto_update" => s.auto_update = b,
+                        "swap_panes" => s.swap_panes = b,
                         _ => {}
                     }
                 }
@@ -363,7 +367,7 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nagent = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nagent = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\nswap_panes = {}\n",
             self.font_size,
             self.wrap,
             self.one_number,
@@ -385,6 +389,7 @@ impl Settings {
             self.fold_large,
             self.check_updates,
             self.auto_update,
+            self.swap_panes,
         )
     }
 }
@@ -458,6 +463,7 @@ mod tests {
             check_updates: false,
             auto_update: false,
             update_from: Channel::Source,
+            swap_panes: true,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
     }
