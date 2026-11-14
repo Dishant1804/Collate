@@ -4234,8 +4234,6 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         _ => "Commit what's staged (⌘↩)",
     };
     let button = Button::new(label).variant(ButtonVariant::Contrast).shortcut("⌘↩").disabled(!ready).help(help).on_press(|s: &mut Collate| s.commit()).build(k).key("commit").w_full();
-    let amend = Checkbox::new(s.amend).label("Amend last commit").disabled(s.head.is_none() || s.committing).on_toggle(|s: &mut Collate| s.toggle_amend()).build(k).key("amend")
-        .help(if s.head.is_none() { "There's no commit yet to amend" } else { "Rewrite the last commit instead of making a new one" });
     // Set as the lists above are: an edge-to-edge hairline, as between them, then a 28 pt title
     // right under it.
     let agent = s.settings.agent.title();
@@ -4266,7 +4264,7 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         .w_full()
         .child(col().key("rule").w_full().h(1.0).fill(k.c.border_weak))
         .child(head)
-        .child(col().key("commit-body").w_full().px(PANEL_INSET).pb(PANEL_INSET).gap(8.0).child(field).child(amend).child(button))
+        .child(col().key("commit-body").w_full().px(PANEL_INSET).pb(PANEL_INSET).gap(8.0).child(field).child(button))
 }
 
 /// What the diff is, above it: the count, what it's measured against, the totals and how much

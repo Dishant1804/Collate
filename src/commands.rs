@@ -151,7 +151,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("ask", "Ask the Agent…", "Agent", "i", |s| diffing(s) && s.loose.is_none(), |s, tx| letter(s, "i", tx)),
     cmd("review", "Review the Change", "Agent", "", |s| diffing(s) && s.loose.is_none(), |s, _| s.ask_checklist(None)),
     cmd("send-comments", "Send Comments", "Agent", "", |s| ready(s) && !s.comments.is_empty(), |s, _| s.send_comments()),
-    cmd("write-message", "Write the Commit Message", "Agent", "", |s| idle(s) && s.staged > 0 && !s.writing_message, |s, _| s.write_message()),
+    cmd("write-message", "Write the Commit Message", "Agent", "", |s| idle(s) && (s.staged > 0 || s.amend || s.total > 0) && !s.writing_message, |s, _| s.write_message()),
     cmd("checkpoint", "Save a Checkpoint", "Agent", "", idle, |s, _| s.save_checkpoint()),
     cmd("updates", "Check for Updates…", "Help", "", |s| !s.update.busy(), |s, _| {
         // Settings' Updates section shows what the check finds, and installs it.
