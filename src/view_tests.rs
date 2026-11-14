@@ -1554,20 +1554,23 @@ fn text_dragged_across_the_code_selects_its_lines() {
     };
     // From the start of line 12 to the end of 14.
     let ((x0, _, y0), (_, x1, y1)) = (text_of(&rt, 12), text_of(&rt, 14));
-    rt.pointer_move(x0, y0);
-    rt.frame(1.0 / 60.0);
-    rt.pointer_down(x0, y0);
-    rt.frame(1.0 / 60.0);
-    rt.pointer_move(x1, y1);
-    rt.frame(1.0 / 60.0);
-    assert_eq!(rt.state.diff.selection(), None, "not while the press is still selecting");
-    rt.pointer_up(x1, y1);
-    for _ in 0..30 {
+    let drag = |rt: &mut Runtime<Collate>| {
+        rt.pointer_move(x0, y0);
         rt.frame(1.0 / 60.0);
-    }
-    let sel = rt.state.diff.selection().expect("the text's lines are selected");
-    assert_eq!((sel.start, sel.end), (LineRef::new(diff::Side::New, 12), LineRef::new(diff::Side::New, 14)));
-    assert!(rt.find("selection-bar").is_some(), "and the bar offers Comment and Ask");
+        rt.pointer_down(x0, y0);
+        rt.frame(1.0 / 60.0);
+        rt.pointer_move(x1, y1);
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.diff.selection(), None, "not while the press is still selecting");
+        rt.pointer_up(x1, y1);
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let sel = rt.state.diff.selection().expect("the text's lines are selected");
+        assert_eq!((sel.start, sel.end), (LineRef::new(diff::Side::New, 12), LineRef::new(diff::Side::New, 14)));
+        assert!(rt.find("selection-bar").is_some(), "and the bar offers Comment and Ask");
+    };
+    drag(&mut rt);
     // A click elsewhere in the code ends the text selection, and the lines with it.
     rt.pointer_down(x0, y0);
     rt.pointer_up(x0, y0);
@@ -1575,6 +1578,17 @@ fn text_dragged_across_the_code_selects_its_lines() {
         rt.frame(1.0 / 60.0);
     }
     assert_eq!(rt.state.diff.selection(), None);
+    // A press on the bar, held over frames as a hand does, leaves the text and its lines
+    // selected, so the bar is still there to take the release.
+    drag(&mut rt);
+    let (bx, by) = rt.find("ask-agent").unwrap();
+    rt.pointer_down(bx, by);
+    for _ in 0..6 {
+        rt.frame(1.0 / 60.0);
+    }
+    rt.pointer_up(bx, by);
+    rt.frame(1.0 / 60.0);
+    assert!(matches!(rt.state.prompt, Some(Ask::Agent(_, true))), "the bar's buttons take a click");
 }
 
 #[test]
@@ -2543,3 +2557,4 @@ fn the_shortcuts_sheet_is_sectioned_and_searchable() {
     rt.frame(1.0 / 60.0);
     assert!(!rt.state.show_help);
 }
+

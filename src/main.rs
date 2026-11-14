@@ -3109,10 +3109,15 @@ fn selection_bar(s: &Collate, k: &Kit) -> Option<El> {
     let copy = Button::new("Copy…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Copy the lines' reference (y), or the lines for an agent (Y)")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.copy_menu(tx)).build(k).key("copy-sel");
     let close = IconButton::new(&rune_kit::glyphs::CLOSE).variant(IconButtonVariant::GhostMuted).label("Clear the selection").help("Clear the selection").shortcut("Esc")
-        .on_press(|s: &mut Collate| s.diff.set_selection(None)).build(k).key("selection-clear");
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| {
+            s.diff.set_selection(None);
+            tx.clear_text_selection();
+        }).build(k).key("selection-clear");
     let bar = row().key("selection-bar").h(36.0).pl(12.0).pr(4.0).gap(4.0).items_center().radius(k.radius.md)
         .border(1.0, k.c.border_weak).fill(k.c.bg_base);
-    let bar = k.elevate(bar, &k.elevation.floating)
+    // A press on the bar leaves a text selection in the code, which the lines may follow:
+    // clearing it would clear them, and the bar, before the press lets go.
+    let bar = k.elevate(bar, &k.elevation.floating).keeps_text_selection()
         .role("toolbar").label(format!("{what}: {reference}"))
         .child(text(what).font(k.ty.text_xsmall_medium).color(k.c.text_muted).mr(8.0))
         .child(action(k, "comment", "Comment…", "Comment under the last selected line", "c", false, |s| s.ask_comment()))
