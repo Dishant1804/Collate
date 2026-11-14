@@ -1218,6 +1218,51 @@ fn command_j_opens_a_terminal_under_the_diff() {
 }
 
 #[test]
+fn the_wheel_scrolls_the_terminal_or_the_program_that_asked_for_the_mouse() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.terminals.connect(std::sync::Arc::new(|_, _| {}));
+        s.new_terminal();
+    });
+    rt.frame(1.0 / 60.0);
+    let id = rt.state.terminals.list[0].id;
+    let run = |rt: &mut Runtime<Collate>, line: &str, until: &str| {
+        for c in line.chars() {
+            rt.key(KeyEvent { key: Key::Text(c.to_string()), mods: Default::default() });
+        }
+        rt.key(KeyEvent { key: Key::Enter, mods: Default::default() });
+        let start = std::time::Instant::now();
+        while !rt.state.terminals.list[0].shown().contains(until) {
+            assert!(start.elapsed().as_secs() < 20, "{until} arrived:\n{}", rt.state.terminals.list[0].shown());
+            rt.frame(1.0 / 60.0);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        rt.frame(1.0 / 60.0);
+    };
+    let wheel = |rt: &mut Runtime<Collate>| {
+        let (x, y) = rt.find(&format!("terminal-grid-{id}")).expect("the grid is drawn");
+        for _ in 0..5 {
+            rt.wheel_event(rune::WheelEvent::new(0.0, 40.0).at(x, y).precise(true));
+            rt.frame(1.0 / 60.0);
+        }
+    };
+    // At the shell, the wheel goes back through what scrolled off.
+    run(&mut rt, "seq 1 300; echo done-$((6*7))", "done-42");
+    wheel(&mut rt);
+    assert!(rt.state.terminals.list[0].scrolled_back() > 0, "the wheel scrolls the shell's history");
+    // A full-screen program that asked for the mouse, as the agent does, hears the wheel.
+    run(&mut rt, "printf '\\033[?1049h\\033[?1003h\\033[?1006hmouse-%s\\n' on; cat -v", "mouse-on");
+    wheel(&mut rt);
+    let start = std::time::Instant::now();
+    while !rt.state.terminals.list[0].shown().contains("^[[<64;") {
+        assert!(start.elapsed().as_secs() < 20, "the program got wheel-up reports:\n{}", rt.state.terminals.list[0].shown());
+        rt.frame(1.0 / 60.0);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!rt.state.terminals.list[0].shown().contains("^[[A"), "not arrow keys");
+}
+
+#[test]
 fn command_w_asks_before_ending_a_terminal_that_runs_a_program() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);

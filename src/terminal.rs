@@ -23,7 +23,7 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color as Ansi, CursorShape, NamedColor, Rgb};
-use rune::{Color, Cursor, Drag, El, Icon, Key, KeyEvent, Phase, Span, TextEdit, TextStyle, Tx, WheelEvent, col, el, icon, rich, row, text};
+use rune::{Color, Cursor, Drag, El, Icon, Key, KeyEvent, Mods, Phase, Span, TextEdit, TextStyle, Tx, WheelEvent, col, el, icon, rich, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 /// The drawer's height when first opened, and its bounds: at least 180 points, so a few
@@ -129,6 +129,12 @@ impl Session {
             .map(|l| (0..term.columns()).map(|c| term.grid()[Point::new(Line(l as i32), Column(c))].c).collect::<String>().trim_end().to_owned())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Lines scrolled back from the live screen.
+    #[cfg(test)]
+    pub fn scrolled_back(&self) -> usize {
+        self.term.lock().grid().display_offset()
     }
 
     fn copy_selection(&self) -> Option<String> {
@@ -319,6 +325,27 @@ impl Terminals {
 
 fn window_size(cols: usize, rows: usize) -> WindowSize {
     WindowSize { num_cols: cols as u16, num_lines: rows as u16, cell_width: 8, cell_height: 16 }
+}
+
+/// The bytes one wheel step sends to a program that asked for the mouse: xterm's button 64
+/// (`up`) or 65 at cell (column, row), in SGR form when the program asked for it.
+fn wheel_report(mode: TermMode, up: bool, (col, row): (usize, usize), m: Mods) -> Vec<u8> {
+    let button = if up { 64 } else { 65 } + 4 * m.shift as u32 + 8 * m.alt as u32 + 16 * m.ctrl as u32;
+    if mode.contains(TermMode::SGR_MOUSE) {
+        return format!("\x1b[<{button};{};{}M", col + 1, row + 1).into_bytes();
+    }
+    // The old form puts each number in one character, offset by 32: as UTF-8 where the
+    // program asked for that, else a byte, which stops at column and row 223.
+    let utf8 = mode.contains(TermMode::UTF8_MOUSE);
+    let mut out = b"\x1b[M".to_vec();
+    for n in [button, col as u32 + 1, row as u32 + 1] {
+        let n = n + 32;
+        match char::from_u32(n) {
+            Some(c) if utf8 => out.extend(c.to_string().as_bytes()),
+            _ => out.push(n.min(255) as u8),
+        }
+    }
+    out
 }
 
 /// The bytes a key sends, as xterm (and Terminal.app's defaults) send them: `None` for keys
@@ -755,7 +782,15 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
             t.wheel -= lines * cell.1;
             let mut term = t.term.lock();
             let mode = *term.mode();
-            if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
+            if mode.intersects(TermMode::MOUSE_MODE) {
+                // A program that asked for the mouse (the agent, htop, vim with mouse=a)
+                // scrolls itself: arrows would page through the agent's prompt history.
+                let (p, _) = point_at(&term, w.x, w.y, cell);
+                let at = (p.column.0, (p.line.0 + term.grid().display_offset() as i32).max(0) as usize);
+                drop(term);
+                let report = wheel_report(mode, lines > 0.0, at, w.mods);
+                t.write(report.repeat(lines.abs() as usize));
+            } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
                 // A full-screen program (less, vim) scrolls by its own arrow keys.
                 drop(term);
                 let key = if lines > 0.0 { 'A' } else { 'B' };
@@ -893,7 +928,6 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rune::Mods;
 
     fn key(key: Key, mods: Mods) -> Option<Vec<u8>> {
         encode(&KeyEvent { key, mods }, TermMode::empty())
@@ -943,6 +977,15 @@ mod tests {
         assert!(ts.list[0].shown().contains(&dir.display().to_string()), "it started in the folder");
         ts.close(0);
         assert!(!ts.open && ts.list.is_empty(), "closing the last shell closes the drawer");
+    }
+
+    #[test]
+    fn the_wheel_reaches_a_program_that_asked_for_the_mouse() {
+        let none = Mods::default();
+        assert_eq!(wheel_report(TermMode::SGR_MOUSE, true, (4, 9), none), b"\x1b[<64;5;10M".to_vec(), "SGR, as the agent asks");
+        assert_eq!(wheel_report(TermMode::SGR_MOUSE, false, (0, 0), Mods { ctrl: true, ..none }), b"\x1b[<81;1;1M".to_vec());
+        assert_eq!(wheel_report(TermMode::empty(), true, (4, 9), none), vec![0x1b, b'[', b'M', 96, 37, 42], "the old form");
+        assert_eq!(wheel_report(TermMode::UTF8_MOUSE, false, (300, 0), none), "\x1b[Maō!".as_bytes().to_vec(), "UTF-8 past column 223");
     }
 
     #[test]
