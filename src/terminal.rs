@@ -23,7 +23,7 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color as Ansi, CursorShape, NamedColor, Rgb};
-use rune::{Color, Cursor, Drag, El, Icon, Key, KeyEvent, Mods, Phase, Span, TextEdit, TextStyle, Tx, WheelEvent, col, el, icon, rich, row, text};
+use rune::{Color, Cursor, Drag, El, Icon, Key, KeyEvent, Mods, Phase, Span, TextEdit, TextStyle, Transition, Tx, WheelEvent, col, el, icon, rich, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 /// The drawer's height when first opened, and its bounds: at least 180 points, so a few
@@ -749,7 +749,10 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
             let mut line = el().key(format!("r{n}")).w_full().h(cell.1);
             for (i, (c, cells, s, fg, bgc, sp)) in runs.into_iter().enumerate() {
                 let len = s.len();
-                let mut run = rich(s, vec![sp]).key(format!("c{c}")).font(font).color(fg).absolute(c as f32 * cell.0, 0.0).h(cell.1);
+                // A run comes and goes whenever its row's text changes, as each line of a scroll
+                // does: the default fade smeared every step, so it takes the shortest one.
+                let mut run = rich(s, vec![sp]).key(format!("c{c}")).font(font).color(fg).absolute(c as f32 * cell.0, 0.0).h(cell.1)
+                    .transition(Transition::opacity().springs(rune::tok::motion::pair::INSTANT));
                 if strikes[i] {
                     run = run.strike(0, len, Some(fg));
                 }
