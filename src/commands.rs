@@ -7,7 +7,7 @@ use rune::{MenuError, MenuItem, PopupItem, Tx};
 use crate::diff::DiffMode;
 use crate::git::Scope;
 use crate::search::{self, fuzzy};
-use crate::{Collate, HANDLE, Screen, keys, refresh};
+use crate::{Collate, HANDLE, PanelTab, Screen, keys, refresh};
 
 pub struct Command {
     /// Unique; empty for a separator.
@@ -93,6 +93,8 @@ pub const COMMANDS: &[Command] = &[
     sep("View"),
     check(cmd("sidebar", "Sidebar", "View", "cmd+shift+b", ready, |s, _| s.sidebar.toggle()), |s| s.sidebar.is_open()),
     check(cmd("panel", "Staging Panel", "View", "cmd+alt+0", ready, |s, _| s.inspector.toggle()), |s| s.inspector.is_open()),
+    check(cmd("files-tab", "Files", "View", "cmd+alt+1", ready, |s, _| s.show_panel_tab(PanelTab::Files)), |s| s.inspector.is_open() && s.panel_tab == PanelTab::Files),
+    check(cmd("agent-tab", "Agent Chat", "View", "cmd+alt+2", ready, |s, _| s.show_panel_tab(PanelTab::Agent)), |s| s.inspector.is_open() && s.panel_tab == PanelTab::Agent),
     check(cmd("swap-panes", "Swap Sidebars", "View", "", ready, |s, _| s.configure(|c| c.swap_panes = !c.swap_panes)), |s| s.settings.swap_panes),
     check(cmd("terminal", "Terminal", "View", "cmd+j", |s| s.has_project && !s.modal_open(), |s, _| s.toggle_terminal()), |s| s.terminals.open),
     cmd("next-change", "Next Change", "Go", "j", diffing, |s, tx| letter(s, "j", tx)),
@@ -128,6 +130,9 @@ pub const COMMANDS: &[Command] = &[
     cmd("unstage-all", "Unstage All", "Changes", "", |s| idle(s) && s.staged > 0, |s, _| s.unstage_all()),
     cmd("commit", "Commit", "Changes", "cmd+enter", |s| idle(s) && (s.staged > 0 || s.amend), |s, _| s.commit()),
     check(cmd("amend", "Amend Last Commit", "Changes", "", |s| idle(s) && s.head.is_some() && !s.committing, |s, _| s.toggle_amend()), |s| s.amend),
+    check(cmd("signoff", "Sign Off Commits", "Changes", "", |s| !s.committing, |s, _| s.signoff = !s.signoff), |s| s.signoff),
+    check(cmd("skip-hooks", "Skip Commit Hooks", "Changes", "", |s| !s.committing, |s, _| s.skip_hooks = !s.skip_hooks), |s| s.skip_hooks),
+    cmd("uncommit", "Uncommit", "Changes", "", |s| idle(s) && !s.committing && s.last_commit.as_ref().is_some_and(|c| c.1), |s, _| s.branch_do("uncommit")),
     cmd("undo", "Undo Last Commit, Merge or Switch", "Changes", "", |s| idle(s) && s.last_move.is_some(), |s, _| s.undo_move()),
     sep("Changes"),
     check(cmd("viewed", "Mark File Viewed", "Changes", "v", |s| diffing(s) && s.loose.is_none(), |s, tx| letter(s, "v", tx)), |s| s.is_viewed(s.diff.visible_file())),
@@ -139,6 +144,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("fetch", "Fetch", "Branch", "", idle, |s, _| s.branch_do("fetch")),
     cmd("pull", "Pull", "Branch", "", idle, |s, _| s.branch_do("pull")),
     cmd("push", "Push", "Branch", "", idle, |s, _| s.branch_do("push")),
+    cmd("pull-request", "Create Pull Request…", "Branch", "", |s| idle(s) && s.ahead_behind.is_some(), |s, _| s.branch_do("pull-request")),
     cmd("unpushed", "Show Unpushed Commits", "Branch", "", |s| idle(s) && s.ahead_behind.is_some_and(|(a, _)| a > 0), |s, _| s.branch_do("unpushed")),
     sep("Branch"),
     cmd("new-branch", "New Branch…", "Branch", "", idle, |s, _| s.branch_do("new-branch")),
@@ -148,7 +154,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("tags", "Tags…", "Branch", "", idle, |s, tx| s.tags_menu(tx)),
     sep("Branch"),
     cmd("compare", "Compare Branches or Tags…", "Branch", "", idle, |s, _| s.branch_do("compare")),
-    cmd("ask", "Ask the Agent…", "Agent", "i", |s| diffing(s) && s.loose.is_none(), |s, tx| letter(s, "i", tx)),
+    cmd("add-to-chat", "Add Lines to Chat", "Agent", "i", |s| diffing(s) && s.loose.is_none(), |s, tx| letter(s, "i", tx)),
     cmd("review", "Review the Change", "Agent", "", |s| diffing(s) && s.loose.is_none(), |s, _| s.ask_checklist(None)),
     cmd("send-comments", "Send Comments", "Agent", "", |s| ready(s) && !s.comments.is_empty(), |s, _| s.send_comments()),
     cmd("write-message", "Write the Commit Message", "Agent", "", |s| idle(s) && (s.staged > 0 || s.amend || s.total > 0) && !s.writing_message, |s, _| s.write_message()),

@@ -1,6 +1,6 @@
 //! Handing work to the reader's coding agent: the selected lines as a reference or as a
 //! prompt-ready excerpt, their comments, and their review checklist. Collate makes the text;
-//! the agent the reader already has does the rest, in a terminal under the diff.
+//! the agent the reader already has does the rest, in the staging panel's Agent tab.
 use std::path::Path;
 
 use rune::{PopupItem, PopupMenu, TextEdit, Tx};
@@ -8,7 +8,7 @@ use rune::{PopupItem, PopupMenu, TextEdit, Tx};
 use crate::diff::Side;
 use crate::git::Operation;
 use crate::settings::Agent;
-use crate::{Ask, Collate, HANDLE, Scope, abbrev, current_repo, paths_file};
+use crate::{Collate, HANDLE, PanelTab, Scope, abbrev, current_repo, paths_file};
 
 /// How a commit message should read until the reader writes their own instructions.
 const COMMIT_RULES: &str = "A subject line of at most 72 characters in the imperative mood, then, only if the subject doesn't make the reason clear, a blank line and a short body saying why.";
@@ -16,6 +16,8 @@ const COMMIT_RULES: &str = "A subject line of at most 72 characters in the imper
 /// The most of a staged diff the agent is given: its prompt is one shell argument, and macOS
 /// caps those at about 1 MB.
 const DIFF_CAP: usize = 200_000;
+/// How many 400 ms ticks Add to Chat waits for a new agent to start before giving up.
+const CHAT_WAIT_TICKS: u32 = 50;
 
 /// What the agent is asked to bring together.
 #[derive(Clone, Debug, PartialEq)]
@@ -177,7 +179,7 @@ impl Collate {
             .item(PopupItem::new("ask:commit-rules", "Edit Commit Message Instructions…"))
     }
 
-    /// The agent to run, with its instructions to edit, under the sidebar's agent row.
+    /// The agent to run, with its instructions to edit, under the Agent tab's agent name.
     pub fn agent_picker(&mut self, tx: &mut Tx) {
         let mut menu = PopupMenu::new();
         for (i, a) in Agent::ALL.iter().enumerate() {
@@ -277,14 +279,62 @@ impl Collate {
         self.say(said, false);
     }
 
-    /// Asks for a question to put to the agent: about the selected lines, or else about the
-    /// whole change in view, so asking never waits on knowing how to select.
-    pub fn ask_question(&mut self) {
-        let about = match self.selection_for_agent() {
-            Some(lines) => Ask::Agent(lines, true),
-            None => Ask::Agent(self.compared_text(), false),
+    /// Adds the selected lines to the agent's message in the Agent tab, as Zed's Add to Chat:
+    /// pasted, not sent, for the reader to ask about them there. With no agent running here,
+    /// it starts one and pastes once its screen settles, since nothing says when it reads keys.
+    pub fn add_to_chat(&mut self) {
+        let Some(lines) = self.selection_for_agent() else {
+            self.say("Click a line number first: Add to Chat takes the selected lines", true);
+            return;
         };
-        self.ask(about);
+        if let Some(t) = self.running_chat() {
+            t.paste(&format!("{lines}\n\n"));
+            return self.reveal_chat();
+        }
+        // A second selection while the agent starts goes with the first.
+        if let Some((waiting, ..)) = &mut self.chat_draft {
+            waiting.push_str(&format!("\n\n{lines}"));
+            return self.reveal_chat();
+        }
+        if !self.agent_starting {
+            self.start_agent_chat(None);
+        }
+        // It said why it couldn't start.
+        if !self.agent_starting {
+            return;
+        }
+        self.chat_draft = Some((lines, String::new(), 0));
+        self.reveal_chat();
+        let Some(app) = HANDLE.get().cloned() else { return };
+        std::thread::spawn(move || {
+            for _ in 0..CHAT_WAIT_TICKS {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                app.update(|s, _| s.deliver_chat_draft());
+            }
+        });
+    }
+
+    /// The agent's terminal when it was started in this project and has finished starting.
+    fn running_chat(&self) -> Option<&crate::terminal::Session> {
+        let repo = current_repo()?;
+        let here = self.agent_session.as_ref().is_some_and(|(_, dir)| *dir == repo.root) && !self.agent_starting;
+        self.agent_chat.active().filter(|_| here)
+    }
+
+    /// A tick of the wait for a new agent: pastes the waiting lines once its screen has held
+    /// still for a tick, or gives up when the wait runs out.
+    fn deliver_chat_draft(&mut self) {
+        let Some((lines, last, ticks)) = self.chat_draft.take() else { return };
+        let screen = self.running_chat().map(|t| t.shown()).unwrap_or_default();
+        if screen.trim().is_empty() || screen != last {
+            if ticks + 1 >= CHAT_WAIT_TICKS {
+                return self.say(format!("{} didn't settle in time, so the lines weren't added", self.settings.agent.title()), true);
+            }
+            self.chat_draft = Some((lines, screen, ticks + 1));
+            return;
+        }
+        let Some(t) = self.running_chat() else { return };
+        t.paste(&format!("{lines}\n\n"));
     }
 
     /// The prompt that asks the agent to address the reader's comments.
@@ -296,7 +346,7 @@ impl Collate {
         )
     }
 
-    /// Starts the reader's agent on their comments, in a new terminal under the diff.
+    /// Gives the reader's comments to the agent, in the Agent tab.
     pub fn send_comments(&mut self) {
         if self.comments.is_empty() {
             self.say("No comments to send: press c on a selected line to write one", true);
@@ -306,7 +356,7 @@ impl Collate {
         self.run_agent(&prompt);
     }
 
-    /// Asks the agent to settle `settle` in a new terminal.
+    /// Asks the agent to settle `settle`, in the Agent tab.
     pub fn settle_with_agent(&mut self, settle: Settle) {
         self.run_agent(&settle_prompt(&settle));
     }
@@ -318,43 +368,137 @@ impl Collate {
         Some(Settle::Stopped(op, files))
     }
 
-    /// Starts the agent in a new terminal in the project's folder, with `prompt` as its first
-    /// message, after saving the working tree as a checkpoint to come back to. The prompt goes
-    /// through a file, so the shell neither echoes nor parses it.
+    /// Gives the agent `prompt` in the Agent tab, after saving the working tree as a checkpoint
+    /// to come back to: as the next message of the chat running in this project, or else as
+    /// the first of a new one. The tab comes up with the keys, for the reader to go on.
     pub fn run_agent(&mut self, prompt: &str) {
         let Some(repo) = current_repo() else {
             self.say("Open a project first", true);
             return;
         };
-        if !self.terminals.ready() {
+        if !self.agent_chat.ready() {
             self.say("The terminal isn't ready yet", true);
             return;
         }
-        let file = std::env::temp_dir().join(format!("collate-prompt-{}-{}.md", std::process::id(), self.terminals.next_id()));
-        if let Err(e) = std::fs::write(&file, prompt) {
-            self.say(format!("Couldn't write the prompt to {}: {e}", file.display()), true);
-            return;
-        }
-        let agent = self.settings.agent;
-        let first = prompt.split(['.', '\n']).next().unwrap_or("").chars().take(60).collect::<String>();
-        let label = format!("Before {}: {first}", agent.title());
-        let start = move |s: &mut Collate, saved: Result<String, String>| {
-            if let Err(e) = saved {
-                return s.say(format!("Didn't start {}: couldn't save a checkpoint first: {e}", agent.title()), true);
-            }
-            match s.terminals.run(&repo.root, &agent_command(agent.command(), &file)) {
-                Ok(()) => s.say(format!("Started {} in the terminal; Checkpoints in the ⋯ menu go back to before it", agent.title()), false),
-                Err(e) => s.say(e, true),
-            }
+        let running = self.agent_chat.active().map(|t| t.id).filter(|_| self.agent_session.as_ref().is_some_and(|(_, dir)| *dir == repo.root));
+        let Some(id) = running else {
+            return self.start_agent_chat(Some(prompt));
         };
+        self.reveal_chat();
+        let agent = self.agent_session.as_ref().map_or(self.settings.agent, |(a, _)| *a);
+        let first = prompt.split(['.', '\n']).next().unwrap_or("").chars().take(60).collect::<String>();
+        let prompt = prompt.to_owned();
+        self.checkpointed(format!("Before {}: {first}", agent.title()), move |s, saved| {
+            if let Err(e) = saved {
+                return s.say(format!("Didn't send it to {}: couldn't save a checkpoint first: {e}", agent.title()), true);
+            }
+            let Some(t) = s.agent_chat.list.iter().find(|t| t.id == id) else {
+                return s.say(format!("{} ended before the message reached it", agent.title()), true);
+            };
+            t.paste(&prompt);
+            // Return a moment after the paste: an agent's input reads Return in the same
+            // read as the paste as a line break of the pasted text, not as Send.
+            let Some(app) = HANDLE.get().cloned() else { return t.press_return() };
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                app.update(move |s, _| {
+                    if let Some(t) = s.agent_chat.list.iter().find(|t| t.id == id) {
+                        t.press_return();
+                    }
+                });
+            });
+        });
+    }
+
+    /// Saves a checkpoint labelled `label` off the UI thread, then calls `then` with how it went.
+    fn checkpointed(&mut self, label: String, then: impl FnOnce(&mut Collate, Result<String, String>) + Send + 'static) {
         let Some(app) = HANDLE.get().cloned() else {
             let saved = current_repo().map_or(Err("no project".into()), |r| r.checkpoint(&label));
-            return start(self, saved);
+            return then(self, saved);
         };
         let r = current_repo();
         std::thread::spawn(move || {
             let saved = r.map_or(Err("no project".into()), |r| r.checkpoint(&label));
-            app.update(move |s, _| start(s, saved));
+            app.update(move |s, _| then(s, saved));
+        });
+    }
+
+    /// Shows the Agent tab with the keys, without starting anything.
+    fn reveal_chat(&mut self) {
+        self.panel_tab = PanelTab::Agent;
+        self.inspector.set_open(true);
+        self.terminals.focus(false);
+        self.agent_chat.focus(true);
+    }
+
+    /// Shows a tab of the staging panel. The Agent tab opens the panel if it's hidden, takes
+    /// the keys, and starts the agent the first time.
+    pub fn show_panel_tab(&mut self, tab: PanelTab) {
+        if tab == PanelTab::Files {
+            self.panel_tab = tab;
+            return self.agent_chat.focus(false);
+        }
+        self.reveal_chat();
+        if self.agent_chat.list.is_empty() && self.has_project && !self.agent_starting && self.agent_session.is_none() {
+            self.start_agent_chat(None);
+        }
+    }
+
+    /// Starts the reader's agent in the Agent tab, in the project's folder, ending the one
+    /// running there, with `prompt` as its first message if given. A checkpoint is saved
+    /// first, as for every agent Collate starts. The prompt goes through a file, so the shell
+    /// neither echoes nor parses it.
+    pub fn start_agent_chat(&mut self, prompt: Option<&str>) {
+        let Some(repo) = current_repo() else {
+            self.say("Open a project first", true);
+            return;
+        };
+        if !self.agent_chat.ready() {
+            self.say("The terminal isn't ready yet", true);
+            return;
+        }
+        if self.agent_starting {
+            return;
+        }
+        let file = match prompt {
+            Some(prompt) => {
+                let file = std::env::temp_dir().join(format!("collate-prompt-{}-{}.md", std::process::id(), self.agent_chat.next_id()));
+                if let Err(e) = std::fs::write(&file, prompt) {
+                    self.say(format!("Couldn't write the prompt to {}: {e}", file.display()), true);
+                    return;
+                }
+                Some(file)
+            }
+            None => None,
+        };
+        let agent = self.settings.agent;
+        // Dropping the session hangs up its terminal, which ends the agent.
+        self.agent_chat.list.clear();
+        self.agent_starting = true;
+        if prompt.is_some() {
+            self.reveal_chat();
+        }
+        let label = match prompt.map(|p| p.split(['.', '\n']).next().unwrap_or("").chars().take(60).collect::<String>()) {
+            Some(first) => format!("Before {}: {first}", agent.title()),
+            None => format!("Before chatting with {}", agent.title()),
+        };
+        self.checkpointed(label, move |s, saved| {
+            s.agent_starting = false;
+            if let Err(e) = saved {
+                return s.say(format!("Didn't start {}: couldn't save a checkpoint first: {e}", agent.title()), true);
+            }
+            match s.agent_chat.exec(&repo.root, &chat_command(agent, file.as_deref())) {
+                Ok(()) => {
+                    s.agent_session = Some((agent, repo.root.clone()));
+                    // The reader may have left the tab while the checkpoint saved.
+                    let shown = s.panel_tab == PanelTab::Agent;
+                    s.agent_chat.focus(shown);
+                    if shown {
+                        s.terminals.focus(false);
+                    }
+                }
+                Err(e) => s.say(e, true),
+            }
         });
     }
 
@@ -443,6 +587,18 @@ fn clean_message(text: &str) -> String {
     t.trim().to_owned()
 }
 
+/// The shell command for the Agent tab: the agent's program alone, which starts it
+/// interactive, or with the prompt in `file` as its first message. Stopped by an error (not
+/// installed, a crash), it leaves its message on screen until Return, instead of the tab
+/// closing before it can be read.
+fn chat_command(agent: Agent, file: Option<&Path>) -> String {
+    let start = match file {
+        Some(file) => agent_command(agent.command(), file),
+        None => agent.command().split(' ').next().unwrap_or("").to_owned(),
+    };
+    format!("{start}; s=$?; [ $s -eq 0 ] || {{ printf '\\n%s stopped (status %s). Press Return to close.' '{}' $s; read -r _; }}", agent.title())
+}
+
 /// The shell command that starts `agent` with the prompt in `file` as its argument.
 fn agent_command(agent: &str, file: &Path) -> String {
     let quoted = format!("'{}'", file.display().to_string().replace('\'', "'\\''"));
@@ -456,6 +612,12 @@ mod tests {
     #[test]
     fn the_agent_reads_its_prompt_from_a_file_the_shell_quotes() {
         assert_eq!(agent_command("claude", Path::new("/tmp/it's.md")), "claude \"$(cat '/tmp/it'\\''s.md')\"");
+    }
+
+    #[test]
+    fn the_chat_starts_the_agent_alone_and_keeps_its_error_on_screen() {
+        assert_eq!(chat_command(Agent::Gemini, None), "gemini; s=$?; [ $s -eq 0 ] || { printf '\\n%s stopped (status %s). Press Return to close.' 'Gemini' $s; read -r _; }");
+        assert!(chat_command(Agent::Gemini, Some(Path::new("/tmp/p.md"))).starts_with("gemini -i \"$(cat '/tmp/p.md')\"; s=$?;"), "a first message keeps -i, so it stays interactive");
     }
 
     #[test]

@@ -211,11 +211,11 @@ fn committing_takes_what_is_staged() {
     write(&dir, "a.txt", "a2\n");
     write(&dir, "b.txt", "untracked\n");
     r.stage("a.txt").unwrap();
-    let summary = r.commit("Change a\n\nWith a body.", false).unwrap();
+    let summary = r.commit("Change a\n\nWith a body.", &[]).unwrap();
     assert!(summary.ends_with("Change a"), "{summary}");
     assert_eq!(sh(&dir, &["log", "-1", "--format=%B"]).trim(), "Change a\n\nWith a body.");
     assert_eq!(sh(&dir, &["status", "--porcelain"]), "?? b.txt\n");
-    assert!(r.commit("nothing staged", false).is_err());
+    assert!(r.commit("nothing staged", &[]).is_err());
 }
 
 #[test]
@@ -548,8 +548,8 @@ fn stash_branch_and_reset_move_the_repository() {
     assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\ntwo\n");
     assert!(r.stashes().is_empty());
     r.stage_all().unwrap();
-    r.commit("second", false).unwrap();
-    r.commit("second, reworded", true).unwrap();
+    r.commit("second", &[]).unwrap();
+    r.commit("second, reworded", &["--amend"]).unwrap();
     assert_eq!(r.last_message().unwrap().trim(), "second, reworded");
     r.new_branch("side", Some(&first), true).unwrap();
     assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
@@ -783,14 +783,14 @@ fn operations_that_move_head_undo() {
     // A commit comes back staged.
     write(&dir, "a.txt", "two\n");
     r.stage("a.txt").unwrap();
-    let (done, moved) = r.undoable("the commit", Back::Soft, false, |r| r.commit("second", false));
+    let (done, moved) = r.undoable("the commit", Back::Soft, false, |r| r.commit("second", &[]));
     assert!(done.is_ok());
     let moved = moved.expect("a commit moves HEAD");
     r.undo(&moved).unwrap();
     assert_eq!(head(&r), start);
     assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]).trim(), "a.txt");
     // A hard reset gives back the commit and the changes it threw away.
-    r.commit("second", false).unwrap();
+    r.commit("second", &[]).unwrap();
     let second = head(&r);
     write(&dir, "a.txt", "three\n");
     let (_, moved) = r.undoable("the reset", Back::Keep, true, |r| r.reset("hard", &start.1));
@@ -805,7 +805,7 @@ fn operations_that_move_head_undo() {
     // Not once HEAD has moved since: that would throw the new work away.
     write(&dir, "b.txt", "b\n");
     r.stage("b.txt").unwrap();
-    r.commit("on other", false).unwrap();
+    r.commit("on other", &[]).unwrap();
     assert!(r.undo(&moved).is_err());
     sh(&dir, &["reset", "-q", "--hard", "HEAD^"]);
     r.undo(&moved).unwrap();

@@ -247,7 +247,7 @@ lucide!(PLUS_ICON, "collate-plus", r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#
 lucide!(UPDATES_ICON, "collate-download", r#"<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>"#);
 /// Each settings section's Lucide icon, in `SETTINGS_TABS` order.
 static SETTINGS_ICONS: [&Icon; 8] = [&APPEARANCE_ICON, &ALL_ICON, &LANGUAGES_ICON, &REVIEW_ICON, &AGENT_ICON, &PROJECTS_ICON, &REFRESH_TAB_ICON, &UPDATES_ICON];
-/// The Agent section, which the sidebar's agent menu opens.
+/// The Agent section, which the Agent tab's agent menu opens.
 pub const AGENT_TAB: usize = 4;
 /// The Projects section, which has its own Add button.
 const PROJECTS_TAB: usize = 5;

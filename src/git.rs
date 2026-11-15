@@ -133,6 +133,8 @@ pub struct Snapshot {
     pub ahead_behind: Option<(usize, usize)>,
     /// A merge, rebase, cherry-pick or revert git stopped in the middle of.
     pub operation: Option<Operation>,
+    /// HEAD's subject, and whether it has a parent to uncommit back to.
+    pub last_commit: Option<(String, bool)>,
 }
 
 /// A multi-step operation git stopped in, waiting for its conflicts to be settled.
@@ -453,7 +455,7 @@ impl Repo {
             changes.retain(|c| c.reused || !same(&c.old, &c.new));
         }
         let base = base.map(|(name, c)| (name.to_owned(), c.to_owned()));
-        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes, ahead_behind: ahead_behind(raw), operation: self.operation() })
+        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes, ahead_behind: ahead_behind(raw), operation: self.operation(), last_commit: self.last_commit() })
     }
 
     /// The files commit `sha` changed, each against its first parent (nothing, for a root
@@ -847,13 +849,11 @@ impl Repo {
         Ok(backup)
     }
 
-    /// Commits what's staged, or with `amend` rewrites the last commit with it; returns git's
-    /// one-line summary.
-    pub fn commit(&self, message: &str, amend: bool) -> Result<String, String> {
+    /// Commits what's staged, with `git commit`'s `flags` (`--amend`, `--signoff`,
+    /// `--no-verify`); returns git's one-line summary.
+    pub fn commit(&self, message: &str, flags: &[&str]) -> Result<String, String> {
         let mut args = vec!["commit", "-q", "-F", "-"];
-        if amend {
-            args.push("--amend");
-        }
+        args.extend(flags);
         self.run(&args, Some(message))?;
         self.run(&["log", "-1", "--format=%h %s"], None)
     }
@@ -928,6 +928,13 @@ impl Repo {
     /// The last `n` commit subjects, newest first: the repository's style for a new one.
     pub fn recent_subjects(&self, n: usize) -> Result<Vec<String>, String> {
         Ok(self.run(&["log", &format!("-{n}"), "--format=%s"], None)?.lines().map(str::to_owned).collect())
+    }
+
+    /// HEAD's subject, and whether it has a parent. `None` before the first commit.
+    pub fn last_commit(&self) -> Option<(String, bool)> {
+        let out = self.run(&["log", "-1", "--format=%s%x00%P"], None).ok()?;
+        let (subject, parents) = out.split_once('\0')?;
+        Some((subject.to_owned(), !parents.trim().is_empty()))
     }
 
     /// The last commit's whole message, to start an amend from.

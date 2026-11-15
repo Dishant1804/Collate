@@ -675,7 +675,11 @@ fn the_staging_panel_lines_up() {
     let left = panel[0] + PANEL_INSET;
     let right = panel[0] + panel[2] - PANEL_INSET;
     assert!((filter[0] - left).abs() < 1.0, "the filter starts on the inset: {} vs {left}", filter[0]);
-    assert!((filter[0] + filter[2] - right).abs() < 1.0, "and ends on it: {} vs {right}", filter[0] + filter[2]);
+    // The panel's tabs end the row on the inset, the filter 8 pt before them, both centred alike.
+    let tabs = rect("panel-tabs");
+    assert!((tabs[0] + tabs[2] - right).abs() < 1.0, "the tabs end on the inset: {} vs {right}", tabs[0] + tabs[2]);
+    assert!((filter[0] + filter[2] + 8.0 - tabs[0]).abs() < 1.0, "the filter stops 8 pt short of them: {filter:?} vs {tabs:?}");
+    assert!((filter[1] + filter[3] / 2.0 - tabs[1] - tabs[3] / 2.0).abs() < 0.5, "and is centred with them");
     // Stage All sits against its ⌄, whose box is pulled 4 pt past the edge so its glyph ends on it.
     let more = rect("changes-more");
     assert!((bulk[0] + bulk[2] - more[0]).abs() < 1.0, "Stage All meets its ⌄: {bulk:?} vs {more:?}");
@@ -689,10 +693,12 @@ fn the_staging_panel_lines_up() {
     // Row buttons end on the inset too.
     let quick = rect("quick");
     assert!((quick[0] + quick[2] - right).abs() < 1.0, "a row's + ends on the inset: {} vs {right}", quick[0] + quick[2]);
-    for key in ["message", "commit"] {
-        let r = rect(key);
-        assert!((r[0] - left).abs() < 1.0 && (r[0] + r[2] - right).abs() < 1.0, "the commit {key} spans the inset: {r:?} vs {left}..{right}");
-    }
+    let message = rect("message");
+    assert!((message[0] - left).abs() < 1.0 && (message[0] + message[2] - right).abs() < 1.0, "the commit message spans the inset: {message:?} vs {left}..{right}");
+    // Commit and its ⌄ sit together at the right, as Zed's split button.
+    let (commit, options) = (rect("commit"), rect("commit-options"));
+    assert!((commit[0] + commit[2] + 1.0 - options[0]).abs() < 1.0, "Commit meets its ⌄: {commit:?} vs {options:?}");
+    assert!((options[0] + options[2] - right).abs() < 1.0, "the ⌄ ends on the inset: {} vs {right}", options[0] + options[2]);
 }
 
 #[test]
@@ -1073,7 +1079,7 @@ fn the_review_loop_stages_discards_and_commits() {
     // Commit what's staged.
     reread(&mut rt);
     rt.update(|s, _| s.message = TextEdit::new("Spell out five"));
-    let summary = repo.commit("Spell out five", false).unwrap();
+    let summary = repo.commit("Spell out five", &[]).unwrap();
     assert!(summary.ends_with("Spell out five"));
     reread(&mut rt);
     assert_eq!(rt.state.diff.files().len(), 0, "nothing left to review");
@@ -1193,6 +1199,39 @@ fn the_review_loop_stages_discards_and_commits() {
     rt.update(|s, tx| s.open_project(std::path::Path::new("/"), tx));
     assert!(rt.state.notice.as_ref().is_some_and(|n| n.error), "a folder outside git says so and changes nothing");
     assert_eq!(current_repo().unwrap().root.canonicalize().unwrap(), dir.canonicalize().unwrap());
+    // Asking the agent with its chat running in this project sends the prompt there as the
+    // next message, rather than starting another: `cat` stands in for the agent and shows it.
+    let root = current_repo().unwrap().root.clone();
+    rt.update(move |s, _| {
+        s.agent_chat.connect(std::sync::Arc::new(|_, _| {}));
+        s.agent_chat.exec(&root, "cat").unwrap();
+        s.agent_session = Some((s.settings.agent, root));
+        s.panel_tab = PanelTab::Files;
+    });
+    let id = rt.state.agent_chat.active().unwrap().id;
+    rt.update(|s, _| s.run_agent("Why line five?\n\nAbout `a.txt#L5`"));
+    assert_eq!(rt.state.panel_tab, PanelTab::Agent, "the tab comes up");
+    assert!(rt.state.agent_chat.list.len() == 1 && rt.state.agent_chat.list[0].id == id, "the same session");
+    assert!(rt.state.agent_chat.list[0].keys.focused, "with the keys, to go on");
+    let start = std::time::Instant::now();
+    while !rt.state.agent_chat.list[0].shown().contains("About `a.txt#L5`") {
+        assert!(start.elapsed().as_secs() < 20, "the prompt reached it:\n{}", rt.state.agent_chat.list[0].shown());
+        rt.frame(1.0 / 60.0);
+    }
+    // Add to Chat pastes the selected lines into the running agent, with no dialog first.
+    reread(&mut rt);
+    let f = rt.state.diff.file_index("w.rs").unwrap();
+    rt.update(move |s, _| {
+        s.panel_tab = PanelTab::Files;
+        s.diff.set_selection(Some(diff::LineRange::line(f, LineRef::new(diff::Side::New, 2))));
+        s.add_to_chat();
+    });
+    assert!(rt.state.prompt.is_none() && rt.state.panel_tab == PanelTab::Agent, "the lines go straight to the Agent tab");
+    let start = std::time::Instant::now();
+    while !rt.state.agent_chat.list[0].shown().contains("w.rs#L2") {
+        assert!(start.elapsed().as_secs() < 20, "the lines reached it:\n{}", rt.state.agent_chat.list[0].shown());
+        rt.frame(1.0 / 60.0);
+    }
     let _ = std::fs::remove_dir_all(&other);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1229,6 +1268,86 @@ fn command_j_opens_a_terminal_under_the_diff() {
     rt.key(cmd_j);
     rt.frame(1.0 / 60.0);
     assert!(!rt.state.terminals.open && rt.state.terminals.list.len() == 1, "⌘J again hides it; the shell keeps running");
+}
+
+#[test]
+fn the_agent_tab_shows_its_session_in_the_panel_and_files_come_back() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    let files_at = rt.presented("panel-tabs").map(|p| p.0[0]).expect("the tabs show");
+    // A session as the tab starts one, but on `cat`: the agent's command needs the shared REPO.
+    let dir = std::env::temp_dir();
+    rt.update(move |s, _| {
+        s.agent_chat.connect(std::sync::Arc::new(|_, _| {}));
+        s.agent_chat.exec(&dir, "cat").unwrap();
+        s.agent_session = Some((s.settings.agent, dir));
+    });
+    // ⌥⌘2, as the View menu's Agent Chat: the session takes the keys.
+    rt.key(KeyEvent { key: Key::Command('2'), mods: rune::Mods { cmd: true, alt: true, ..Default::default() } });
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.panel_tab, PanelTab::Agent);
+    assert!(rt.find("filter").is_none() && rt.find("unstaged").is_none(), "the files give way");
+    let tabs_at = rt.presented("panel-tabs").map(|p| p.0[0]).expect("the tabs stay");
+    assert!((tabs_at - files_at).abs() < 0.5, "in the same place: {tabs_at} vs {files_at}");
+    let session = rt.state.agent_chat.active().expect("the session");
+    assert!(session.id >= AGENT_TERMINALS && session.keys.focused, "its own terminal, with the keys");
+    assert!(rt.state.terminals.list.is_empty(), "not the drawer's");
+    assert!(rt.find("agent-term").is_some() && rt.find("agent-restart").is_some(), "its screen is in the panel, with Restart");
+    // ⌥⌘1 brings the lists back; the agent runs on without the keys.
+    rt.key(KeyEvent { key: Key::Command('1'), mods: rune::Mods { cmd: true, alt: true, ..Default::default() } });
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.panel_tab, PanelTab::Files);
+    assert!(rt.find("filter").is_some() && rt.find("agent-term").is_none());
+    assert!(rt.state.agent_chat.active().is_some_and(|t| !t.keys.focused), "the agent runs on, unfocused");
+    // Back again finds the same session rather than starting another.
+    let id = rt.state.agent_chat.active().unwrap().id;
+    rt.update(|s, _| s.show_panel_tab(PanelTab::Agent));
+    assert_eq!(rt.state.agent_chat.active().map(|t| t.id), Some(id));
+    assert_eq!(rt.state.agent_chat.list.len(), 1);
+}
+
+#[test]
+fn an_ended_agent_says_so_and_offers_to_start_again() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.agent_chat.connect(std::sync::Arc::new(|_, _| {}));
+        s.agent_session = Some((s.settings.agent, std::path::PathBuf::from("/")));
+        s.show_panel_tab(PanelTab::Agent);
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.agent_chat.list.is_empty(), "showing the tab after an end doesn't start another by itself");
+    let live = rt.elements().into_iter().filter(|e| !e.exiting).find_map(|e| e.text.filter(|t| t.ends_with(" ended")));
+    assert_eq!(live, Some(format!("{} ended", rt.state.settings.agent.title())));
+    let start = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("agent-start") && !e.exiting).expect("a Start button");
+    // Dimmed here only because a view test has no shared REPO to start it in.
+    assert!(start.label.is_some_and(|l| l.starts_with("Start ")) && !start.focusable);
+}
+
+#[test]
+fn the_terminal_drawer_leaves_the_diff_where_it_was() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    rt.update(|s, _| s.terminals.connect(std::sync::Arc::new(|_, _| {})));
+    let scroller = |rt: &Runtime<Collate>| rt.elements().into_iter().find(|e| e.path.ends_with("/scroll")).expect("the diff scrolls").path;
+    let (r, _) = rt.presented("scroll").unwrap();
+    for _ in 0..10 {
+        rt.wheel(r[0] + 200.0, r[1] + 200.0, -200.0);
+        rt.frame(1.0 / 60.0);
+    }
+    let (path, top) = (scroller(&rt), rt.find("summary").map(|p| p.1));
+    let cmd_j = KeyEvent { key: Key::Command('j'), mods: rune::Mods { cmd: true, ..Default::default() } };
+    for open in [true, false] {
+        rt.key(cmd_j.clone());
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.terminals.open, open);
+        // A new path would make the diff anew: its scroll, its memoised rows, its fades.
+        assert_eq!(scroller(&rt), path, "the diff keeps its place in the tree");
+        assert_eq!(rt.find("summary").map(|p| p.1), top, "and its scroll");
+    }
 }
 
 #[test]
@@ -1523,15 +1642,13 @@ fn the_keyboard_selects_lines_and_the_selection_bar_acts_on_them() {
     assert_eq!((moved.start, moved.end), (moved.end, LineRef::new(first.end.side, first.end.line + 2)));
     frames(&mut rt);
     assert!(rt.find("selection-bar").is_some(), "a selection shows the bar");
-    assert!(rt.find("comment").is_some() && rt.find("ask-agent").is_some() && rt.find("copy-sel").is_some());
-    // Ask: the question goes with the lines; an empty one can't be sent.
-    click(&mut rt, "ask-agent");
-    let Some(Ask::Agent(lines, true)) = rt.state.prompt.clone() else { panic!("Ask asks for a question about the lines") };
-    assert_eq!(lines, rt.state.selection_for_agent().unwrap());
-    rt.update(|s, _| s.prompt = None);
+    assert!(rt.find("comment").is_some() && rt.find("add-to-chat").is_some() && rt.find("copy-sel").is_some());
+    // Add to Chat goes straight to the agent, no dialog; with no terminal here it says why.
+    click(&mut rt, "add-to-chat");
+    assert!(rt.state.prompt.is_none(), "no dialog asks first");
+    assert!(rt.state.notice.take().is_some_and(|n| n.error), "it says why the lines went nowhere");
     press(&mut rt, Key::Text("i".into()), false);
-    assert!(matches!(rt.state.prompt, Some(Ask::Agent(_, true))), "i asks too");
-    rt.update(|s, _| s.prompt = None);
+    assert!(rt.state.prompt.is_none() && rt.state.notice.take().is_some(), "i adds them too");
     frames(&mut rt);
     click(&mut rt, "selection-clear");
     assert_eq!(rt.state.diff.selection(), None);
@@ -1581,14 +1698,14 @@ fn text_dragged_across_the_code_selects_its_lines() {
     // A press on the bar, held over frames as a hand does, leaves the text and its lines
     // selected, so the bar is still there to take the release.
     drag(&mut rt);
-    let (bx, by) = rt.find("ask-agent").unwrap();
+    let (bx, by) = rt.find("add-to-chat").unwrap();
     rt.pointer_down(bx, by);
     for _ in 0..6 {
         rt.frame(1.0 / 60.0);
     }
     rt.pointer_up(bx, by);
     rt.frame(1.0 / 60.0);
-    assert!(matches!(rt.state.prompt, Some(Ask::Agent(_, true))), "the bar's buttons take a click");
+    assert!(rt.state.notice.is_some(), "the bar's buttons take a click");
 }
 
 #[test]
@@ -1661,24 +1778,26 @@ fn with_nothing_staged_the_agent_offers_to_stage_all_and_write() {
 }
 
 #[test]
-fn the_agent_can_be_asked_without_a_selection() {
+fn add_to_chat_needs_a_selection() {
     let mut rt = loaded();
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
     assert_eq!(rt.state.diff.selection(), None);
-    click(&mut rt, "agent-ask");
-    let Some(Ask::Agent(about, false)) = rt.state.prompt.clone() else { panic!("Ask asks about the change in view") };
-    assert!(about.contains("uncommitted"), "{about}");
+    // i, which the Agent menu bar item names too.
+    rt.update(|s, tx| assert!(crate::keys::letter(s, "i", tx)));
+    assert!(rt.state.prompt.is_none(), "no dialog");
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.contains("line number")), "it says to select lines");
 }
 
 #[test]
 fn checkpoints_are_in_the_more_menu_and_restoring_one_asks_first() {
     let mut rt = loaded();
+    rt.update(|s, _| s.panel_tab = PanelTab::Agent);
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
-    assert!(rt.find("agent-checkpoints").is_some(), "in the sidebar's Agent section");
+    assert!(rt.find("agent-checkpoints").is_some(), "in the Agent tab's head");
     rt.update(|s, _| s.risky = Some(Risky::RestoreCheckpoint("0123456789".into(), 1_700_000_000)));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("risky-ok").is_some());
@@ -1690,26 +1809,26 @@ fn checkpoints_are_in_the_more_menu_and_restoring_one_asks_first() {
 }
 
 #[test]
-fn the_agent_has_its_own_sidebar_section_and_picker() {
+fn the_agent_tab_picks_the_agent_and_the_sidebar_leaves_it_out() {
     let mut rt = loaded();
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
-    for key in ["agent-review", "agent-comments", "agent-checkpoints", "agent-pick"] {
-        assert!(rt.find(key).is_some(), "{key} in the sidebar");
+    for key in ["agent-ask", "agent-review", "agent-comments", "agent-checkpoints", "agent-pick", "agent-settle"] {
+        assert!(rt.find(key).is_none(), "{key} isn't in the sidebar");
     }
-    assert!(rt.find("agent-settle").is_none(), "nothing to settle");
+    rt.update(|s, _| s.panel_tab = PanelTab::Agent);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let (pick, tabs) = (rt.presented("agent-pick").expect("the agent's name picks it").0, rt.presented("panel-tabs").unwrap().0);
+    assert!((pick[1] + pick[3] / 2.0 - tabs[1] - tabs[3] / 2.0).abs() < 0.5, "on the tabs' line");
     click(&mut rt, "agent-pick");
     let menu = rt.popup_menu().expect("the agent picker");
     assert!(menu.find("agent:0").is_some_and(|i| i.is_checked()) && menu.find("ask:edit").is_some());
     rt.resolve_popup(Some("agent:1")).unwrap();
     rt.frame(1.0 / 60.0);
     assert_eq!(rt.state.settings.agent, crate::settings::Agent::Codex);
-    rt.update(|s, _| s.ahead_behind = Some((1, 1)));
-    for _ in 0..30 {
-        rt.frame(1.0 / 60.0);
-    }
-    assert!(rt.find("agent-settle").is_some(), "a diverged branch has something to settle");
     click(&mut rt, "agent-pick");
     rt.resolve_popup(Some("settings")).unwrap();
     for _ in 0..30 {
@@ -2268,6 +2387,10 @@ fn a_dropped_patch_shows_on_its_own_until_closed() {
     let snap = snapshot();
     rt.update(move |s, tx| s.apply_snapshot(snap, tx));
     assert_eq!(rt.state.diff.files().len(), 1);
+    // Its bar is still fading in, too faint to take a press: wait, as a hand would.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
     click(&mut rt, "loose-close");
     assert!(rt.state.loose.is_none());
     let snap = snapshot();
@@ -2305,7 +2428,7 @@ fn the_copy_button_in_a_file_header_copies_its_path() {
 #[test]
 fn a_long_dialog_description_wraps_inside_the_dialog() {
     let mut rt = loaded();
-    rt.update(|s, _| s.ask(Ask::Agent("the change".into(), false)));
+    rt.update(|s, _| s.ask(Ask::Reword("abc".into())));
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
@@ -2417,7 +2540,7 @@ fn right_clicks_open_the_menus_for_a_line_a_file_and_a_listed_file() {
     let added = (1..400).map(|n| format!("df0.n{n}")).find(|k| rt.find(k).is_some()).expect("an added line on screen");
     right_click(&mut rt, &added);
     let menu = rt.popup_menu().expect("the line menu opened");
-    for id in ["stage", "discard", "comment", "ask", "copy-ref", "copy-lines", "open", "blame"] {
+    for id in ["stage", "discard", "comment", "add-to-chat", "copy-ref", "copy-lines", "open", "blame"] {
         assert!(menu.find(id).is_some(), "the line menu has {id}");
     }
     assert_eq!(menu.find("stage").map(|i| i.title().to_owned()), Some("Stage Line".into()));

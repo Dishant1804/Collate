@@ -6,7 +6,7 @@ use rune_kit::shell;
 use crate::diff::DiffMode;
 use crate::git::{Scope, Staged};
 use crate::merge::Take;
-use crate::{Collate, Screen, merge_view, refresh};
+use crate::{Collate, PanelTab, Screen, merge_view, refresh};
 
 pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.is_command(',') {
@@ -109,6 +109,11 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.mods.alt && ev.is_command('0') {
         s.inspector.toggle();
+        return true;
+    }
+    // The staging panel's tabs, as Xcode numbers its inspectors.
+    if ev.mods.alt && (ev.is_command('1') || ev.is_command('2')) && s.has_project {
+        s.show_panel_tab(if ev.is_command('1') { PanelTab::Files } else { PanelTab::Agent });
         return true;
     }
     // Back and forward, as in a browser.
@@ -302,7 +307,7 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
             true
         }
         "i" => {
-            s.ask_question();
+            s.add_to_chat();
             true
         }
         "y" | "Y" => {

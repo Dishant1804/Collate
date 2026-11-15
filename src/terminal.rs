@@ -109,7 +109,8 @@ impl Session {
         self.write(bytes);
     }
 
-    fn paste(&self, s: &str) {
+    /// Pastes `s` as the reader would, for a program to take as one piece.
+    pub fn paste(&self, s: &str) {
         let bracketed = self.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
         // A pasted line break is a carriage return to a shell, as Return is.
         let body = s.replace("\r\n", "\r").replace('\n', "\r");
@@ -121,8 +122,12 @@ impl Session {
         }
     }
 
+    /// Presses Return.
+    pub fn press_return(&self) {
+        self.input(&b"\r"[..]);
+    }
+
     /// The visible text, a line per row.
-    #[cfg(test)]
     pub fn shown(&self) -> String {
         let term = self.term.lock();
         (0..term.screen_lines())
@@ -182,6 +187,12 @@ impl Default for Terminals {
 }
 
 impl Terminals {
+    /// Terminals whose ids start at `first`, so two sets (the drawer's, the agent's) never
+    /// share one: an id names its element and routes its shell's events.
+    pub fn with_ids_from(first: u64) -> Terminals {
+        Terminals { next: first, ..Terminals::default() }
+    }
+
     /// Where shells send their events; set once the app has a handle to its UI thread.
     pub fn connect(&mut self, sink: Sink) {
         self.sink = Some(sink);
@@ -207,11 +218,23 @@ impl Terminals {
 
     /// Starts the login shell in `dir` and makes it the active terminal, focused.
     pub fn spawn(&mut self, dir: &Path) -> Result<(), String> {
+        self.start(dir, None)
+    }
+
+    /// Runs `command` in `dir` through the reader's login shell, for their PATH, without a
+    /// prompt round it: the session ends when the command does.
+    pub fn exec(&mut self, dir: &Path, command: &str) -> Result<(), String> {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        self.start(dir, Some(tty::Shell::new(shell, vec!["-ilc".into(), command.into()])))
+    }
+
+    fn start(&mut self, dir: &Path, shell: Option<tty::Shell>) -> Result<(), String> {
         let sink = self.sink.clone().ok_or("the terminal isn't ready yet")?;
         let id = self.next;
         self.next += 1;
         let (cols, rows) = self.active().map_or((80, 24), |t| t.size);
         let options = tty::Options {
+            shell,
             working_directory: Some(PathBuf::from(dir)),
             env: [("TERM", "xterm-256color"), ("COLORTERM", "truecolor"), ("TERM_PROGRAM", "Collate")]
                 .into_iter()
@@ -269,6 +292,14 @@ impl Terminals {
             for (n, t) in self.list.iter_mut().enumerate() {
                 t.keys.focused = n == i;
             }
+        }
+    }
+
+    /// Gives the active shell the keys, or takes them away.
+    pub fn focus(&mut self, on: bool) {
+        let active = self.active;
+        for (i, t) in self.list.iter_mut().enumerate() {
+            t.keys.focused = on && i == active;
         }
     }
 
@@ -679,6 +710,12 @@ pub fn drawer<S: 'static>(t: &Terminals, k: &Kit, window_h: f32, access: Access<
                 .key("terminal-close")
         });
     col().key("terminal").w_full().h(height).fill(bg).child(hairline(k, "terminal-edge", true)).child(body).child(tools).child(handle)
+}
+
+/// The active shell's grid alone, filling what it's given, for a terminal outside the drawer.
+pub fn pane<S: 'static>(t: &Terminals, k: &Kit, bg: Color, access: Access<S>) -> Option<El> {
+    t.dark.set(k.dark);
+    Some(grid(t.active()?, k, bg, access))
 }
 
 fn list<S: 'static>(t: &Terminals, k: &Kit, access: Access<S>) -> El {

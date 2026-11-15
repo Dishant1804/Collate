@@ -81,7 +81,7 @@ impl Editor {
     }
 }
 
-/// The coding agent Collate hands work to, in a terminal under the diff.
+/// The coding agent Collate hands work to, in the staging panel's Agent tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Agent {
     Claude,

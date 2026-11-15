@@ -819,7 +819,7 @@ pub fn pr_card(s: &Collate, k: &Kit) -> Option<El> {
             if open && (pr.mergeable == "CONFLICTING" || pr.merge_state == "DIRTY") {
                 let settle = Settle::Pull(p.number, p.head.clone(), p.base.clone());
                 r = r.child(Button::new(format!("Settle with {}", s.settings.agent.title())).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-                    .help("Start the coding agent in the terminal to merge the base into this branch and settle the conflicts; it doesn't push")
+                    .help("Start the coding agent in the Agent tab to merge the base into this branch and settle the conflicts; it doesn't push")
                     .on_press(move |s: &mut Collate| s.settle_with_agent(settle.clone())).build(k).key("pr-agent").mr(-GHOST_PAD));
             }
             r

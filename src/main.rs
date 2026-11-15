@@ -151,10 +151,7 @@ macro_rules! lucide {
 pub(crate) use lucide;
 lucide!(ALL_ICON, "collate-file-diff", r#"<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M9 10h6"/><path d="M12 13V7"/><path d="M9 17h6"/>"#);
 lucide!(UNSTAGED_ICON, "collate-circle-dashed", r#"<path d="M10.1 2.182a10 10 0 0 1 3.8 0"/><path d="M13.9 21.818a10 10 0 0 1-3.8 0"/><path d="M17.609 3.721a10 10 0 0 1 2.69 2.7"/><path d="M2.182 13.9a10 10 0 0 1 0-3.8"/><path d="M20.279 17.609a10 10 0 0 1-2.7 2.69"/><path d="M21.818 10.1a10 10 0 0 1 0 3.8"/><path d="M3.721 6.391a10 10 0 0 1 2.7-2.69"/><path d="M6.391 20.279a10 10 0 0 1-2.69-2.7"/>"#);
-lucide!(CHECKLIST_ICON, "collate-list-checks", r#"<path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/>"#);
-lucide!(COMMENTS_ICON, "collate-message-square-text", r#"<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/>"#);
 lucide!(CHECKPOINTS_ICON, "collate-history", r#"<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>"#);
-lucide!(ASK_ICON, "collate-message-circle-question", r#"<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>"#);
 lucide!(AGENT_ICON, "collate-bot", r#"<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>"#);
 lucide!(STAGED_ICON, "collate-circle-check", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
 lucide!(GRAPH_ICON, "collate-git-graph", r#"<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>"#);
@@ -163,6 +160,9 @@ lucide!(PULLS_ICON, "collate-git-pull-request", r#"<circle cx="18" cy="18" r="3"
 lucide!(PULL_DRAFT_ICON, "collate-git-pull-request-draft", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M18 6V5"/><path d="M18 11v-1"/><path d="M6 9v12"/>"#);
 lucide!(PULL_CLOSED_ICON, "collate-git-pull-request-closed", r#"<circle cx="6" cy="6" r="3"/><path d="M6 9v12"/><path d="m21 3-6 6"/><path d="m21 9-6-6"/><path d="M18 11.5V15"/><circle cx="18" cy="18" r="3"/>"#);
 lucide!(MAP_ICON, "collate-layout-dashboard", r#"<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>"#);
+// The commit box's Write with the agent, and Uncommit.
+lucide!(WRITE_ICON, "collate-sparkles", r#"<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>"#);
+lucide!(UNCOMMIT_ICON, "collate-undo-2", r#"<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>"#);
 // Beside a link that leaves the app, as a browser would open it.
 lucide!(EXTERNAL_ICON, "collate-external-link", r#"<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>"#);
 
@@ -189,6 +189,17 @@ struct FileInfo {
     /// A merge left conflict markers in it.
     conflicted: bool,
 }
+
+/// What the staging panel shows: the change's files, or the reader's agent to chat with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PanelTab {
+    Files,
+    Agent,
+}
+
+/// The first id of the Agent tab's terminals, past any the drawer will reach, so an id says
+/// which set a shell's events go to.
+const AGENT_TERMINALS: u64 = 1 << 32;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Screen {
@@ -227,9 +238,6 @@ enum Ask {
     Stash,
     /// A comment on a line, or a new text for comment `n`.
     Comment(diff::Anchor, Option<usize>),
-    /// A question for the agent about what the text names: the selected lines, as
-    /// `selection_for_agent` reads them, when the flag is set, else the change in view.
-    Agent(String, bool),
     /// A new name for a branch.
     Rename(String),
     /// A tag at a commit (HEAD when `None`).
@@ -254,6 +262,8 @@ enum Risky {
     DeleteTag(String, bool),
     /// `git push --force-with-lease` of the current branch.
     ForcePush,
+    /// `git reset --soft HEAD^` of a commit already pushed.
+    Uncommit,
     /// Put the working tree back as a checkpoint (its commit and time) had it.
     RestoreCheckpoint(String, i64),
     /// Every tracked file back to HEAD, staged changes too.
@@ -269,6 +279,8 @@ struct Notice {
     until: Option<f64>,
     /// What its "Undo" takes back.
     undo: Option<Undo>,
+    /// After a push: offers to open a pull request from the branch, as Zed's push toast does.
+    offer_pr: bool,
     /// The shell ⌘W would end, with a program running in it: asks until answered.
     end: Option<u64>,
 }
@@ -378,6 +390,16 @@ struct Collate {
     favorites: Vec<PathBuf>,
     /// The terminal drawer under the diff and its shells.
     terminals: terminal::Terminals,
+    panel_tab: PanelTab,
+    /// The Agent tab's session: the agent in a terminal of its own, apart from the drawer's.
+    agent_chat: terminal::Terminals,
+    /// The agent that session runs and the folder it runs in, once one has started.
+    agent_session: Option<(settings::Agent, PathBuf)>,
+    /// Lines Add to Chat waits to paste into an agent it started: the lines, its screen at the
+    /// last look, and how many looks it has had.
+    chat_draft: Option<(String, String, u32)>,
+    /// A checkpoint is being saved before the agent starts.
+    agent_starting: bool,
     project_open: bool,
     project_search: TextEdit,
     /// The switcher's keyboard pick: an index into `project_order`, or one past it for "Add".
@@ -396,6 +418,11 @@ struct Collate {
     update: update::Status,
     /// The next commit rewrites the last one.
     amend: bool,
+    /// The next commit adds a Signed-off-by line, and skips the commit hooks (`--no-verify`).
+    signoff: bool,
+    skip_hooks: bool,
+    /// HEAD's subject, and whether it has a parent to uncommit back to.
+    last_commit: Option<(String, bool)>,
     /// Commits ahead of and behind the upstream.
     ahead_behind: Option<(usize, usize)>,
     /// A merge, rebase, cherry-pick or revert waiting for its conflicts.
@@ -526,6 +553,11 @@ fn init() -> Collate {
         projects: load_projects(),
         favorites: load_paths("favorites"),
         terminals: terminal::Terminals::default(),
+        panel_tab: PanelTab::Files,
+        agent_chat: terminal::Terminals::with_ids_from(AGENT_TERMINALS),
+        agent_session: None,
+        chat_draft: None,
+        agent_starting: false,
         project_open: false,
         project_search: TextEdit::new(""),
         project_pick: 0,
@@ -551,6 +583,9 @@ fn init() -> Collate {
         nav: nav::Nav::default(),
         commit_body: String::new(),
         amend: false,
+        signoff: false,
+        skip_hooks: false,
+        last_commit: None,
         ahead_behind: None,
         operation: None,
         busy: None,
@@ -798,7 +833,7 @@ impl Collate {
         let asked = self.notice.as_ref().is_some_and(|n| n.end == Some(id));
         match t.running() {
             Some(name) if !asked => {
-                self.notice = Some(Notice { text: format!("{name} is running in this terminal - end it?"), error: false, until: None, undo: None, end: Some(id) });
+                self.notice = Some(Notice { text: format!("{name} is running in this terminal - end it?"), error: false, until: None, undo: None, offer_pr: false, end: Some(id) });
             }
             _ => {
                 if asked {
@@ -973,7 +1008,7 @@ impl Collate {
     }
 
     fn say(&mut self, text: impl Into<String>, error: bool) {
-        self.notice = Some(Notice { text: text.into(), error, until: None, undo: None, end: None });
+        self.notice = Some(Notice { text: text.into(), error, until: None, undo: None, offer_pr: false, end: None });
         self.copied = None;
     }
 
@@ -991,17 +1026,18 @@ impl Collate {
     /// thread; then report it and reread the files, the branches and the history. One at a
     /// time. Without a window (tests) it runs here.
     fn act_bg(&mut self, doing: &str, f: impl FnOnce(&Repo) -> Result<String, String> + Send + 'static) {
-        self.act_bg_moved(doing, move |r| (f(r), None));
+        self.act_bg_moved(doing, move |r| (f(r), None), |_| {});
     }
 
     /// [`Collate::act_bg`] for an operation that moves HEAD: once it's done, ⌘Z and the
     /// notice's Undo put HEAD back. `back` says how; `save` keeps the working tree first, for
     /// one that throws changes away.
     fn act_undoable(&mut self, doing: &str, what: String, back: git::Back, save: bool, f: impl FnOnce(&Repo) -> Result<String, String> + Send + 'static) {
-        self.act_bg_moved(doing, move |r| r.undoable(&what, back, save, f));
+        self.act_bg_moved(doing, move |r| r.undoable(&what, back, save, f), |_| {});
     }
 
-    fn act_bg_moved(&mut self, doing: &str, f: impl FnOnce(&Repo) -> (Result<String, String>, Option<git::Moved>) + Send + 'static) {
+    /// [`Collate::act_bg`] with what HEAD moved; `after` runs once it has been reported.
+    fn act_bg_moved(&mut self, doing: &str, f: impl FnOnce(&Repo) -> (Result<String, String>, Option<git::Moved>) + Send + 'static, after: fn(&mut Collate)) {
         let Some(repo) = current_repo() else { return };
         if self.busy.is_some() {
             self.say(format!("Wait for {} to finish", self.busy.as_deref().unwrap_or_default().trim_end_matches('…').to_lowercase()), true);
@@ -1010,6 +1046,7 @@ impl Collate {
         let Some(app) = HANDLE.get().cloned() else {
             let (result, moved) = f(&repo);
             self.landed(result, moved);
+            after(self);
             return;
         };
         self.busy = Some(doing.to_owned());
@@ -1018,6 +1055,7 @@ impl Collate {
             app.update(move |s, _| {
                 s.busy = None;
                 s.landed(result, moved);
+                after(s);
             });
         });
     }
@@ -1080,8 +1118,6 @@ impl Collate {
                 let at = at.unwrap_or_else(|| "HEAD".to_owned());
                 self.act_bg("Tagging…", move |r| r.tag(&tag, &at, &message).map(|_| format!("Tagged {} as {tag}", abbrev(&at))));
             }
-            Ask::Agent(..) if name.is_empty() => {}
-            Ask::Agent(about, _) => self.run_agent(&format!("{name}\n\nAbout {about}")),
             Ask::Rename(from) if name.is_empty() || name == from => {}
             Ask::Rename(from) => self.act_bg("Renaming…", move |r| r.rename_branch(&from, &name).map(|_| format!("Renamed {from} to {name}"))),
             Ask::Comment(_, Some(n)) if name.is_empty() => self.delete_comment(n),
@@ -1308,6 +1344,7 @@ impl Collate {
             }
             Some(Risky::DropStash(name)) => self.act_bg("Dropping the stash…", move |r| r.stash_do("drop", &name).map(|_| format!("Dropped {name}"))),
             Some(Risky::ForcePush) => self.act_bg("Force pushing…", |r| r.force_push().map(|_| "Force pushed".to_owned())),
+            Some(Risky::Uncommit) => self.uncommit(true),
             Some(Risky::DeleteTag(name, remote)) => self.act_bg("Deleting the tag…", move |r| {
                 r.delete_tag(&name, remote).map(|_| if remote { format!("Deleted {name} here and from origin") } else { format!("Deleted {name}") })
             }),
@@ -1617,10 +1654,9 @@ impl Collate {
         if stage || unstage || discard {
             menu = menu.separator();
         }
-        let agent = format!("Ask {}…", self.settings.agent.title());
         menu = menu
             .item(commands::popup_item(self, "comment", "Comment…"))
-            .item(commands::popup_item(self, "ask", &agent))
+            .item(commands::popup_item(self, "add-to-chat", "Add to Chat"))
             .separator()
             .item(commands::popup_item(self, "copy-ref", "Copy Reference"))
             .item(commands::popup_item(self, "copy-lines", "Copy for an Agent"))
@@ -1680,7 +1716,7 @@ impl Collate {
     /// The title bar's branch menu, as GitHub Desktop's: sync with the remote, switch or make a
     /// branch, and the branch as a pull request against a base. Stashes and tags have menus of
     /// their own (Branch > Stashes…, Tags…).
-    fn branch_menu(&mut self, tx: &mut Tx) {
+    fn branch_menu(&mut self, at: &'static str, tx: &mut Tx) {
         let repo = current_repo();
         if let Some(r) = &repo {
             self.branches = r.branches();
@@ -1742,7 +1778,36 @@ impl Collate {
             .separator()
             .item(PopupItem::new("preview", if base.is_empty() { "Preview Pull Request".to_owned() } else { format!("Preview Pull Request into {base}") }).checked(self.scope == Scope::Branch && !self.map.open))
             .submenu("Compare Against", bases);
-        tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
+        tx.popup_menu(menu, at, |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
+    }
+
+    /// The commit button's ⌄, as Zed's: amend the last commit, sign off, skip the hooks.
+    fn commit_options_menu(&mut self, tx: &mut Tx) {
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("amend", "Amend").checked(self.amend).enabled(self.head.is_some()))
+            .item(PopupItem::new("signoff", "Signoff").checked(self.signoff))
+            .item(PopupItem::new("skip-hooks", "Skip Hooks").checked(self.skip_hooks));
+        tx.popup_menu(menu, "commit-options", |s: &mut Collate, picked, _| match picked {
+            Some("amend") => s.toggle_amend(),
+            Some("signoff") => s.signoff = !s.signoff,
+            Some("skip-hooks") => s.skip_hooks = !s.skip_hooks,
+            _ => {}
+        });
+    }
+
+    /// The remote button's ⌄, as Zed's: every fetch, pull and push, and a pull request.
+    fn remote_menu(&mut self, tx: &mut Tx) {
+        let idle = self.busy.is_none();
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("fetch", "Fetch").enabled(idle))
+            .item(PopupItem::new("pull", "Pull").enabled(idle && self.ahead_behind.is_some()))
+            .item(PopupItem::new("pull-rebase", "Pull (Rebase)").enabled(idle && self.ahead_behind.is_some() && self.operation.is_none()))
+            .separator()
+            .item(PopupItem::new("push", "Push").enabled(idle))
+            .item(PopupItem::new("force-push", "Force Push…").enabled(idle && self.ahead_behind.is_some()))
+            .separator()
+            .item(PopupItem::new("pull-request", "Create Pull Request…").enabled(idle && self.ahead_behind.is_some() && !self.branch_has_pr()));
+        tx.popup_menu(menu, "remote-more", |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
     }
 
     /// The stashes, each with what can be done to it, as a menu whose picks `branch_do` runs.
@@ -1805,7 +1870,15 @@ impl Collate {
             "pull-rebase" => self.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull_rebase().map(|_| "Pulled, with your commits on top".to_owned())),
             "pull" => self.act_undoable("Pulling…", "the pull".to_owned(), git::Back::Keep, false, |r| r.pull().map(|_| "Pulled".to_owned())),
             "agent-rebase" => self.settle_with_agent(agent::Settle::Diverged(ahead, behind)),
-            "push" => self.act_bg("Pushing…", |r| r.push().map(|_| "Pushed".to_owned())),
+            "push" => self.act_bg_moved("Pushing…", |r| (r.push().map(|_| "Pushed".to_owned()), None), |s| {
+                // The branch is on the remote now: offer the pull request, unless it has one open.
+                let has_pr = s.branch_has_pr();
+                if let Some(n) = s.notice.as_mut().filter(|n| !n.error) {
+                    n.offer_pr = !has_pr;
+                }
+            }),
+            "pull-request" => self.start_compose(pulls::Compose::Create),
+            "uncommit" => self.uncommit(false),
             "force-push" => self.risky = Some(Risky::ForcePush),
             "switch" => self.act_undoable("Switching…", format!("the switch to {arg}"), git::Back::Switch, false, move |r| r.switch(&arg).map(|_| format!("Switched to {arg}"))),
             "merge" => self.act_undoable("Merging…", format!("the merge of {arg}"), git::Back::Keep, false, move |r| r.merge(&arg).map(|_| format!("Merged {arg}"))),
@@ -1907,7 +1980,7 @@ impl Collate {
     fn after_discard(&mut self, result: Result<PathBuf, String>, done: String) {
         match result {
             Ok(backup) => {
-                self.notice = Some(Notice { text: done, error: false, until: None, undo: Some(Undo::Backup(backup)), end: None });
+                self.notice = Some(Notice { text: done, error: false, until: None, undo: Some(Undo::Backup(backup)), offer_pr: false, end: None });
                 self.selection_clear();
             }
             Err(e) => self.say(e, true),
@@ -1924,6 +1997,21 @@ impl Collate {
         }
     }
 
+    /// Whether the pull request list knows an open one from this branch.
+    fn branch_has_pr(&self) -> bool {
+        matches!(&self.pulls.list, Some(Ok((_, list))) if list.iter().any(|p| p.head == self.branch && p.state == github::PrState::Open))
+    }
+
+    /// Zed's Uncommit: HEAD back to its parent, its changes staged (`git reset --soft HEAD^`).
+    /// A commit the upstream has already asks first, as taking it back rewrites what's pushed.
+    fn uncommit(&mut self, sure: bool) {
+        if !sure && self.ahead_behind.is_some_and(|(ahead, _)| ahead == 0) {
+            self.risky = Some(Risky::Uncommit);
+            return;
+        }
+        self.act_undoable("Uncommitting…", "the uncommit".to_owned(), git::Back::Soft, false, |r| r.reset("soft", "HEAD^").map(|_| "Uncommitted the last commit; its changes are staged".to_owned()));
+    }
+
     /// ⌘Z: takes back the last operation that moved HEAD. A failed undo keeps it, to try again.
     fn undo_move(&mut self) {
         let Some(m) = self.last_move.take() else {
@@ -1933,7 +2021,7 @@ impl Collate {
         self.act_bg_moved("Undoing…", move |r| match r.undo(&m) {
             Ok(done) => (Ok(done), None),
             Err(e) => (Err(e), Some(m)),
-        });
+        }, |_| {});
     }
 
     fn selection_clear(&mut self) {
@@ -2177,6 +2265,7 @@ impl Collate {
     fn commit(&mut self) {
         let msg = self.message.text.trim().to_owned();
         let amend = self.amend;
+        let flags: Vec<&'static str> = [(amend, "--amend"), (self.signoff, "--signoff"), (self.skip_hooks, "--no-verify")].into_iter().filter_map(|(on, f)| on.then_some(f)).collect();
         if msg.is_empty() || (self.staged == 0 && !amend) || self.committing {
             return;
         }
@@ -2184,7 +2273,7 @@ impl Collate {
         self.committing = true;
         // Hooks can take a while; the window stays live.
         std::thread::spawn(move || {
-            let (result, moved) = repo.undoable(if amend { "the amend" } else { "the commit" }, git::Back::Soft, false, |r| r.commit(&msg, amend));
+            let (result, moved) = repo.undoable(if amend { "the amend" } else { "the commit" }, git::Back::Soft, false, |r| r.commit(&msg, &flags));
             repo_handle.update(move |s, _| {
                 s.committing = false;
                 match result {
@@ -2415,6 +2504,7 @@ impl Collate {
         self.unstaged = snap.unstaged;
         self.total = snap.total;
         self.ahead_behind = snap.ahead_behind;
+        self.last_commit = snap.last_commit;
         self.operation = snap.operation;
         let shows_uncommitted = self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED);
         if self.scope == Scope::History && (self.total > 0) != shows_uncommitted {
@@ -3121,7 +3211,7 @@ fn selection_bar(s: &Collate, k: &Kit) -> Option<El> {
         .role("toolbar").label(format!("{what}: {reference}"))
         .child(text(what).font(k.ty.text_xsmall_medium).color(k.c.text_muted).mr(8.0))
         .child(action(k, "comment", "Comment…", "Comment under the last selected line", "c", false, |s| s.ask_comment()))
-        .child(action(k, "ask-agent", &format!("Ask {agent}…"), &format!("Ask {agent} about these lines, or to change them"), "i", false, |s| s.ask_question()))
+        .child(action(k, "add-to-chat", "Add to Chat", &format!("Put these lines in {agent}'s message, in the Agent tab"), "i", false, |s| s.add_to_chat()))
         .child(copy)
         .child(close);
     // Over the diff's foot, clear of the edge.
@@ -3254,7 +3344,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button")
             .label(format!("Branch {}: sync, switch, stash, preview pull request", s.branch))
             .help("Fetch, pull and push, switch branches, stash, preview a pull request")
-            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.branch_menu(tx));
+            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.branch_menu("branch", tx));
         let base = s.base.as_deref().map(|b| b.strip_prefix("origin/").unwrap_or(b).to_owned()).filter(|b| *b != s.branch);
         if let Some(b) = base {
             r = r.child(part("base-branch", &MERGE_ICON, b, false)).child(text("/".to_owned()).font(k.ty.ui).color(k.c.text_faint));
@@ -3382,23 +3472,22 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         Some(name) => loose_view(s, k, name),
         None => body,
     };
-    let body = match operation_bar(s, k) {
-        Some(bar) => col().key("with-operation").w_full().grow(1.0).min_h(0.0).child(bar).child(body),
-        None => body,
-    };
-    // Always wrapped, so the bar coming and going doesn't move the body to a new path, which
-    // would reset the diff's scroll.
-    let mut body = col().key("body").w_full().grow(1.0).min_h(0.0).child(body);
+    // Each bar below is added to a wrapper that is always there, so a bar coming and going
+    // doesn't move the body to a new path, which would make the diff anew: its scroll, its
+    // memoised rows, its fades.
+    let mut with_operation = col().key("with-operation").w_full().grow(1.0).min_h(0.0);
+    if let Some(bar) = operation_bar(s, k) {
+        with_operation = with_operation.child(bar);
+    }
+    let mut body = col().key("body").w_full().grow(1.0).min_h(0.0).child(with_operation.child(body));
     if let Some(bar) = status_bar(s, k) {
         body = body.child(bar);
     }
-    let body = if s.terminals.open && s.has_project {
+    let mut body = col().key("with-terminal").w_full().grow(1.0).min_h(0.0).child(body);
+    if s.terminals.open && s.has_project {
         let window_h = rune::memo::layout_with("window", |r| r[3]).unwrap_or(840.0);
-        let drawer = terminal::drawer(&s.terminals, k, window_h, |s: &mut Collate| &mut s.terminals, |s: &mut Collate| s.new_terminal());
-        col().key("with-terminal").w_full().grow(1.0).min_h(0.0).child(body).child(drawer)
-    } else {
-        body
-    };
+        body = body.child(terminal::drawer(&s.terminals, k, window_h, |s: &mut Collate| &mut s.terminals, |s: &mut Collate| s.new_terminal()));
+    }
 
     if s.show_help {
         help_sheet(s, k, layer);
@@ -3479,8 +3568,6 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             Ask::Reword(_) => ("Edit the commit's subject", "Its body and changes stay. The commits after it are replayed, so they get new hashes; ⌘Z undoes it.", "Reword", "Subject"),
             Ask::Tag(None) => ("New tag", "Made at HEAD, here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
             Ask::Tag(Some(_)) => ("Tag this commit", "Made here; push it from the branch menu's Tags.", "Create Tag", "Tag name, then a message after a space for an annotated tag"),
-            Ask::Agent(_, true) => ("Ask the agent", "About the selected lines. It starts in a new terminal, with a checkpoint to go back to.", "Ask", "What do you want to know or change?"),
-            Ask::Agent(_, false) => ("Ask the agent", "About the change in view; select lines first to ask about just those. It starts in a new terminal, with a checkpoint to go back to.", "Ask", "What do you want to know or change?"),
             Ask::Rename(_) => ("Rename branch", "Only here: a pushed branch keeps its old name on the remote.", "Rename", "Branch name"),
             // In a pull request, a comment goes with the next review, if GitHub takes it on that line.
             Ask::Comment(_, None) if s.pulls.pr.is_some() && !s.pr_whole() => ("Comment",
@@ -3499,7 +3586,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .build(k)
             .key("prompt-field")
             .w_full();
-        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Agent(..) | Ask::Rename(_) | Ask::Tag(_) | Ask::Reword(_));
+        let empty = s.prompt_text.text.trim().is_empty() && matches!(ask, Ask::Branch(_) | Ask::Comment(_, None) | Ask::Rename(_) | Ask::Tag(_) | Ask::Reword(_));
         let mut buttons = row().key("prompt-buttons").w_full().gap(8.0).justify_end();
         // On a pull request's line: suggest what it should say instead, starting from what it says.
         if let Ask::Comment(at, None) = ask
@@ -3570,6 +3657,11 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let (title, what, button) = match r {
             Risky::ResetHard(id) => (format!("Reset {} to {}?", s.branch, abbrev(id)), "Commits after it leave the branch, and every change not committed is thrown away. Undo (⌘Z) puts both back.".to_owned(), "Reset and Discard"),
             Risky::DropStash(name) => (format!("Drop {name}?"), "Its changes are deleted. There's no backup.".to_owned(), "Drop Stash"),
+            Risky::Uncommit => (
+                "Uncommit a pushed commit?".to_owned(),
+                format!("The last commit is already on {}'s upstream. Its changes come back staged; committing again and pushing will need a force push.", s.branch),
+                "Uncommit",
+            ),
             Risky::ForcePush => (
                 format!("Force push {}?", s.branch),
                 "The remote branch is replaced with this one, its commits that aren't here dropped. It fails if someone pushed since your last fetch.".to_owned(),
@@ -3717,7 +3809,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         ("⇧↓  ⇧↑", "Select lines from the keyboard; ↓ and ↑ alone move the selection, Esc clears it"),
         ("Right-click", "What acts on a line, a file, a commit or a project"),
         ("c", "Comment on the selected line"),
-        ("i", "Ask the agent about the selected lines, or to change them"),
+        ("i", "Add the selected lines to the agent's chat"),
         ("y  Y", "Copy the selected lines' reference (path#L10-L25), or the lines as a diff for an agent"),
         ("o", "Open the file in your editor"),
         ("m", "Jump to the other end of a move (blue lines)"),
@@ -3974,42 +4066,10 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
             s.open_map();
         }).build(k).key("view-map"),
     ]);
-    // The coding agent's part of the loop, always in sight: ask it about the change, hand it
-    // the comments, go back to before it ran, and have it settle what git stopped on.
-    // Each row says what it starts, since a click runs the agent at once.
-    let agent = s.settings.agent.title();
-    let asked = if s.diff.selection().is_some() { "the selected lines" } else { "the change in view; select lines to ask about just those" };
-    let comments = match s.comments.len() {
-        0 => "No comments yet: select lines and press c to write one".to_owned(),
-        n => format!("{agent} addresses your {n} comment{} in a new terminal", if n == 1 { "" } else { "s" }),
-    };
-    let mut agent_rows = vec![
-        SidebarRow::new(format!("Ask {agent}…")).icon(&ASK_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.ask_question()).build(k).key("agent-ask").help(format!("Ask about {asked}")).help_keys(["i"]),
-        SidebarRow::new("Review Change").icon(&CHECKLIST_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.ask_checklist(None)).build(k).key("agent-review")
-            .help(format!("{agent} answers the review questions about this change in a new terminal; edit them under {agent} below")),
-        {
-            let mut r = SidebarRow::new("Send Comments").icon(&COMMENTS_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.send_comments());
-            if !s.comments.is_empty() {
-                r = r.badge(s.comments.len().to_string());
-            }
-            r.build(k).key("agent-comments").help(comments)
-        },
-        SidebarRow::new("Checkpoints").icon(&CHECKPOINTS_ICON).on_select(|s: &mut Collate, _: &mut Tx| s.checkpoints_menu("agent-checkpoints")).build(k).key("agent-checkpoints")
-            .help(format!("Put the working tree back as it was before {agent} ran")),
-    ];
-    let (ahead, behind) = s.ahead_behind.unwrap_or((0, 0));
-    let settle = s.stopped_settle().or((ahead > 0 && behind > 0).then_some(agent::Settle::Diverged(ahead, behind)));
-    if let Some(settle) = settle {
-        agent_rows.push(SidebarRow::new("Settle Conflicts").icon(&MERGE_ICON).on_select(move |s: &mut Collate, _: &mut Tx| s.settle_with_agent(settle.clone())).build(k).key("agent-settle")
-            .help(format!("{agent} resolves the conflicts in a new terminal")));
-    }
-    let agents = SidebarSection::new("Agent").rows(agent_rows);
-    let picker = SidebarRow::new(agent).icon(&AGENT_ICON).detail("Change").on_select(|s: &mut Collate, tx: &mut Tx| s.agent_picker(tx)).build(k).key("agent-pick")
-        .help("The agent these run, and its instructions");
     let apart = |key: &str| col().key(key.to_owned()).w_full().h(12.0).a11y_hidden();
     // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
     // 24 pt row, so 2 less here centres "Working Copy" in the same 28 pt band.
-    let bar = Sidebar::new().section(working).child(apart("sections-apart")).section(review).child(apart("agent-apart")).section(agents).footer(picker);
+    let bar = Sidebar::new().section(working).child(apart("sections-apart")).section(review);
     col().key("sidebar").w_full().h_full().pt(COLUMN_TOP - 2.0).child(bar.build(k))
 }
 
@@ -4147,6 +4207,9 @@ fn file_list(s: &Collate, k: &Kit, staged_list: bool, quick: Option<bool>) -> El
 /// The trailing staging panel, as GitKraken lays it out: what's unstaged, what's staged, and
 /// the commit composer under them. Branch and History, being read-only, list their files.
 fn staging_panel(s: &Collate, k: &Kit) -> El {
+    if s.panel_tab == PanelTab::Agent {
+        return agent_panel(s, k);
+    }
     let mut filter = TextInput::new(&s.filter).placeholder("Filter files").leading_icon(k.glyph.search);
     // A clear button only once there's something to clear.
     if !s.filter.text.is_empty() {
@@ -4171,7 +4234,7 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     }
     // The first list title follows the filter with no gap, as the sidebar's first row follows
     // its section title: both second rows then sit on one line too.
-    p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).child(filter.w_full()));
+    p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).gap(8.0).items_center().child(filter.grow(1.0).min_w(0.0)).child(panel_tabs(s, k)));
     // A list that shows files takes the room above the commit box; with none showing (folded
     // or empty), a spacer does, so the box stays at the foot either way.
     let shows = |key: &str, n: usize| n > 0 && !s.folded_lists.contains(key);
@@ -4193,17 +4256,107 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     foot(p, lists_grow)
 }
 
+/// The staging panel's tabs, Files and Agent, at the end of its first row.
+fn panel_tabs(s: &Collate, k: &Kit) -> El {
+    SegmentedControl::new(&["Files", "Agent"], Some((s.panel_tab == PanelTab::Agent) as usize))
+        .label("Staging panel")
+        .fit()
+        .on_pick(|s: &mut Collate, i, _: &mut Tx| s.show_panel_tab(if i == 1 { PanelTab::Agent } else { PanelTab::Files }))
+        .build(k)
+        .key("panel-tabs")
+}
+
+/// The staging panel's Agent tab: the reader's agent as it runs in a terminal, started the
+/// first time the tab shows. Its head row stands where the Files tab's filter does, so the
+/// tabs stay put between the two.
+fn agent_panel(s: &Collate, k: &Kit) -> El {
+    let running = s.agent_chat.active().is_some();
+    let agent = match &s.agent_session {
+        Some((a, _)) if running => *a,
+        _ => s.settings.agent,
+    };
+    let here = current_repo().map(|r| r.root.clone());
+    // The agent's name picks the agent, as the toolbar's branch picks the branch; its padding
+    // hangs into the inset so the name starts on it.
+    let pick = row().key("agent-pick").gap(4.0).px(6.0).ml(-6.0).h(24.0).radius(k.radius.sm).items_center().min_w(0.0).shrink()
+        .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button")
+        .label(format!("Agent: {}", agent.title()))
+        .help("Choose the agent, and edit its review questions and commit message instructions")
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.agent_picker(tx))
+        .child(text(agent.title()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).truncate().min_w(0.0).shrink())
+        .child(icon(k.glyph.chevron_down, 12.0).color(k.c.icon_faint).a11y_hidden());
+    let checkpoints = IconButton::new(&CHECKPOINTS_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
+        .label("Checkpoints").help(format!("Put the working tree back as it was before {} ran", agent.title()))
+        .on_press(|s: &mut Collate| s.checkpoints_menu("agent-checkpoints")).build(k).key("agent-checkpoints");
+    let mut head = row().key("agent-head").w_full().px(PANEL_INSET).gap(8.0).items_center()
+        .child(row().key("agent-head-lead").grow(1.0).min_w(0.0).gap(2.0).items_center().child(pick).child(checkpoints));
+    if running {
+        head = head.child(
+            Button::new("Restart").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
+                .help(format!("End {} and start {} again in this project", agent.title(), s.settings.agent.title()))
+                .on_press(|s: &mut Collate| s.start_agent_chat(None))
+                .build(k)
+                .key("agent-restart"),
+        );
+    }
+    let mut p = col().key("staging").w_full().h_full().pt(COLUMN_TOP).child(head.child(panel_tabs(s, k)));
+    let session = s.agent_session.as_ref().filter(|_| running);
+    // Started in another project: say so, and offer this one.
+    if let Some((_, dir)) = session
+        && here.as_ref().is_some_and(|h| h != dir)
+    {
+        let folder = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned());
+        p = p.child(
+            row().key("agent-elsewhere").w_full().h(28.0).px(PANEL_INSET).gap(8.0).items_center()
+                .child(text(format!("Running in {folder}")).font(k.ty.text_xsmall).color(k.c.text_faint).truncate().min_w(0.0).grow(1.0))
+                .child(Button::new("Start Here").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("End this session and start the agent in the open project").on_press(|s: &mut Collate| s.start_agent_chat(None)).build(k).key("agent-here").mr(-GHOST_PAD)),
+        );
+    }
+    let bg = k.c.bg_base;
+    if let Some(pane) = terminal::pane(&s.agent_chat, k, bg, |s: &mut Collate| &mut s.agent_chat) {
+        // Edge to edge under a hairline, as the drawer: the panel is narrow, and an agent's
+        // screen wants every column.
+        return p.child(
+            col().key("agent-term").w_full().grow(1.0).min_h(0.0).mt(4.0).fill(bg)
+                .role("group").label(format!("Chat with {}", agent.title()))
+                .child(el().key("agent-term-edge").w_full().h(1.0).fill(k.c.border_weak).a11y_hidden())
+                .child(row().key("agent-term-body").w_full().grow(1.0).min_h(0.0).child(pane)),
+        );
+    }
+    // Not running: starting, ended, or not yet started (no project, or the terminal not ready).
+    let (title, detail) = if s.agent_starting {
+        (format!("Starting {}…", agent.title()), "Saving a checkpoint first, to come back to.".to_owned())
+    } else {
+        let ended = s.agent_session.is_some();
+        (
+            if ended { format!("{} ended", agent.title()) } else { format!("Chat with {}", agent.title()) },
+            "It runs here as it does in a terminal, in this project. It can read and change files: a checkpoint is saved before it starts, and Checkpoints in the ⋯ menu go back to it.".to_owned(),
+        )
+    };
+    let start = Button::new(format!("Start {}", agent.title())).variant(ButtonVariant::Contrast).disabled(s.agent_starting || here.is_none())
+        .help(if here.is_none() { "Open a project first" } else { "Start the agent in this project" })
+        .on_press(|s: &mut Collate| s.start_agent_chat(None)).build(k).key("agent-start");
+    p.child(
+        col().key("agent-empty").w_full().grow(1.0).min_h(0.0).center().gap(8.0).px(24.0)
+            .child(icon(&AGENT_ICON, 24.0).color(k.c.icon_faint).a11y_hidden())
+            .child(text(title).font(k.ty.ui_medium).color(k.c.text_base).live_region(rune::LiveRegion::Polite))
+            .child(text(detail).font(k.ty.text_small).color(k.c.text_muted).wrap().max_w(320.0))
+            .child(start.mt(4.0)),
+    )
+}
+
 /// The commit message box's height: near square at the panel's default width.
 const COMMIT_BOX_H: f32 = 150.0;
 
-/// The commit composer at the foot of the staging panel: a message and the screen's one
-/// prominent action, which commits what's staged.
+/// The commit composer at the foot of the staging panel, laid out as Zed's git panel: the
+/// branch with its push, pull or fetch over the message; the message; generating one and the
+/// commit, with its options, under it; and the last commit, to look at or uncommit.
 fn commit_box(s: &Collate, k: &Kit) -> El {
     let ready = (s.staged > 0 || s.amend) && !s.message.text.trim().is_empty() && !s.committing;
     // A box, not a line: room for a summary and a body under it. Return starts a new line;
     // ⌘↩ commits.
     let field = TextArea::new(&s.message)
-        .placeholder(if s.staged == 0 && !s.amend { "Stage files to commit them, or Stage All and Write above".to_owned() } else { "Summary, then a blank line and the details".to_owned() })
+        .placeholder(if s.staged == 0 && !s.amend { "Stage files to commit them, or Stage All and Write below".to_owned() } else { "Summary, then a blank line and the details".to_owned() })
         .label("Commit message")
         .rows(8)
         .max_height(COMMIT_BOX_H)
@@ -4221,50 +4374,121 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         // Fill the column exactly, not a field's default width.
         .w_full()
         .min_w(0.0);
-    let label = match (s.committing, s.amend, s.staged) {
-        (true, ..) => "Committing…".to_owned(),
-        (_, true, _) => "Amend Last Commit".to_owned(),
-        (_, _, 0) => "Commit".to_owned(),
-        (_, _, 1) => "Commit 1 File".to_owned(),
-        (_, _, n) => format!("Commit {n} Files"),
+    let label = match (s.committing, s.amend) {
+        (true, _) => "Committing…",
+        (_, true) => "Amend",
+        _ => "Commit",
     };
+    let flags = [(s.amend, " --amend"), (s.signoff, " --signoff"), (s.skip_hooks, " --no-verify")].into_iter().filter_map(|(on, f)| on.then_some(f)).collect::<String>();
     let help = match (s.amend, s.staged) {
-        (true, _) => "Rewrite the last commit with this message and what's staged (⌘↩)",
-        (_, 0) => "Stage files first",
-        _ => "Commit what's staged (⌘↩)",
+        (true, _) => format!("Rewrite the last commit with this message and what's staged (git commit{flags})"),
+        (_, 0) => "Stage files first".to_owned(),
+        _ if s.message.text.trim().is_empty() => "Write a commit message first".to_owned(),
+        _ => format!("Commit what's staged (git commit{flags})"),
     };
-    let button = Button::new(label).variant(ButtonVariant::Contrast).shortcut("⌘↩").disabled(!ready).help(help).on_press(|s: &mut Collate| s.commit()).build(k).key("commit").w_full();
-    // Set as the lists above are: an edge-to-edge hairline, as between them, then a 28 pt title
-    // right under it.
+    let commit = Button::new(label).variant(ButtonVariant::Contrast).control_size(ControlSize::Small).shortcut("⌘↩").disabled(!ready).help(help)
+        .on_press(|s: &mut Collate| s.commit()).build(k).key("commit");
+    let options = IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::Contrast).control_size(ControlSize::Small).disabled(s.committing)
+        .label("Commit options").help("Amend, Signoff, Skip Hooks").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_options_menu(tx)).build(k).key("commit-options");
     let agent = s.settings.agent.title();
     // With nothing staged, the common case, it offers to stage everything first rather than
     // sit disabled.
     let stage_first = s.staged == 0 && !s.amend;
-    let (label, help) = match (s.writing_message, stage_first) {
-        (true, _) => ("Writing…".to_owned(), String::new()),
-        (_, true) if s.total == 0 => ("Stage All and Write".to_owned(), "Nothing has changed to write about".to_owned()),
-        (_, true) => ("Stage All and Write".to_owned(), format!("Stages every change, then {agent} drafts the message from it; you commit it")),
-        _ => (format!("Write with {agent}"), format!("{agent} drafts the message from what's staged, keeping the intent of what you've typed; you commit it")),
+    let (label, help) = match stage_first {
+        true if s.total == 0 => ("Stage All and Write".to_owned(), "Nothing has changed to write about".to_owned()),
+        true => ("Stage All and Write".to_owned(), format!("Stages every change, then {agent} drafts the message from it; you commit it")),
+        false => (format!("Write with {agent}"), format!("{agent} drafts the message from what's staged, keeping the intent of what you've typed; you commit it")),
     };
-    let write = Button::new(label)
-        .variant(ButtonVariant::Ghost)
-        .control_size(ControlSize::Small)
+    let write = IconButton::new(&WRITE_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
         .disabled(s.writing_message || (stage_first && s.total == 0))
-        .help(help)
+        .label(label).help(help)
         .on_press(|s: &mut Collate| s.write_message())
         .build(k)
-        .key("write-message")
-        .mr(-GHOST_PAD);
-    let head = row().key("commit-head").w_full().h(28.0).px(PANEL_INSET).items_center()
-        .child(text("Commit").font(k.ty.text_xsmall_medium).color(k.c.text_muted))
+        .key("write-message");
+    let mut lead = row().key("commit-lead").gap(4.0).items_center().min_w(0.0).shrink().ml(-4.0).child(write);
+    if s.writing_message {
+        lead = lead.child(text("Writing the message…").font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).shrink());
+    }
+    let actions = row().key("commit-actions").w_full().gap(8.0).items_center()
+        .child(lead)
         .child(col().grow(1.0))
-        .child(write);
-    col()
+        .child(row().key("commit-split").gap(1.0).items_center().child(commit).child(options));
+    let mut c = col()
         .key("commit-box")
         .w_full()
         .child(col().key("rule").w_full().h(1.0).fill(k.c.border_weak))
-        .child(head)
-        .child(col().key("commit-body").w_full().px(PANEL_INSET).pb(PANEL_INSET).gap(8.0).child(field).child(button))
+        .child(repo_row(s, k))
+        .child(col().key("commit-body").w_full().px(PANEL_INSET).pb(8.0).gap(8.0).child(field).child(actions));
+    if let Some(last) = last_commit_row(s, k) {
+        c = c.child(col().key("last-rule").w_full().h(1.0).fill(k.c.border_weak)).child(last);
+    }
+    c
+}
+
+/// Over the message, as Zed's panel footer: the branch, which opens the branch menu, and the
+/// one remote action the branch wants now (Fetch, Push, Pull or Publish), with the rest in
+/// its menu.
+fn repo_row(s: &Collate, k: &Kit) -> El {
+    let detached = s.branch.is_empty() || s.branch == "HEAD";
+    let name = if detached { s.head.as_deref().map_or_else(|| "No branch".to_owned(), abbrev) } else { s.branch.clone() };
+    let branch = row().key("commit-branch").gap(4.0).px(4.0).ml(-4.0).h(20.0).radius(k.radius.sm).items_center().min_w(0.0).shrink()
+        .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button")
+        .label(format!("Branch {name}")).help("Switch, merge, push or pull the branch")
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.branch_menu("commit-branch", tx))
+        .child(icon(&BRANCH_ICON, 14.0).color(k.c.icon_faint).a11y_hidden())
+        .child(text(name).font(k.ty.text_xsmall_medium).color(k.c.text_muted).truncate().min_w(0.0).shrink());
+    let mut r = row().key("commit-head").w_full().h(28.0).px(PANEL_INSET).gap(8.0).items_center().child(branch).child(col().grow(1.0).min_w(0.0));
+    if detached {
+        return r;
+    }
+    // As Zed picks it: nothing to send or take fetches; commits to send push; commits to take
+    // pull; no upstream publishes.
+    let (pick, verb, counts, help) = match s.ahead_behind {
+        None => ("push", "Publish", String::new(), "Push the branch and track it (git push --set-upstream)".to_owned()),
+        Some((0, 0)) => ("fetch", "Fetch", String::new(), "Fetch updates from the remote (git fetch)".to_owned()),
+        Some((a, 0)) => ("push", "Push", format!("↑{a}"), format!("Push {a} commit{} (git push)", if a == 1 { "" } else { "s" })),
+        Some((0, b)) => ("pull", "Pull", format!("↓{b}"), format!("Pull {b} commit{} (git pull)", if b == 1 { "" } else { "s" })),
+        Some((a, b)) => ("pull", "Pull", format!("↓{b} ↑{a}"), format!("Pull {b} commit{}; {a} of yours wait to be pushed (git pull)", if b == 1 { "" } else { "s" })),
+    };
+    let busy = s.busy.is_some();
+    let (faint, counted) = (k.c.text_faint, !counts.is_empty());
+    let main = Button::new(verb).variant(ButtonVariant::Neutral).control_size(ControlSize::Small).disabled(busy).help(help)
+        .label_with(move |font, color| {
+            let r = row().gap(4.0).items_center();
+            let r = if counted { r.child(text(counts).font(font).color(faint)) } else { r };
+            r.child(text(verb).font(font).color(color))
+        })
+        .on_press(move |s: &mut Collate| s.branch_do(pick)).build(k).key("remote");
+    let more = IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::Neutral).control_size(ControlSize::Small).disabled(busy)
+        .label("Remote actions").help("Fetch, pull, push, or open a pull request").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.remote_menu(tx)).build(k).key("remote-more");
+    r = r.child(row().key("remote-split").gap(1.0).items_center().child(main).child(more));
+    r
+}
+
+/// Under the commit box, as Zed's: the last commit, which opens it, with Uncommit and the
+/// graph; or, amending, that the commit will rewrite it.
+fn last_commit_row(s: &Collate, k: &Kit) -> Option<El> {
+    let r = row().key("last-commit").w_full().h(28.0).px(PANEL_INSET).gap(4.0).items_center();
+    if s.amend {
+        return Some(r
+            .child(text("This will update your most recent commit.").font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0))
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Make a new commit instead").on_press(|s: &mut Collate| s.amend = false).build(k).key("amend-cancel").mr(-GHOST_PAD)));
+    }
+    let (subject, has_parent) = s.last_commit.clone()?;
+    let head = s.head.clone()?;
+    let open = row().key("last-subject").px(4.0).ml(-4.0).h(20.0).radius(k.radius.sm).items_center().min_w(0.0).shrink()
+        .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button")
+        .label(format!("Last commit: {subject}")).help("Show the last commit")
+        .on_press(move |s: &mut Collate| s.open_commit(&head))
+        .child(text(subject).font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).shrink());
+    let mut r = r.child(open).child(col().grow(1.0).min_w(0.0));
+    let idle = s.busy.is_none() && !s.committing;
+    if has_parent {
+        r = r.child(IconButton::new(&UNCOMMIT_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).disabled(!idle)
+            .label("Uncommit").help("Take the last commit back, its changes staged (git reset --soft HEAD^)").on_press(|s: &mut Collate| s.branch_do("uncommit")).build(k).key("uncommit"));
+    }
+    Some(r.child(IconButton::new(&GRAPH_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
+        .label("Open Git Graph").on_press(|s: &mut Collate| s.show_scope(Scope::History)).build(k).key("last-graph").mr(-4.0)))
 }
 
 /// What the diff is, above it: the count, what it's measured against, the totals and how much
@@ -4539,6 +4763,12 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
         };
         r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help(help).on_press(|s: &mut Collate| s.undo_notice()).build(k).key("undo"));
     }
+    if note.offer_pr {
+        r = r.child(Button::new("Create Pull Request").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Open a pull request from this branch").on_press(|s: &mut Collate| {
+            s.notice = None;
+            s.branch_do("pull-request");
+        }).build(k).key("notice-pr"));
+    }
     if note.end.is_some() {
         r = r
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Keep the terminal running").on_press(|s: &mut Collate| s.notice = None).build(k).key("end-cancel"))
@@ -4744,7 +4974,20 @@ fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
     }
 }
 
+/// What an agent's session sets for the programs it runs, and which reaches Collate when one
+/// starts it (`collate .`, `open -a Collate`). Left in, every shell and agent Collate starts
+/// would take itself for that session's child: Claude Code turns off saving its transcript,
+/// and the session's messaging socket and token would be open to whatever runs there.
+const LAUNCHER_SESSION: [&str; 11] = [
+    "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 fn main() {
+    for name in LAUNCHER_SESSION {
+        // SAFETY: first thing in main, before any thread starts that could read the environment.
+        unsafe { std::env::remove_var(name) };
+    }
     let die = |e: String| -> ! {
         eprintln!("collate: {e}");
         std::process::exit(2);
@@ -4825,6 +5068,11 @@ fn main() {
             s.terminals.connect(std::sync::Arc::new(|id, event| {
                 if let Some(app) = HANDLE.get() {
                     app.update_if(move |s, tx| s.terminals.event(id, event, tx));
+                }
+            }));
+            s.agent_chat.connect(std::sync::Arc::new(|id, event| {
+                if let Some(app) = HANDLE.get() {
+                    app.update_if(move |s, tx| s.agent_chat.event(id, event, tx));
                 }
             }));
             pulls::watch_reviews();
