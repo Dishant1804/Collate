@@ -9,6 +9,7 @@
 
 mod agent;
 mod avatars;
+mod body;
 mod checkpoints;
 mod cli;
 mod commands;
@@ -2646,6 +2647,7 @@ impl Collate {
         if self.scope == Scope::History {
             self.history_diff = true;
         }
+        self.pulls.tab = pulls::PrTab::Files;
         match line {
             Some(n) => {
                 let side = if self.diff.files()[f].new_path.is_some() { diff::Side::New } else { diff::Side::Old };
@@ -2971,6 +2973,7 @@ fn reveal(s: &mut Collate, id: &str, tx: &mut Tx) {
     if s.scope == Scope::History {
         s.history_diff = true;
     }
+    s.pulls.tab = pulls::PrTab::Files;
     if let Some(i) = s.diff.file_index(id) {
         if s.diff.collapsed(i) {
             s.diff.set_collapsed(i, false);
@@ -3461,6 +3464,11 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     };
     let body = if s.has_project && s.scope == Scope::History && s.error.is_none() {
         if s.history_diff {
+            // A pull request opens on its overview; its files are the other tab.
+            let body = match pulls::pr_overview(s, k) {
+                Some(overview) if s.pulls.tab == pulls::PrTab::Overview => overview,
+                _ => body,
+            };
             col().key("history-body").w_full().grow(1.0).min_h(0.0).child(commit_header(s, k)).child(body)
         } else {
             history_graph(s, k)
@@ -4070,8 +4078,16 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
     // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
     // 24 pt row, so 2 less here centres "Working Copy" in the same 28 pt band.
     let bar = Sidebar::new().section(working).child(apart("sections-apart")).section(review);
-    col().key("sidebar").w_full().h_full().pt(COLUMN_TOP - 2.0).child(bar.build(k))
+    // The views scroll above the commit box, which keeps the foot in every view, as the place
+    // the review ends.
+    col().key("sidebar").w_full().h_full().pt(COLUMN_TOP - 2.0)
+        .child(col().key("sidebar-views").w_full().grow(1.0).min_h(0.0).child(bar.build(k)))
+        .child(commit_box(s, k))
 }
+
+/// The commit box's inset, the sidebar rows' own: the kit's 8 pt list inset and a row's 8 pt
+/// padding, so the branch icon sits under the views' icons.
+const SIDEBAR_INSET: f32 = 16.0;
 
 /// The staging panel's inset, shared by its filter, list titles, rows and commit box.
 const PANEL_INSET: f32 = 12.0;
@@ -4204,8 +4220,9 @@ fn file_list(s: &Collate, k: &Kit, staged_list: bool, quick: Option<bool>) -> El
         .min_h(0.0)
 }
 
-/// The trailing staging panel, as GitKraken lays it out: what's unstaged, what's staged, and
-/// the commit composer under them. Branch and History, being read-only, list their files.
+/// The trailing staging panel, as GitKraken lays it out: what's unstaged and what's staged
+/// (the commit box is at the sidebar's foot). Branch and History, being read-only, list their
+/// files.
 fn staging_panel(s: &Collate, k: &Kit) -> El {
     if s.panel_tab == PanelTab::Agent {
         return agent_panel(s, k);
@@ -4224,10 +4241,10 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     // No gap between the panel's parts: each title's own 28 pt band spaces it, so every title
     // sits as far below what's above it (the filter, a hairline) as the next.
     let mut p = col().key("staging").w_full().h_full().pt(COLUMN_TOP);
-    // History leads with the chosen commit; its files follow, as in Zed's commit view.
-    if let Some(card) = pulls::pr_card(s, k) {
-        p = p.child(card.mb(4.0));
-    } else if s.scope == Scope::History
+    // History leads with the chosen commit; its files follow, as in Zed's commit view. A pull
+    // request's card heads the middle column instead, as on GitHub.
+    if s.pulls.pr.is_none()
+        && s.scope == Scope::History
         && let Some(card) = commit_card(s, k)
     {
         p = p.child(card.mb(4.0));
@@ -4235,25 +4252,15 @@ fn staging_panel(s: &Collate, k: &Kit) -> El {
     // The first list title follows the filter with no gap, as the sidebar's first row follows
     // its section title: both second rows then sit on one line too.
     p = p.child(row().key("filter-row").w_full().px(PANEL_INSET).gap(8.0).items_center().child(filter.grow(1.0).min_w(0.0)).child(panel_tabs(s, k)));
-    // A list that shows files takes the room above the commit box; with none showing (folded
-    // or empty), a spacer does, so the box stays at the foot either way.
-    let shows = |key: &str, n: usize| n > 0 && !s.folded_lists.contains(key);
-    let foot = |p: El, lists_grow: bool| (if lists_grow { p } else { p.child(row().key("foot-spacer").w_full().grow(1.0)) }).child(commit_box(s, k));
-    p = match s.scope {
+    match s.scope {
         Scope::Uncommitted => p
             .child(file_section(s, k, ("unstaged", "Unstaged Files"), unstaged_n, Some(("Stage All", Collate::stage_all, true)), file_list(s, k, false, Some(true)), "Nothing unstaged"))
             .child(col().key("between").w_full().h(1.0).fill(k.c.border_weak))
             .child(file_section(s, k, ("staged", "Staged Files"), staged_n, Some(("Unstage All", Collate::unstage_all, false)), file_list(s, k, true, Some(false)), "Nothing staged yet")),
         Scope::Unstaged => p.child(file_section(s, k, ("unstaged", "Unstaged Files"), all, Some(("Stage All", Collate::stage_all, true)), file_list(s, k, false, Some(true)), "Nothing unstaged")),
         Scope::Staged => p.child(file_section(s, k, ("staged", "Staged Files"), all, Some(("Unstage All", Collate::unstage_all, true)), file_list(s, k, true, Some(false)), "Nothing staged")),
-        Scope::Branch | Scope::History => return p.child(file_section(s, k, ("changed", "Changed Files"), all, None, file_list(s, k, false, None), "No files changed")),
-    };
-    let lists_grow = match s.scope {
-        Scope::Uncommitted => shows("unstaged", unstaged_n) || shows("staged", staged_n),
-        Scope::Unstaged => shows("unstaged", all),
-        _ => shows("staged", all),
-    };
-    foot(p, lists_grow)
+        Scope::Branch | Scope::History => p.child(file_section(s, k, ("changed", "Changed Files"), all, None, file_list(s, k, false, None), "No files changed")),
+    }
 }
 
 /// The staging panel's tabs, Files and Agent, at the end of its first row.
@@ -4418,7 +4425,7 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         .w_full()
         .child(col().key("rule").w_full().h(1.0).fill(k.c.border_weak))
         .child(repo_row(s, k))
-        .child(col().key("commit-body").w_full().px(PANEL_INSET).pb(8.0).gap(8.0).child(field).child(actions));
+        .child(col().key("commit-body").w_full().px(SIDEBAR_INSET).pb(8.0).gap(8.0).child(field).child(actions));
     if let Some(last) = last_commit_row(s, k) {
         c = c.child(col().key("last-rule").w_full().h(1.0).fill(k.c.border_weak)).child(last);
     }
@@ -4437,7 +4444,7 @@ fn repo_row(s: &Collate, k: &Kit) -> El {
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.branch_menu("commit-branch", tx))
         .child(icon(&BRANCH_ICON, 14.0).color(k.c.icon_faint).a11y_hidden())
         .child(text(name).font(k.ty.text_xsmall_medium).color(k.c.text_muted).truncate().min_w(0.0).shrink());
-    let mut r = row().key("commit-head").w_full().h(28.0).px(PANEL_INSET).gap(8.0).items_center().child(branch).child(col().grow(1.0).min_w(0.0));
+    let mut r = row().key("commit-head").w_full().h(28.0).px(SIDEBAR_INSET).gap(8.0).items_center().child(branch).child(col().grow(1.0).min_w(0.0));
     if detached {
         return r;
     }
@@ -4468,7 +4475,7 @@ fn repo_row(s: &Collate, k: &Kit) -> El {
 /// Under the commit box, as Zed's: the last commit, which opens it, with Uncommit and the
 /// graph; or, amending, that the commit will rewrite it.
 fn last_commit_row(s: &Collate, k: &Kit) -> Option<El> {
-    let r = row().key("last-commit").w_full().h(28.0).px(PANEL_INSET).gap(4.0).items_center();
+    let r = row().key("last-commit").w_full().h(28.0).px(SIDEBAR_INSET).gap(4.0).items_center();
     if s.amend {
         return Some(r
             .child(text("This will update your most recent commit.").font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0))

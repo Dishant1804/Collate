@@ -171,7 +171,9 @@ pub fn commit_header(s: &Collate, k: &Kit) -> El {
         .help("Back to the commit list").shortcut("Esc")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_commit_diff(tx)).build(k).key("history-back");
     let mut r = row().key("commit-header").w_full().px(EDGE).py(10.0).gap(12.0).items_center().child(back.ml(-GHOST_PAD));
-    if let Some(range) = s.commit.as_deref().filter(|c| c.contains("..")) {
+    if let Some(tabs) = crate::pulls::pr_tabs(s, k) {
+        r = r.child(tabs);
+    } else if let Some(range) = s.commit.as_deref().filter(|c| c.contains("..")) {
         let (from, to) = s.compared.clone().unwrap_or_else(|| {
             let (a, b) = range.split_once("..").unwrap_or_default();
             (abbrev(a), abbrev(b))

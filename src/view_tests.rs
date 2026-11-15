@@ -642,22 +642,23 @@ fn staged_and_unstaged_fold_to_their_titles() {
     assert!((tall(&rt, "unstaged") - 28.0).abs() < 0.5, "and it's its title alone");
     click(&mut rt, "unstaged-toggle");
     assert!(rt.find("src/chevron").is_some(), "a second click opens it again");
+    // The commit box is the sidebar's foot, whatever the lists do.
     let foot = |rt: &Runtime<Collate>| {
-        let (panel, commit) = (rt.presented("staging").unwrap().0, rt.presented("commit-box").unwrap().0);
-        (panel[1] + panel[3] - (commit[1] + commit[3])).abs()
+        let (bar, commit) = (rt.presented("sidebar").unwrap().0, rt.presented("commit-box").unwrap().0);
+        (bar[1] + bar[3] - (commit[1] + commit[3])).abs()
     };
-    assert!(foot(&rt) < 1.0, "the commit box sits at the foot");
+    assert!(foot(&rt) < 1.0, "the commit box sits at the sidebar's foot");
     rt.update(|s, _| s.folded_lists.extend(["unstaged", "staged"]));
     for _ in 0..60 {
         rt.frame(1.0 / 60.0);
     }
     assert!(foot(&rt) < 1.0, "and stays there with both lists folded: {} off", foot(&rt));
-    // One rhythm down the panel: both hairlines run edge to edge, and each title's band
-    // starts right under what's above it, the filter or a hairline.
+    // One rhythm down the panel: each title's band starts right under what's above it, the
+    // filter or the hairline; and the box's hairline runs the sidebar's width.
     let at = |key: &str| rt.presented(key).unwrap_or_else(|| panic!("{key} is drawn")).0;
-    let (between, rule) = (at("between"), at("rule"));
-    assert!(between[0] == rule[0] && between[2] == rule[2], "the two hairlines span alike: {between:?} vs {rule:?}");
-    assert_eq!(at("staged-head")[1] - between[1], at("commit-head")[1] - rule[1], "and sit alike over their titles");
+    let (between, rule, bar) = (at("between"), at("rule"), at("sidebar"));
+    assert!(rule[0] == bar[0] && rule[2] == bar[2], "the box's hairline spans the sidebar: {rule:?} vs {bar:?}");
+    assert_eq!(at("staged-head")[1] - between[1], at("commit-head")[1] - rule[1], "and sits over its branch row as the panel's over its title");
     assert_eq!(at("staged-head")[3], at("commit-head")[3]);
     let (filter, unstaged) = (at("filter"), at("unstaged-head"));
     assert_eq!(unstaged[1] - (filter[1] + filter[3]), at("staged-head")[1] - (between[1] + between[3]), "the filter and the hairline sit alike over their titles");
@@ -693,12 +694,26 @@ fn the_staging_panel_lines_up() {
     // Row buttons end on the inset too.
     let quick = rect("quick");
     assert!((quick[0] + quick[2] - right).abs() < 1.0, "a row's + ends on the inset: {} vs {right}", quick[0] + quick[2]);
+}
+
+#[test]
+fn the_commit_box_lines_up_at_the_sidebar_foot() {
+    let rt = loaded();
+    let rect = |key: &str| rt.presented(key).map(|p| p.0).unwrap_or_else(|| panic!("{key} is drawn"));
+    let bar = rect("sidebar");
+    let (left, right) = (bar[0] + SIDEBAR_INSET, bar[0] + bar[2] - SIDEBAR_INSET);
+    assert!(rect("commit-box")[0] == bar[0], "the box is in the sidebar");
     let message = rect("message");
     assert!((message[0] - left).abs() < 1.0 && (message[0] + message[2] - right).abs() < 1.0, "the commit message spans the inset: {message:?} vs {left}..{right}");
+    // The branch's icon (in its 4 pt hover pad, pulled out by as much) starts on the inset.
+    let branch = rect("commit-branch");
+    assert!((branch[0] + 4.0 - left).abs() < 1.0, "the branch at {} vs {left}", branch[0] + 4.0);
     // Commit and its ⌄ sit together at the right, as Zed's split button.
     let (commit, options) = (rect("commit"), rect("commit-options"));
     assert!((commit[0] + commit[2] + 1.0 - options[0]).abs() < 1.0, "Commit meets its ⌄: {commit:?} vs {options:?}");
     assert!((options[0] + options[2] - right).abs() < 1.0, "the ⌄ ends on the inset: {} vs {right}", options[0] + options[2]);
+    assert!(rect("remote")[0] + rect("remote")[2] <= right + 1.0, "the remote button fits");
+    assert!(rt.find("sidebar-views").is_some() && rect("view-all")[1] < rect("commit-box")[1], "the views stay above it");
 }
 
 #[test]
@@ -1912,7 +1927,7 @@ fn pull_requests_ask_to_connect_github_instead_of_an_error() {
 }
 
 #[test]
-fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
+fn pull_requests_list_by_what_they_want_and_one_opens_on_its_overview() {
     let mut rt = loaded();
     let pull = |number: u32, author: &str, requested: &[&str]| github::Pull {
         number, title: format!("Change {number}"), author: author.into(), head: format!("b{number}"), base: "main".into(), state: github::PrState::Open, draft: false,
@@ -1947,9 +1962,52 @@ fn pull_requests_list_by_what_they_want_and_one_opens_with_its_card() {
         s.loaded = true;
     });
     rt.frame(1.0 / 60.0);
-    for key in ["pr-card", "pr-approve", "pr-changes", "pr-merge", "reviewer-me", "pr-part"] {
+    // It opens on its overview, as on GitHub: the title, the merge box, the reader's review.
+    assert_eq!(rt.state.pulls.tab, crate::pulls::PrTab::Overview);
+    for key in ["pr-tabs", "pr-overview", "pr-title", "pr-merge-box", "pr-approve", "pr-changes", "pr-merge", "reviewer-me", "pr-asked"] {
         assert!(rt.find(key).is_some(), "{key}");
     }
+    assert!(rt.find("pr-part").is_none(), "the files are the other tab");
+    // A short comment reads whole; a long review shuts to its gist until its head is pressed.
+    let post = |author: &str, body: &str| github::Post { author: author.into(), body: body.into(), time: "2026-11-16T00:00:00Z".into(), state: "COMMENTED".into() };
+    let review = "Actionable comments posted: 2\n\n<details><summary>Prompt</summary>Fix it</details>\n\nMore words here.";
+    rt.update(move |s, _| s.pulls.pr.as_mut().unwrap().conversation = vec![post("ana", "Looks good"), post("bot", review)]);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("post-0-body").is_some() && rt.find("post-0-gist").is_none(), "a short comment shows whole");
+    assert!(rt.find("post-1-gist").is_some() && rt.find("post-1-body").is_none(), "a long review shows its gist");
+    // The overview fades in; a press waits for it.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "post-1-head");
+    assert!(rt.find("post-1-body").is_some() && rt.find("post-1-gist").is_none(), "a press opens it");
+    assert!(rt.find("post-1-body-1").is_some() && rt.find("post-1-body-1-in").is_none(), "its folds stay shut");
+    rt.update(|s, _| s.pulls.pr.as_mut().unwrap().conversation = vec![]);
+    // The overview fills the middle column, under its header and left of the staging panel.
+    let (page, header, filter) = (rt.presented("pr-overview").unwrap().0, rt.presented("commit-header").unwrap().0, rt.presented("filter").unwrap().0);
+    assert!(page[0] + page[2] <= filter[0], "in the middle, left of the staging panel: {page:?} vs {filter:?}");
+    assert!(page[1] >= header[1] + header[3] - 0.5, "under the header: {page:?} vs {header:?}");
+    // The properties stay put while the overview scrolls.
+    let side = rt.presented("pr-side").unwrap().0;
+    rt.update(|s, _| s.pulls.pr.as_mut().unwrap().body = "Why\n\n".repeat(200));
+    rt.frame(1.0 / 60.0);
+    let (r, _) = rt.presented("pr-overview").unwrap();
+    rt.wheel(r[0] + 200.0, r[1] + 200.0, -600.0);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let (moved_side, title) = (rt.presented("pr-side").unwrap().0, rt.presented("pr-title").unwrap().0);
+    assert!(title[1] < side[1] - 100.0, "the overview scrolled: {title:?}");
+    assert!((moved_side[1] - side[1]).abs() < 0.5, "the side column held: {moved_side:?} vs {side:?}");
+    rt.wheel(r[0] + 200.0, r[1] + 200.0, 3000.0);
+    // Asked for a review: its button opens the files.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "pr-review-changes");
+    assert_eq!(rt.state.pulls.tab, crate::pulls::PrTab::Files);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("pr-part").is_some() && rt.find("pr-overview").is_none(), "the files tab shows the diff");
     assert!(rt.state.pr_whole());
     // The summary fades in with the diff; a press waits for it.
     for _ in 0..30 {
@@ -2006,6 +2064,7 @@ fn a_checks_annotation_shows_under_its_line_of_the_whole_pull_request() {
             pull, body: String::new(), state: "OPEN".into(), mergeable: String::new(), merge_state: String::new(), head_oid: "c3".into(), reviewers: vec![], assignees: vec![],
             conversation: vec![], threads: vec![], annotations: Ok(annotations), commentable: vec![], merge_base: "m0".into(), commits: vec![], reviewed: vec![],
         });
+        s.pulls.tab = crate::pulls::PrTab::Files;
         // The test has no watcher to read the range: the loaded diff stays the one shown.
         s.loaded = true;
         s.place_comments();
