@@ -34,7 +34,8 @@ pub const USAGE: &str = "usage: collate [<repository>] [<commit> | <from>..<to>]
        collate <file> <file>            compare two files (--title <name> names them)
        collate <folder> <folder>        compare two folders
        collate <file.patch> | -         read a patch from a file or standard input
-       collate --merge <base> <local> <remote> <merged>   merge for git mergetool";
+       collate --merge <base> <local> <remote> <merged>   merge for git mergetool
+       collate --mcp                    serve agents the running windows, over MCP on standard input";
 
 /// Reads the arguments Collate itself takes, after the window's own (`--snap` and the like)
 /// are taken out. `piped` says standard input is a pipe or a file, so a patch with no other

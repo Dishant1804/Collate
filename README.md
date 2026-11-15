@@ -41,6 +41,15 @@ Settings > Review > Git's diff and merge tool, or Help > Use Collate for git dif
 mergetool, makes `git difftool` and `git mergetool` open Collate. Dropping a folder on the
 window opens it; a patch, or two files or folders, is shown on its own.
 
+## Agents
+
+A coding agent can drive the window you're looking at: read the view, the files and the
+selected lines, go to a file, line or commit, select lines, leave comments, and run any menu
+command by its id. `collate --mcp` is the MCP server for it; `scripts/install-agent.sh`
+registers it with Claude Code and installs the `collate` skill (`skills/collate`), which
+tells the agent how to use it. Agents ask before committing, pushing or discarding, and a
+discard still waits for you in its dialog.
+
 ## Keys
 
 Every command is also in the menu bar (File, View, Go, Changes, Branch, Agent), with its key

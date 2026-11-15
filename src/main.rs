@@ -14,6 +14,7 @@ mod checkpoints;
 mod cli;
 mod commands;
 mod comments;
+mod control;
 mod diff;
 mod git;
 mod github;
@@ -4995,6 +4996,10 @@ fn main() {
         // SAFETY: first thing in main, before any thread starts that could read the environment.
         unsafe { std::env::remove_var(name) };
     }
+    // An agent's MCP client starts Collate as its server: no window, just standard input.
+    if std::env::args().nth(1).as_deref() == Some("--mcp") {
+        control::mcp();
+    }
     let die = |e: String| -> ! {
         eprintln!("collate: {e}");
         std::process::exit(2);
@@ -5084,6 +5089,7 @@ fn main() {
             }));
             pulls::watch_reviews();
             update::watch();
+            control::serve();
             s.avatars.start(rune::ImageCache::new(waker), |email, bytes| {
                 if let Some(app) = HANDLE.get() {
                     app.update(move |s, _| s.avatars.landed(email, bytes));
@@ -5153,6 +5159,7 @@ fn main() {
     // Read the first snapshot right away rather than after one poll interval.
     let _ = WATCHER.get().unwrap().send(Cmd::Refresh);
     app.run();
+    control::stop();
     std::process::exit(EXIT.load(Ordering::Relaxed));
 }
 

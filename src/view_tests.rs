@@ -532,6 +532,52 @@ fn m_jumps_between_the_ends_of_a_move() {
     assert_eq!(rt.state.diff.visible_file(), 0, "and back to where it came from");
 }
 
+/// What an agent asks a window over its socket, answered here as the UI thread would.
+fn agent_asks(rt: &mut Runtime<Collate>, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let mut answer = None;
+    rt.update(|s, tx| answer = Some(control::handle(s, method, &params, tx)));
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    answer.unwrap()
+}
+
+#[test]
+fn an_agent_reads_the_review_selects_lines_comments_and_runs_commands() {
+    use serde_json::json;
+    let mut rt = loaded();
+    let state = agent_asks(&mut rt, "state", json!({})).unwrap();
+    assert_eq!((state["view"].as_str(), state["place"].as_str()), (Some("all"), Some("diff")));
+    assert_eq!(state["files_total"], 80);
+    assert_eq!(state["files"][0]["path"], "src/api/file1.rs");
+    assert_eq!((state["files"][0]["additions"].as_u64(), state["files"][0]["status"].as_str()), (Some(2), Some("modified")));
+
+    let picked = agent_asks(&mut rt, "select", json!({ "path": "src/ui/file3.rs", "start": 13 })).unwrap();
+    assert_eq!(picked["selection"], json!({ "path": "src/ui/file3.rs", "side": "new", "start": 13, "end": 13, "text": "    let value_10 = changed(10);" }));
+    assert!(agent_asks(&mut rt, "select", json!({ "path": "src/ui/file3.rs", "start": 9999 })).is_err(), "a line past the end of the file");
+    assert!(agent_asks(&mut rt, "open_file", json!({ "path": "nope.rs" })).unwrap_err().contains("isn't in the diff"));
+
+    let comments = agent_asks(&mut rt, "comment", json!({ "path": "src/ui/file3.rs", "line": 13, "body": "Why changed?" })).unwrap();
+    assert_eq!((comments[0]["line"].as_u64(), comments[0]["body"].as_str()), (Some(13), Some("Why changed?")));
+    assert_eq!(rt.state.comments.len(), 1);
+    assert_eq!(agent_asks(&mut rt, "delete_comment", json!({ "index": 0 })).unwrap(), json!([]));
+
+    let patch = agent_asks(&mut rt, "diff", json!({ "path": "src/ui/file3.rs" })).unwrap();
+    let patch = patch["patch"].as_str().unwrap();
+    assert!(patch.starts_with("diff --git a/src/ui/file3.rs b/src/ui/file3.rs\n--- a/src/ui/file3.rs\n+++ b/src/ui/file3.rs\n@@ "), "{patch}");
+    assert!(patch.contains("\n-    let value_10 = original(10);\n+    let value_10 = changed(10);\n"));
+
+    let split = agent_asks(&mut rt, "run", json!({ "command": "split" })).unwrap();
+    assert_eq!(split["state"]["layout"], "split");
+    assert!(agent_asks(&mut rt, "run", json!({ "command": "frobnicate" })).is_err());
+    rt.state.open_help();
+    let refused = agent_asks(&mut rt, "run", json!({ "command": "next-file" })).unwrap_err();
+    assert!(refused.contains("shortcuts sheet"), "{refused}");
+    assert_eq!(agent_asks(&mut rt, "dismiss", json!({})).unwrap()["modal"], serde_json::Value::Null);
+    let commands = agent_asks(&mut rt, "commands", json!({})).unwrap();
+    assert!(commands.as_array().unwrap().iter().any(|c| c["id"] == "next-file" && c["enabled"] == true && c["key"] == "]"));
+}
+
 #[test]
 fn the_sidebar_switches_views_and_the_file_menu_acts() {
     let mut rt = loaded();

@@ -39,6 +39,10 @@ install failed; a `cargo build` alone doesn't update the app.
 - `src/graph.rs`: commit graph. `src/map.rs`, `src/map_view.rs`: repository map.
 - `src/terminal.rs`: the terminal drawer (⌘J), shells on `alacritty_terminal`.
 - `src/update.rs`: checks GitHub for a newer release or commit and installs it over the app.
+- `src/control.rs`: agents drive a window over its socket (`~/Library/Application Support/Collate/
+  control/<pid>.sock`), and `collate --mcp` serves those sockets as MCP tools. A new command in
+  `src/commands.rs` reaches agents by its id; a new kind of request goes in `handle` and `TOOLS`.
+  `skills/collate/SKILL.md` teaches agents the tools; `scripts/install-agent.sh` installs both.
 - `src/settings.rs`, `src/avatars.rs`, `src/nav.rs`.
 
 Rune's source is the reference for its API: `~/.cargo/git/checkouts/rune-*/<rev>/crates/`
