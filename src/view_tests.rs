@@ -1998,7 +1998,7 @@ fn pull_requests_list_by_what_they_want_and_one_opens_on_its_overview() {
     rt.update(move |s, _| {
         let detail = github::Detail {
             pull: pull(7, "ana", &["me"]), body: "Why".into(), state: "OPEN".into(), mergeable: "MERGEABLE".into(), merge_state: "BLOCKED".into(),
-            head_oid: "c3".into(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], conversation: vec![], threads: vec![], annotations: Ok(vec![]), commentable: vec![],
+            head_oid: "c3".into(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], label_colors: vec![], conversation: vec![], threads: vec![], annotations: Ok(vec![]), commentable: vec![],
             merge_base: "m0".into(), commits: vec![("a1".into(), "First".into()), ("c3".into(), "Second".into())], reviewed: vec![("me".into(), "a1".into())],
         };
         s.pulls.open = false;
@@ -2010,7 +2010,7 @@ fn pull_requests_list_by_what_they_want_and_one_opens_on_its_overview() {
     rt.frame(1.0 / 60.0);
     // It opens on its overview, as on GitHub: the title, the merge box, the reader's review.
     assert_eq!(rt.state.pulls.tab, crate::pulls::PrTab::Overview);
-    for key in ["pr-tabs", "pr-overview", "pr-title", "pr-merge-box", "pr-approve", "pr-changes", "pr-merge", "reviewer-me", "pr-asked"] {
+    for key in ["pr-tabs", "pr-overview", "pr-title", "pr-merge-box", "pr-approve", "pr-changes", "pr-merge", "reviewer-me", "pr-asked", "pr-edit", "pr-web", "pr-copy-link", "pr-draft", "pr-close"] {
         assert!(rt.find(key).is_some(), "{key}");
     }
     assert!(rt.find("pr-part").is_none(), "the files are the other tab");
@@ -2107,7 +2107,7 @@ fn a_checks_annotation_shows_under_its_line_of_the_whole_pull_request() {
     rt.update(move |s, _| {
         s.open_commit("m0..c3");
         s.pulls.pr = Some(github::Detail {
-            pull, body: String::new(), state: "OPEN".into(), mergeable: String::new(), merge_state: String::new(), head_oid: "c3".into(), reviewers: vec![], assignees: vec![],
+            pull, body: String::new(), state: "OPEN".into(), mergeable: String::new(), merge_state: String::new(), head_oid: "c3".into(), reviewers: vec![], assignees: vec![], label_colors: vec![],
             conversation: vec![], threads: vec![], annotations: Ok(annotations), commentable: vec![], merge_base: "m0".into(), commits: vec![], reviewed: vec![],
         });
         s.pulls.tab = crate::pulls::PrTab::Files;

@@ -208,6 +208,15 @@ pub static GITHUB_ICON: Icon = Icon {
     body: r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></g>"#,
 };
 
+// Lucide's pencil, link, gear, check, message and clock (ISC licence): the overview's edit and
+// copy link, the sidebar's settings, how a reviewer stands, and when it last changed.
+crate::lucide!(PENCIL_ICON, "collate-pencil", r#"<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>"#);
+crate::lucide!(LINK_ICON, "collate-link", r#"<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>"#);
+crate::lucide!(GEAR_ICON, "collate-gear", r#"<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>"#);
+crate::lucide!(CHECK_ICON, "collate-check", r#"<path d="M20 6 9 17l-5-5"/>"#);
+crate::lucide!(MESSAGE_ICON, "collate-message", r#"<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>"#);
+crate::lucide!(CLOCK_ICON, "collate-clock", r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#);
+
 /// A macOS notification, through AppleScript: no permission to ask for, and nothing to bundle.
 fn notify(title: &str, body: &str) {
     let quote = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
@@ -613,36 +622,41 @@ impl Collate {
         });
     }
 
+    /// Marks the open pull request ready for review, or turns it back into a draft.
+    fn toggle_draft(&mut self) {
+        let Some((n, draft)) = self.pulls.pr.as_ref().map(|p| (p.pull.number, p.pull.draft)) else { return };
+        if draft {
+            self.pr_act("Marking ready…", move |gh| gh.set(n, &["ready"]).map(|_| format!("#{n} is ready for review")), |_| {});
+        } else {
+            self.pr_act("Converting…", move |gh| gh.set(n, &["ready", "--undo"]).map(|_| format!("#{n} is a draft")), |_| {});
+        }
+    }
+
+    /// Closes the open pull request, or reopens a closed one.
+    fn toggle_closed(&mut self) {
+        let Some((n, open)) = self.pulls.pr.as_ref().map(|p| (p.pull.number, p.state == "OPEN")) else { return };
+        if open {
+            self.pr_act("Closing…", move |gh| gh.set(n, &["close"]).map(|_| format!("Closed #{n}")), |_| {});
+        } else {
+            self.pr_act("Reopening…", move |gh| gh.set(n, &["reopen"]).map(|_| format!("Reopened #{n}")), |_| {});
+        }
+    }
+
+    /// What has no button of its own on the overview: the branch, here and on GitHub.
     fn pr_menu(&mut self, tx: &mut Tx) {
         let Some(pr) = &self.pulls.pr else { return };
-        let (n, url, open, draft) = (pr.pull.number, pr.pull.url.clone(), pr.state == "OPEN", pr.pull.draft);
+        let (n, open) = (pr.pull.number, pr.state == "OPEN");
         let menu = PopupMenu::new()
             .item(PopupItem::new("checkout", "Check Out Branch"))
-            .item(PopupItem::new("web", "Open on GitHub"))
             .item(PopupItem::new("reload", "Reload"))
             .separator()
-            .item(PopupItem::new("edit", "Edit Title and Description…").enabled(open))
-            .item(PopupItem::new("reviewers", "Reviewers…").enabled(open))
-            .item(PopupItem::new("labels", "Labels…").enabled(open))
-            .separator()
             .item(PopupItem::new("update", "Update Branch with Base").enabled(open))
-            .item(PopupItem::new("update-rebase", "Update Branch by Rebasing").enabled(open))
-            .separator()
-            .item(PopupItem::new("ready", if draft { "Ready for Review" } else { "Convert to Draft" }).enabled(open))
-            .item(PopupItem::new("state", if open { "Close Pull Request" } else { "Reopen Pull Request" }));
+            .item(PopupItem::new("update-rebase", "Update Branch by Rebasing").enabled(open));
         tx.popup_menu(menu, "pr-more", move |s: &mut Collate, picked, _| match picked {
             Some("checkout") => s.pr_act("Checking out…", move |gh| gh.checkout(n).map(|_| format!("Checked out #{n}")), Collate::reread),
-            Some("web") => open_url(&url),
             Some("reload") => s.open_pull(n),
-            Some("edit") => s.start_compose(Compose::Edit),
-            Some("reviewers") => s.start_compose(Compose::Reviewers),
-            Some("labels") => s.start_compose(Compose::Labels),
             Some("update") => s.update_branch(false),
             Some("update-rebase") => s.update_branch(true),
-            Some("ready") if draft => s.pr_act("Marking ready…", move |gh| gh.set(n, &["ready"]).map(|_| format!("#{n} is ready for review")), |_| {}),
-            Some("ready") => s.pr_act("Converting…", move |gh| gh.set(n, &["ready", "--undo"]).map(|_| format!("#{n} is a draft")), |_| {}),
-            Some("state") if open => s.pr_act("Closing…", move |gh| gh.set(n, &["close"]).map(|_| format!("Closed #{n}")), |_| {}),
-            Some("state") => s.pr_act("Reopening…", move |gh| gh.set(n, &["reopen"]).map(|_| format!("Reopened #{n}")), |_| {}),
             _ => {}
         });
     }
@@ -840,7 +854,7 @@ fn heading(k: &Kit, key: &str, title: &str, action: Option<El>) -> El {
     let mut r = row().key(key.to_owned()).w_full().h(24.0).items_center()
         .child(text(title.to_owned()).font(k.ty.text_small_medium).color(k.c.text_muted).grow(1.0));
     if let Some(a) = action {
-        r = r.child(a.mr(-GHOST_PAD));
+        r = r.child(a);
     }
     r
 }
@@ -914,8 +928,16 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
 
     // The title, and what merges where.
     let title_font = rune::TextStyle { size: 23.0, line_height: 32.0, weight: 600.0, ..k.ty.ui_medium };
-    let more = IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).label("More actions for this pull request").help("Check out, open on GitHub, edit, draft, close")
-        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_menu(tx)).build(k).key("pr-more");
+    let tool = |i: &'static Icon, label: &str| IconButton::new(i).variant(IconButtonVariant::GhostMuted).label(label.to_owned());
+    let (web, link) = (p.url.clone(), p.url.clone());
+    let tools = row().key("pr-tools").pt(4.0).gap(2.0).items_center().mr(-4.0)
+        .child(tool(&PENCIL_ICON, "Edit title and description").disabled(!open)
+            .on_press(|s: &mut Collate| s.start_compose(Compose::Edit)).build(k).key("pr-edit"))
+        .child(tool(&GITHUB_ICON, "Open on GitHub").on_press(move |_: &mut Collate| open_url(&web)).build(k).key("pr-web"))
+        .child(tool(&LINK_ICON, "Copy link").help("Copy the pull request's address")
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(link.clone()); s.say("Copied the pull request's link", false); }).build(k).key("pr-copy-link"))
+        .child(tool(&MORE_ICON, "More actions for this pull request").help("Check out, reload, update the branch")
+            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_menu(tx)).build(k).key("pr-more"));
     let pill = row().key("pr-state").h(22.0).px(8.0).gap(5.0).items_center().radius(11.0).fill(k.alpha(state_color, 0.16))
         .child(icon(state_icon, 12.0).color(state_color))
         .child(text(state_name.to_owned()).font(k.ty.text_small_medium).color(state_color));
@@ -935,7 +957,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         .child(col().key("pr-title").w_full().gap(10.0)
             .child(row().w_full().gap(8.0).items_start()
                 .child(text(p.title.clone()).font(title_font).color(k.c.text_base).wrap().grow(1.0).min_w(0.0))
-                .child(row().pt(4.0).child(more.mr(-4.0))))
+                .child(tools))
             .child(byline));
 
     // Asked for the reader's review: the way to the files.
@@ -1097,35 +1119,62 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     // Beside it: what it is, who reviews it, its labels.
     let side_row = |key: String, lead: El, label: String, tint: rune::Color| row().key(key).w_full().h(24.0).gap(8.0).items_center().child(lead)
         .child(text(label).font(k.ty.text_small).color(tint).truncate().min_w(0.0).grow(1.0));
-    let edit = |key: &str, what: Compose, help: &str| Button::new("Edit").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help(help.to_owned()).disabled(!open)
-        .on_press(move |s: &mut Collate| s.start_compose(what)).build(k).key(key.to_owned());
+    // A gear opens each list's editor, as on GitHub.
+    let gear = |key: &str, what: Compose, label: &str| IconButton::new(&GEAR_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
+        .label(label.to_owned()).disabled(!open).on_press(move |s: &mut Collate| s.start_compose(what)).build(k).key(key.to_owned()).mr(-4.0);
     let mut props = col().key("pr-properties").w_full().gap(2.0).child(heading(k, "pr-properties-title", "Properties", None))
         .child(side_row("prop-state".into(), icon(state_icon, 14.0).color(state_color), state_name.to_owned(), k.c.text_base))
         .child(side_row("prop-commits".into(), icon(&MERGE_ICON, 14.0).color(k.c.icon_muted), format!("{} commit{}", pr.commits.len(), if pr.commits.len() == 1 { "" } else { "s" }), k.c.text_muted));
     if let Some(day) = p.updated.get(..10) {
-        props = props.child(side_row("prop-updated".into(), row().w(14.0), format!("Updated {day}"), k.c.text_muted));
+        props = props.child(side_row("prop-updated".into(), icon(&CLOCK_ICON, 14.0).color(k.c.icon_muted), format!("Updated {day}"), k.c.text_muted));
     }
-    let mut reviewers = col().key("pr-reviewers").w_full().gap(2.0).child(heading(k, "pr-reviewers-title", "Reviewers", Some(edit("pr-edit-reviewers", Compose::Reviewers, "Ask for reviews"))));
+    // Under what it is, what changes that: a draft or not, open or closed. A merged one stays.
+    if pr.state != "MERGED" {
+        let act = |key: &str, glyph: &'static Icon, label: &str, help: &str, f: fn(&mut Collate)| Button::new(label.to_owned()).icon(glyph).variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small)
+            .help(help.to_owned()).disabled(s.busy.is_some()).on_press(f).build(k).key(key.to_owned()).ml(-GHOST_PAD);
+        let mut acts = col().key("pr-state-actions").w_full().pt(6.0).gap(2.0).items_start();
+        if open {
+            acts = acts.child(if p.draft {
+                act("pr-draft", &PULLS_ICON, "Ready for Review", "Mark it ready, which asks its reviewers", Collate::toggle_draft)
+            } else {
+                act("pr-draft", &PULL_DRAFT_ICON, "Convert to Draft", "Mark it as still in progress", Collate::toggle_draft)
+            });
+        }
+        acts = acts.child(if open {
+            act("pr-close", &PULL_CLOSED_ICON, "Close Pull Request", "Close it without merging", Collate::toggle_closed)
+        } else {
+            act("pr-close", &PULLS_ICON, "Reopen Pull Request", "Open it again", Collate::toggle_closed)
+        });
+        props = props.child(acts);
+    }
+    let mut reviewers = col().key("pr-reviewers").w_full().gap(2.0).child(heading(k, "pr-reviewers-title", "Reviewers", Some(gear("pr-edit-reviewers", Compose::Reviewers, "Ask for reviews"))));
     if pr.reviewers.is_empty() {
-        reviewers = reviewers.child(text("None yet").font(k.ty.text_small).color(k.c.text_faint));
+        reviewers = reviewers.child(text("No reviews").font(k.ty.text_small).color(k.c.text_faint));
     }
+    // Who, and where they stand, as GitHub marks it: approved, changes asked, commented, waited on.
     for (who, state) in &pr.reviewers {
-        let (label, tint) = match state.as_str() {
-            "APPROVED" => ("Approved", k.c.success.icon),
-            "CHANGES_REQUESTED" => ("Changes requested", k.c.danger.icon),
-            "REQUESTED" => ("Asked", k.c.text_faint),
-            _ => ("Commented", k.c.text_muted),
+        let (mark, said) = match state.as_str() {
+            "APPROVED" => (icon(&CHECK_ICON, 14.0).color(k.c.success.icon), "Approved"),
+            "CHANGES_REQUESTED" => (icon(&crate::ALL_ICON, 14.0).color(k.c.danger.icon), "Requested changes"),
+            "REQUESTED" => (row().size(14.0, 14.0).center().child(dot(k, Some(CheckState::Pending))), "Awaiting review"),
+            _ => (icon(&MESSAGE_ICON, 14.0).color(k.c.icon_muted), "Commented"),
         };
-        reviewers = reviewers.child(row().key(format!("reviewer-{who}")).w_full().h(24.0).gap(6.0).items_center()
+        reviewers = reviewers.child(row().key(format!("reviewer-{who}")).w_full().h(28.0).gap(8.0).items_center().label(format!("{who} - {said}")).help(said.to_owned())
+            .child(crate::history_view::initials(k, who, 20.0).a11y_hidden())
             .child(text(who.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0))
-            .child(text(label.to_owned()).font(k.ty.text_small).color(tint)));
+            .child(mark.a11y_hidden()));
     }
-    let mut labels = col().key("pr-labels").w_full().gap(4.0).child(heading(k, "pr-labels-title", "Labels", Some(edit("pr-edit-labels", Compose::Labels, "Change the labels"))));
+    let mut labels = col().key("pr-labels").w_full().gap(4.0).child(heading(k, "pr-labels-title", "Labels", Some(gear("pr-edit-labels", Compose::Labels, "Change the labels"))));
     if p.labels.is_empty() {
         labels = labels.child(text("None yet").font(k.ty.text_small).color(k.c.text_faint));
     } else {
-        labels = labels.child(row().w_full().gap(4.0).flex_wrap().children(p.labels.iter().map(|l| row().h(20.0).px(8.0).items_center().radius(10.0)
-            .border(1.0, k.c.border_weak).child(text(l.clone()).font(k.ty.text_small).color(k.c.text_base)))));
+        // Each in its own colour, as on GitHub: a tint of it, so the name reads in both themes.
+        let tint = |name: &str| pr.label_colors.iter().find(|(n, _)| n == name).and_then(|(_, c)| rune::color::hex(&format!("#{c}"))).unwrap_or(k.c.text_muted);
+        labels = labels.child(row().w_full().gap(4.0).flex_wrap().children(p.labels.iter().map(|l| {
+            let c = tint(l);
+            row().key(format!("label-{l}")).h(20.0).px(8.0).items_center().radius(10.0).fill(k.alpha(c, 0.22)).border(1.0, k.alpha(c, 0.55))
+                .child(text(l.clone()).font(k.ty.text_xsmall_medium).color(k.c.text_base))
+        })));
     }
     let mut side = col().key("pr-side").w(220.0).gap(24.0).child(props).child(reviewers).child(labels);
     if !pr.assignees.is_empty() {

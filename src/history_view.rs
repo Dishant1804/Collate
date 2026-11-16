@@ -69,13 +69,17 @@ pub fn history_graph(s: &Collate, k: &Kit) -> El {
         .child(col().key("graph-scroll").w_full().grow(1.0).min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(rows))
 }
 
-/// A round badge with someone's initials, tinted by their name so each author keeps a colour.
-/// An author's GitHub picture, else their initials on a colour of their own.
+/// An author's GitHub picture, else their initials.
 fn avatar(k: &Kit, s: &Collate, c: &graph::Commit, size: f32) -> El {
     if let Some(img) = s.avatars.get(&c.email) {
         return row().size(size, size).radius(size / 2.0).border(1.0, k.c.border_weak).pixels_fit(img.pixels(), rune::SurfaceFit::Fill).a11y_hidden();
     }
-    let name = c.author.as_str();
+    initials(k, &c.author, size)
+}
+
+/// A round badge with someone's initials, tinted by their name so each keeps a colour: an
+/// author without a picture, or a pull request's reviewer.
+pub fn initials(k: &Kit, name: &str, size: f32) -> El {
     let initials: String = name.split(|c: char| c.is_whitespace() || c == '.' || c == '_' || c == '-')
         .filter_map(|w| w.chars().next()).take(if size < 24.0 { 1 } else { 2 }).collect::<String>().to_uppercase();
     let hue = name.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));

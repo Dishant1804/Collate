@@ -151,6 +151,8 @@ pub struct Detail {
     /// Reviewers and where each stands: their latest review's state, or `REQUESTED`.
     pub reviewers: Vec<(String, String)>,
     pub assignees: Vec<String>,
+    /// Each label's colour, as GitHub's six hex digits, by name.
+    pub label_colors: Vec<(String, String)>,
     /// Comments and reviews with a summary, oldest first.
     pub conversation: Vec<Post>,
     pub threads: Vec<Thread>,
@@ -714,6 +716,7 @@ fn detail(v: &Value, threads: &Value) -> Detail {
         head_oid: s(v, "headRefOid"),
         reviewers,
         assignees: v["assignees"].as_array().into_iter().flatten().map(login).collect(),
+        label_colors: v["labels"].as_array().into_iter().flatten().map(|l| (s(l, "name"), s(l, "color"))).collect(),
         conversation,
         threads: threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array().into_iter().flatten().filter_map(thread).collect(),
         annotations: Ok(Vec::new()),
