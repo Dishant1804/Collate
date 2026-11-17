@@ -21,8 +21,9 @@ trap 'rm -rf "$work"' EXIT
 app=$work/Collate.app
 scripts/bundle.sh target/release/collate "$work"
 
-# Replace an earlier install only after the new bundle is complete.
-if pgrep -x Collate >/dev/null; then
+# Replace an earlier install only after the new bundle is complete. An agent's `collate --mcp`
+# server is no window, and keeps running on the old binary, so it doesn't count.
+if pgrep -x Collate | xargs -n1 ps -o args= -p 2>/dev/null | grep -v -- ' --mcp$' >/dev/null; then
   echo "install: quit Collate first (it's running)" >&2
   exit 1
 fi

@@ -52,7 +52,7 @@ use std::time::Duration;
 use comments::{Comment, comment_row, load_comments};
 use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, IMAGE_H, LineKind, LineRange, LineRef, Query, WordEdit, apply_edits, word_edits};
 use git::{Change, Repo, Scope, Staged};
-use rune::{App, AppSpec, Cursor, Cx, El, Icon, Key, KeyEvent, PointerPress, PopupAnchor, PopupItem, PopupMenu, TextEdit, Tx, col, el, icon, row, text};
+use rune::{App, AppSpec, Cursor, Cx, Drag, El, Icon, Key, KeyEvent, PointerPress, PopupAnchor, PopupItem, Phase, PopupMenu, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::shell::{self, PaneState, Sidebar, SidebarRow, SidebarSection, SplitView, Toolbar};
 use rune_kit::syntax::Highlighter;
 use rune_kit::{
@@ -164,7 +164,6 @@ lucide!(PULL_CLOSED_ICON, "collate-git-pull-request-closed", r#"<circle cx="6" c
 lucide!(MAP_ICON, "collate-layout-dashboard", r#"<rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>"#);
 // The commit box's Write with the agent, and Uncommit.
 lucide!(WRITE_ICON, "collate-sparkles", r#"<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/>"#);
-lucide!(UNCOMMIT_ICON, "collate-undo-2", r#"<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>"#);
 // Beside a link that leaves the app, as a browser would open it.
 lucide!(EXTERNAL_ICON, "collate-external-link", r#"<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>"#);
 
@@ -335,6 +334,8 @@ struct Collate {
     staged_tree: TreeModel<FileNode<Stat>>,
     inspector: PaneState,
     message: TextEdit,
+    /// The message box's height once the reader drags its top edge; until then it fits the text.
+    commit_h: Option<f32>,
     committing: bool,
     /// The coding agent is writing the commit message.
     writing_message: bool,
@@ -522,6 +523,7 @@ fn init() -> Collate {
         staged_tree: TreeModel::new(),
         inspector: PaneState::new(300.0).range(220.0, 520.0),
         message: TextEdit::new(""),
+        commit_h: None,
         committing: false,
         writing_message: false,
         confirm: None,
@@ -2469,8 +2471,7 @@ impl Collate {
 
     /// The settings that shape the diffs the watcher builds.
     fn opts(&self) -> DiffOpts {
-        let s = &self.settings;
-        DiffOpts { context: s.context, ignore_whitespace: s.ignore_whitespace, moved: s.show_moved, hide_low_signal: s.hide_low_signal && !self.show_low_signal, source_first: s.source_first }
+        diff_opts(&self.settings, self.show_low_signal)
     }
 
     #[cfg(test)]
@@ -2494,7 +2495,14 @@ impl Collate {
             _ => None,
         };
         let stale = snap.scope.read_only() && snap.base.as_ref().map(|b| &b.0) != wanted;
-        if snap.scope != self.scope || stale || opts != self.opts() {
+        if snap.scope != self.scope || stale {
+            return;
+        }
+        // Diffed with other settings than the window's: the watcher has taken this state as
+        // seen, so it must be told to read it again, or nothing comes until a file changes.
+        if opts != self.opts() {
+            *OPTS.lock().unwrap() = self.opts();
+            refresh();
             return;
         }
         self.has_project = true;
@@ -4355,19 +4363,31 @@ fn agent_panel(s: &Collate, k: &Kit) -> El {
 
 /// The commit message box's height: near square at the panel's default width.
 const COMMIT_BOX_H: f32 = 150.0;
+/// The least it can be dragged to: TextArea's own floor for a fixed box.
+const COMMIT_MIN_H: f32 = 80.0;
 
 /// The commit composer at the foot of the staging panel, laid out as Zed's git panel: the
 /// branch with its push, pull or fetch over the message; the message; generating one and the
 /// commit, with its options, under it; and the last commit, to look at or uncommit.
 fn commit_box(s: &Collate, k: &Kit) -> El {
     let ready = (s.staged > 0 || s.amend) && !s.message.text.trim().is_empty() && !s.committing;
-    // A box, not a line: room for a summary and a body under it. Return starts a new line;
-    // ⌘↩ commits.
-    let field = TextArea::new(&s.message)
-        .placeholder(if s.staged == 0 && !s.amend { "Stage files to commit them, or Stage All and Write below".to_owned() } else { "Summary, then a blank line and the details".to_owned() })
-        .label("Commit message")
-        .rows(8)
-        .max_height(COMMIT_BOX_H)
+    // A box, not a line: room for a summary and a body under it, growing as it's written so
+    // an empty one doesn't outweigh the views. Return starts a new line; ⌘↩ commits. The
+    // placeholder says why Commit waits, rather than naming buttons to look for.
+    let placeholder = match (s.staged, s.amend) {
+        (_, true) => "Summary, then a blank line and the details",
+        (0, _) if s.total == 0 => "Nothing to commit",
+        (0, _) => "Nothing staged yet",
+        _ => "Summary, then a blank line and the details",
+    };
+    let field = TextArea::new(&s.message).placeholder(placeholder).label("Commit message");
+    // Dragged, the box keeps the reader's height and scrolls inside; a box of `rows` lines
+    // plus its padding is that tall.
+    let field = match s.commit_h {
+        Some(h) => field.rows(((h - 16.0) / 17.5).floor() as usize).max_height(h),
+        None => field.auto_grow(3, 8).max_height(COMMIT_BOX_H),
+    };
+    let field = field
         .on_edit(|s: &mut Collate| &mut s.message)
         .on_key(|s: &mut Collate, ev: &KeyEvent, _: &mut Tx| {
             if ev.key == Key::Enter && ev.mods.cmd {
@@ -4378,7 +4398,7 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         })
         .width(None)
         .build(k)
-        .key("message")
+        .key("commit-message")
         // Fill the column exactly, not a field's default width.
         .w_full()
         .min_w(0.0);
@@ -4407,16 +4427,20 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         true => ("Stage All and Write".to_owned(), format!("Stages every change, then {agent} drafts the message from it; you commit it")),
         false => (format!("Write with {agent}"), format!("{agent} drafts the message from what's staged, keeping the intent of what you've typed; you commit it")),
     };
-    let write = IconButton::new(&WRITE_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
-        .disabled(s.writing_message || (stage_first && s.total == 0))
-        .label(label).help(help)
-        .on_press(|s: &mut Collate| s.write_message())
-        .build(k)
-        .key("write-message");
-    let mut lead = row().key("commit-lead").gap(4.0).items_center().min_w(0.0).shrink().ml(-4.0).child(write);
-    if s.writing_message {
-        lead = lead.child(text("Writing the message…").font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).shrink());
+    // Named, not a bare sparkle: what it does (and that it stages first) is read, not guessed.
+    // Built as the branch row is, so its name gives way in a narrow sidebar before Commit does.
+    let off = s.writing_message || (stage_first && s.total == 0);
+    let shown = if s.writing_message { "Writing the message…".to_owned() } else { label.clone() };
+    let mut write = row().key("write-message").gap(4.0).px(4.0).h(20.0).radius(k.radius.sm).items_center().min_w(0.0).shrink()
+        .role("button").label(label).help(help)
+        .child(icon(&WRITE_ICON, 14.0).color(if off { k.c.text_faint } else { k.c.icon_faint }).a11y_hidden())
+        .child(text(shown).font(k.ty.text_xsmall).color(if off { k.c.text_faint } else { k.c.text_muted }).truncate().min_w(0.0).shrink());
+    if off {
+        write = write.disabled(true);
+    } else {
+        write = write.hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).on_press(|s: &mut Collate| s.write_message());
     }
+    let lead = row().key("commit-lead").items_center().min_w(0.0).shrink().ml(-4.0).child(write);
     let actions = row().key("commit-actions").w_full().gap(8.0).items_center()
         .child(lead)
         .child(col().grow(1.0))
@@ -4425,12 +4449,29 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         .key("commit-box")
         .w_full()
         .child(col().key("rule").w_full().h(1.0).fill(k.c.border_weak))
+        .child(commit_resize())
         .child(repo_row(s, k))
         .child(col().key("commit-body").w_full().px(SIDEBAR_INSET).pb(8.0).gap(8.0).child(field).child(actions));
-    if let Some(last) = last_commit_row(s, k) {
+    if let Some(last) = amend_row(s, k) {
         c = c.child(col().key("last-rule").w_full().h(1.0).fill(k.c.border_weak)).child(last);
     }
     c
+}
+
+/// The commit box's top edge, dragged up or down to size the message box, as the terminal's;
+/// a double press fits it to the text again. At most half the window, so the views stay.
+fn commit_resize() -> El {
+    let now = rune::memo::layout_with("commit-message", |r| r[3]).unwrap_or(COMMIT_MIN_H);
+    let max = (rune::memo::layout_with("window", |r| r[3]).unwrap_or(840.0) * 0.5).max(COMMIT_MIN_H);
+    el().key("commit-resize").pin(Some(-3.0), Some(0.0), Some(0.0), None).h(6.0)
+        .cursor(Cursor::ResizeRow).role("separator").label("Resize the commit message").help("Drag to resize - double-click to fit the message")
+        .on_drag(move |s: &mut Collate, d: &mut Drag, _| {
+            if d.phase == Phase::Down {
+                d.data = s.commit_h.unwrap_or(now);
+            }
+            s.commit_h = Some((d.data - d.dy).clamp(COMMIT_MIN_H, max).round());
+        })
+        .on_double_press(|s: &mut Collate| s.commit_h = None)
 }
 
 /// Over the message, as Zed's panel footer: the branch, which opens the branch menu, and the
@@ -4473,30 +4514,11 @@ fn repo_row(s: &Collate, k: &Kit) -> El {
     r
 }
 
-/// Under the commit box, as Zed's: the last commit, which opens it, with Uncommit and the
-/// graph; or, amending, that the commit will rewrite it.
-fn last_commit_row(s: &Collate, k: &Kit) -> Option<El> {
-    let r = row().key("last-commit").w_full().h(28.0).px(SIDEBAR_INSET).gap(4.0).items_center();
-    if s.amend {
-        return Some(r
-            .child(text("This will update your most recent commit.").font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0))
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Make a new commit instead").on_press(|s: &mut Collate| s.amend = false).build(k).key("amend-cancel").mr(-GHOST_PAD)));
-    }
-    let (subject, has_parent) = s.last_commit.clone()?;
-    let head = s.head.clone()?;
-    let open = row().key("last-subject").px(4.0).ml(-4.0).h(20.0).radius(k.radius.sm).items_center().min_w(0.0).shrink()
-        .hover(k.alpha(k.c.text_base, 0.06)).cursor(Cursor::Pointer).role("button")
-        .label(format!("Last commit: {subject}")).help("Show the last commit")
-        .on_press(move |s: &mut Collate| s.open_commit(&head))
-        .child(text(subject).font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).shrink());
-    let mut r = r.child(open).child(col().grow(1.0).min_w(0.0));
-    let idle = s.busy.is_none() && !s.committing;
-    if has_parent {
-        r = r.child(IconButton::new(&UNCOMMIT_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).disabled(!idle)
-            .label("Uncommit").help("Take the last commit back, its changes staged (git reset --soft HEAD^)").on_press(|s: &mut Collate| s.branch_do("uncommit")).build(k).key("uncommit"));
-    }
-    Some(r.child(IconButton::new(&GRAPH_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
-        .label("Open Git Graph").on_press(|s: &mut Collate| s.show_scope(Scope::History)).build(k).key("last-graph").mr(-4.0)))
+/// Under the commit box while amending: that the commit will rewrite the last one, and Cancel.
+fn amend_row(s: &Collate, k: &Kit) -> Option<El> {
+    s.amend.then(|| row().key("last-commit").w_full().h(28.0).px(SIDEBAR_INSET).gap(4.0).items_center()
+        .child(text("This will update your most recent commit.").font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0))
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Make a new commit instead").on_press(|s: &mut Collate| s.amend = false).build(k).key("amend-cancel").mr(-GHOST_PAD)))
 }
 
 /// What the diff is, above it: the count, what it's measured against, the totals and how much
@@ -5155,12 +5177,20 @@ fn main() {
     watch_project_files(root);
     let handle = app.handle();
     let _ = HANDLE.set(handle.clone());
+    // The first read diffs with the saved settings, as the window will show them.
+    *OPTS.lock().unwrap() = diff_opts(&Settings::load(), false);
     std::thread::spawn(move || watch(handle, rx, scope, base, first_commit));
     // Read the first snapshot right away rather than after one poll interval.
     let _ = WATCHER.get().unwrap().send(Cmd::Refresh);
     app.run();
     control::stop();
     std::process::exit(EXIT.load(Ordering::Relaxed));
+}
+
+/// How the watcher diffs for these settings; `show_low_signal` is the window's toggle that
+/// shows lockfiles and generated files for now.
+fn diff_opts(s: &Settings, show_low_signal: bool) -> DiffOpts {
+    DiffOpts { context: s.context, ignore_whitespace: s.ignore_whitespace, moved: s.show_moved, hide_low_signal: s.hide_low_signal && !show_low_signal, source_first: s.source_first }
 }
 
 #[cfg(test)]

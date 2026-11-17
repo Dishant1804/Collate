@@ -709,8 +709,9 @@ fn staged_and_unstaged_fold_to_their_titles() {
     let (filter, unstaged) = (at("filter"), at("unstaged-head"));
     assert_eq!(unstaged[1] - (filter[1] + filter[3]), at("staged-head")[1] - (between[1] + between[3]), "the filter and the hairline sit alike over their titles");
     assert_eq!(between[1], unstaged[1] + unstaged[3], "and the hairline right under the title above it");
-    let field = rt.presented("message").expect("the commit box").0;
-    assert!(field[3] >= 140.0, "the message is a box, not a line: {} tall", field[3]);
+    let field = rt.presented("commit-message").expect("the commit box").0;
+    // Three lines empty, growing as it's written: a box, not a line, and not a void either.
+    assert!(field[3] >= 60.0, "the message is a box, not a line: {} tall", field[3]);
 }
 
 #[test]
@@ -749,7 +750,7 @@ fn the_commit_box_lines_up_at_the_sidebar_foot() {
     let bar = rect("sidebar");
     let (left, right) = (bar[0] + SIDEBAR_INSET, bar[0] + bar[2] - SIDEBAR_INSET);
     assert!(rect("commit-box")[0] == bar[0], "the box is in the sidebar");
-    let message = rect("message");
+    let message = rect("commit-message");
     assert!((message[0] - left).abs() < 1.0 && (message[0] + message[2] - right).abs() < 1.0, "the commit message spans the inset: {message:?} vs {left}..{right}");
     // The branch's icon (in its 4 pt hover pad, pulled out by as much) starts on the inset.
     let branch = rect("commit-branch");
@@ -1831,11 +1832,50 @@ fn with_nothing_staged_the_agent_offers_to_stage_all_and_write() {
     let write = rt.elements().into_iter().find(|e| e.key.as_deref() == Some("write-message")).expect("in the commit box's head");
     assert_eq!(write.label.as_deref(), Some("Stage All and Write"));
     assert!(!write.inert, "with changes to stage, it can be pressed");
+    assert!(rt.elements().iter().any(|e| e.text.as_deref() == Some("Stage All and Write")), "and says so in words, not only an icon");
+    let message = rt.presented("commit-message").unwrap().0;
+    let rows_tall = |n: f32| message[3] < n * 24.0;
+    assert!(rows_tall(5.0), "an empty message box stays short: {} pt", message[3]);
     // The tests have no window to write into, so it stops before staging anything.
     rt.update(|s, _| s.write_message());
     assert!(rt.state.notice.as_ref().is_some_and(|n| n.error));
     assert_eq!(rt.state.staged, 0);
     assert!(!rt.state.writing_message);
+}
+
+#[test]
+fn the_commit_box_is_sized_by_dragging_its_top_edge() {
+    let mut rt = loaded();
+    let settle = |rt: &mut Runtime<Collate>| for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    };
+    settle(&mut rt);
+    let height = |rt: &Runtime<Collate>| rt.presented("commit-message").unwrap().0[3];
+    let before = height(&rt);
+    let (x, y) = rt.find("commit-resize").expect("a strip on the box's top edge");
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_down(x, y);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_move(x, y - 120.0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_up(x, y - 120.0);
+    settle(&mut rt);
+    let tall = height(&rt);
+    assert!(tall > before + 100.0, "dragged up 120 pt, the box grows by about as much: {before} to {tall}");
+    assert!(rt.state.commit_h.is_some());
+    // Down past its floor, it stops at the floor rather than vanishing.
+    let (x, y) = rt.find("commit-resize").unwrap();
+    rt.pointer_down(x, y);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_move(x, y + 400.0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_up(x, y + 400.0);
+    settle(&mut rt);
+    assert!(height(&rt) >= 79.0, "{}", height(&rt));
+    rt.update(|s, _| s.commit_h = None);
+    settle(&mut rt);
+    assert!((height(&rt) - before).abs() < 1.0, "unset, it fits the text again");
 }
 
 #[test]
