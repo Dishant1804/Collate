@@ -241,7 +241,9 @@ fn replace(bundle: &Path, new: &Path) -> Result<(), String> {
     std::fs::rename(bundle, &old).map_err(|e| format!("couldn't move {} aside: {e}", bundle.display()))?;
     if let Err(e) = run("/usr/bin/ditto", &[&new.to_string_lossy(), &bundle.to_string_lossy()], None) {
         let _ = std::fs::remove_dir_all(bundle);
-        let _ = std::fs::rename(&old, bundle);
+        if let Err(back) = std::fs::rename(&old, bundle) {
+            return Err(format!("{e}; and the old app couldn't be put back ({back}): it is at {}", old.display()));
+        }
         return Err(e);
     }
     let _ = std::fs::remove_dir_all(&old);

@@ -644,33 +644,42 @@ impl Repo {
             let _ = stdin.write_all(input.as_bytes());
         });
         let mut out = BufReader::new(child.stdout.take().unwrap());
-        let mut blobs = Vec::with_capacity(specs.len());
-        let mut header = String::new();
-        for _ in specs {
-            header.clear();
-            if out.read_line(&mut header).map_err(|e| e.to_string())? == 0 {
-                return Err("git cat-file ended early".into());
-            }
-            let fields: Vec<&str> = header.trim_end().split(' ').collect();
-            match fields.as_slice() {
-                [_, kind, size] => {
-                    let size: usize = size.parse().map_err(|_| format!("bad cat-file header: {header}"))?;
-                    let mut buf = vec![0; size + 1];
-                    out.read_exact(&mut buf).map_err(|e| e.to_string())?;
-                    buf.pop();
-                    blobs.push(match *kind {
-                        "blob" if size > MAX_BYTES => Some(Blob::TooLarge(size)),
-                        "blob" => Some(classify(buf)),
-                        // A submodule shows as a commit; there's no text to diff.
-                        _ => None,
-                    });
+        let mut read = || -> Result<Vec<Option<Blob>>, String> {
+            let mut blobs = Vec::with_capacity(specs.len());
+            let mut header = String::new();
+            for _ in specs {
+                header.clear();
+                if out.read_line(&mut header).map_err(|e| e.to_string())? == 0 {
+                    return Err("git cat-file ended early".into());
                 }
-                _ => blobs.push(None),
+                let fields: Vec<&str> = header.trim_end().split(' ').collect();
+                match fields.as_slice() {
+                    [_, kind, size] => {
+                        let size: usize = size.parse().map_err(|_| format!("bad cat-file header: {header}"))?;
+                        let mut buf = vec![0; size + 1];
+                        out.read_exact(&mut buf).map_err(|e| e.to_string())?;
+                        buf.pop();
+                        blobs.push(match *kind {
+                            "blob" if size > MAX_BYTES => Some(Blob::TooLarge(size)),
+                            "blob" => Some(classify(buf)),
+                            // A submodule shows as a commit; there's no text to diff.
+                            _ => None,
+                        });
+                    }
+                    _ => blobs.push(None),
+                }
             }
+            Ok(blobs)
+        };
+        let blobs = read();
+        // On a failed read git may still be writing: stop it, so neither it nor the writer
+        // waits on a pipe nobody reads, and reap it either way so it isn't left a zombie.
+        if blobs.is_err() {
+            let _ = child.kill();
         }
         let _ = writer.join();
         let _ = child.wait();
-        Ok(blobs)
+        blobs
     }
 }
 

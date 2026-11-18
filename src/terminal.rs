@@ -842,6 +842,14 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
             }
             true
         })
+        // Files dropped on a terminal are typed in as their paths, as Terminal does, so an
+        // agent takes a dropped image; without this the window's drop would refuse them.
+        .on_drop_files(move |s: &mut S, paths: &[std::path::PathBuf], _| {
+            let ts = access(s);
+            let Some(i) = ts.list.iter().position(|t| t.id == id) else { return };
+            ts.pick(i);
+            ts.list[i].paste(&dropped_paths(paths));
+        })
         .on_drag(move |s: &mut S, d: &mut Drag, _| {
             let ts = access(s);
             let Some(i) = ts.list.iter().position(|t| t.id == id) else { return };
@@ -965,12 +973,34 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
     })
 }
 
+/// Paths as a shell reads them, each with a space after it: characters the shell would take
+/// as its own are escaped with a backslash.
+fn dropped_paths(paths: &[std::path::PathBuf]) -> String {
+    let mut out = String::new();
+    for p in paths {
+        for c in p.to_string_lossy().chars() {
+            if !(c.is_alphanumeric() || "/._-+,:@%".contains(c)) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push(' ');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn key(key: Key, mods: Mods) -> Option<Vec<u8>> {
         encode(&KeyEvent { key, mods }, TermMode::empty())
+    }
+
+    #[test]
+    fn dropped_paths_are_escaped_for_the_shell() {
+        let paths = [std::path::PathBuf::from("/tmp/Screen Shot (1).png"), std::path::PathBuf::from("/tmp/a'b.jpg")];
+        assert_eq!(dropped_paths(&paths), "/tmp/Screen\\ Shot\\ \\(1\\).png /tmp/a\\'b.jpg ");
     }
 
     #[test]
