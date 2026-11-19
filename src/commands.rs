@@ -77,6 +77,7 @@ pub const COMMANDS: &[Command] = &[
     check(cmd("view-branch", "Pull Request Preview", "View", "4", ready, |s, _| s.show_scope(Scope::Branch)), |s| shows(s, Scope::Branch)),
     check(cmd("view-history", "Git Graph", "View", "5", ready, |s, _| s.show_scope(Scope::History)), |s| shows(s, Scope::History)),
     check(cmd("view-pulls", "Pull Requests", "View", "", ready, |s, _| s.open_pulls()), |s| s.pulls.open || s.pulls.pr.is_some()),
+    check(cmd("view-issues", "Issues", "View", "", ready, |s, _| s.open_issues()), |s| s.issues.open),
     check(cmd("view-map", "Map", "View", "", ready, |s, _| {
         s.pulls.open = false;
         s.open_map();

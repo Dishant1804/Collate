@@ -122,11 +122,12 @@ pub fn handle(s: &mut Collate, method: &str, p: &Value, tx: &mut Tx) -> Result<V
             let view = text(p, "view")?;
             match view {
                 "pulls" => s.open_pulls(),
+                "issues" => s.open_issues(),
                 "map" => {
                     s.pulls.open = false;
                     s.open_map();
                 }
-                _ => s.show_scope(scope(view).ok_or_else(|| format!("No view {view}: all, staged, unstaged, branch, history, pulls or map"))?),
+                _ => s.show_scope(scope(view).ok_or_else(|| format!("No view {view}: all, staged, unstaged, branch, history, pulls, issues or map"))?),
             }
             Ok(state(s))
         }
@@ -314,6 +315,7 @@ fn line_ref(s: &Collate, f: usize, p: &Value, n: u64) -> Result<LineRef, String>
 fn leave_for_diff(s: &mut Collate) {
     s.map.open = false;
     s.pulls.open = false;
+    s.issues.open = false;
     s.jumping = false;
     s.palette = false;
     if s.scope == Scope::History {
@@ -359,6 +361,8 @@ fn state(s: &Collate) -> Value {
         "welcome"
     } else if s.map.open {
         "map"
+    } else if s.issues.open {
+        "issues"
     } else if s.pulls.open {
         "pull requests"
     } else if s.pulls.pr.is_some() {
@@ -555,12 +559,12 @@ const TOOLS: &[(&str, &str, &str, &str, &str)] = &[
     ("collate_windows", "", "Lists the Collate windows running: each one's process id and repository.", "", ""),
     ("collate_launch", "", "Opens Collate on a repository in a window of its own, or finds the one already on it.",
         r#""path": {"type": "string", "description": "A folder in the repository."}"#, r#""path""#),
-    ("collate_state", "state", "What the reader sees: the repository, branch and view (all, staged, unstaged, branch, history), where they are (diff, commit list, map, pull requests), the files of the diff with their status and counts, the file in view, the selected lines and their text, a dialog in front, the notice shown, and staged and unstaged counts.", "", ""),
+    ("collate_state", "state", "What the reader sees: the repository, branch and view (all, staged, unstaged, branch, history), where they are (diff, commit list, map, pull requests, issues), the files of the diff with their status and counts, the file in view, the selected lines and their text, a dialog in front, the notice shown, and staged and unstaged counts.", "", ""),
     ("collate_commands", "commands", "Every command of Collate's menu bar: its id, title, menu, key, and whether it can run now and is checked. Run one with collate_run.", "", ""),
     ("collate_run", "run", "Runs a menu bar command by its id, as the reader choosing it would; refused when it can't run now. Commands like stage, unstage, discard, comment, copy-lines and add-to-chat act on the selected lines (collate_select), else on the change in view. Discards and other risky commands ask the reader in a dialog first. Returns the state after.",
         r#""command": {"type": "string", "description": "The command's id, from collate_commands: next-file, stage, stage-file, commit, split, view-history, …"}"#, r#""command""#),
-    ("collate_show", "show", "Switches the view: all (every uncommitted change), staged, unstaged, branch (the branch against its base, as a pull request shows it), history (the commit graph), pulls (the pull request list) or map (the repository map).",
-        r#""view": {"type": "string", "enum": ["all", "staged", "unstaged", "branch", "history", "pulls", "map"]}"#, r#""view""#),
+    ("collate_show", "show", "Switches the view: all (every uncommitted change), staged, unstaged, branch (the branch against its base, as a pull request shows it), history (the commit graph), pulls (the pull request list), issues (the issue list) or map (the repository map).",
+        r#""view": {"type": "string", "enum": ["all", "staged", "unstaged", "branch", "history", "pulls", "issues", "map"]}"#, r#""view""#),
     ("collate_open_file", "open_file", "Scrolls the diff to a file, and to a line of it when given, selecting that line. The file must be in the diff shown.",
         r#""path": {"type": "string", "description": "The file's path in the repository."},
     "line": {"type": "integer", "description": "A line number, on the new side unless side is old. Optional."},

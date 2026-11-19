@@ -2910,3 +2910,16 @@ fn issues_ask_to_connect_github_instead_of_an_error() {
     rt.frame(1.0 / 60.0);
     assert!(rt.find("connect-github").is_none(), "other failures still say what went wrong");
 }
+
+#[test]
+fn issues_open_from_the_view_menu_and_for_an_agent() {
+    use serde_json::json;
+    let mut rt = loaded();
+    let state = agent_asks(&mut rt, "show", json!({ "view": "issues" })).unwrap();
+    assert_eq!(state["place"], "issues");
+    assert!(rt.find("issues").is_some());
+    agent_asks(&mut rt, "show", json!({ "view": "all" })).unwrap();
+    assert!(!rt.state.issues.open);
+    let ran = agent_asks(&mut rt, "run", json!({ "command": "view-issues" })).unwrap();
+    assert_eq!(ran["state"]["place"], "issues", "the View menu's Issues");
+}
