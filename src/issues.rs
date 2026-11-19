@@ -1003,13 +1003,13 @@ fn side(s: &Collate, k: &Kit, d: &Detail) -> El {
     let i = &d.issue;
     let busy = s.busy.is_some();
     // A gear opens each list's editor, as on GitHub.
-    let gear = |key: &'static str, label: &str, open: fn(&mut Collate, &mut Tx)| d.can_edit.then(|| IconButton::new(&crate::pulls::GEAR_ICON).variant(IconButtonVariant::GhostMuted)
+    let gear = |key: &'static str, label: &str, can: bool, open: fn(&mut Collate, &mut Tx)| can.then(|| IconButton::new(&crate::pulls::GEAR_ICON).variant(IconButtonVariant::GhostMuted)
         .control_size(ControlSize::Small).label(label.to_owned()).disabled(busy).on_press_tx(open).build(k).hand(!busy).key(key).mr(-4.0));
     let mut assignees = col().key("issue-assignees").w_full().gap(2.0)
-        .child(heading(k, "issue-assignees-title", "Assignees", gear("issue-edit-assignees", "Change the assignees", Collate::pick_issue_assignees)));
+        .child(heading(k, "issue-assignees-title", "Assignees", gear("issue-edit-assignees", "Change the assignees", d.can_assign, Collate::pick_issue_assignees)));
     if i.assignees.is_empty() {
         let mut none = row().w_full().h(24.0).gap(4.0).items_center().child(text("No one -".to_owned()).font(k.ty.text_small).color(k.c.text_faint));
-        if d.can_edit {
+        if d.can_assign {
             none = none.child(Button::new("Assign yourself").variant(ButtonVariant::GhostMuted).disabled(busy)
                 .on_press(|s: &mut Collate| s.assign_me_to_issue()).build(k).hand(!busy).key("issue-assign-me").ml(-REGULAR_PAD));
         }
@@ -1020,14 +1020,14 @@ fn side(s: &Collate, k: &Kit, d: &Detail) -> El {
             .child(crate::history_view::face(k, s, a, 20.0))
             .child(text(a.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0)));
     }
-    let mut labels = col().key("issue-labels").w_full().gap(4.0).child(heading(k, "issue-labels-title", "Labels", gear("issue-edit-labels", "Change the labels", Collate::pick_issue_labels)));
+    let mut labels = col().key("issue-labels").w_full().gap(4.0).child(heading(k, "issue-labels-title", "Labels", gear("issue-edit-labels", "Change the labels", d.can_label, Collate::pick_issue_labels)));
     labels = if i.labels.is_empty() {
         labels.child(text("None yet".to_owned()).font(k.ty.text_small).color(k.c.text_faint))
     } else {
         labels.child(row().w_full().gap(4.0).flex_wrap().children(i.labels.iter().map(|(name, color)| crate::pulls::label_pill(k, name, crate::pulls::label_color(k, color)))))
     };
     let milestone = col().key("issue-milestone").w_full().gap(2.0)
-        .child(heading(k, "issue-milestone-title", "Milestone", gear("issue-edit-milestone", "Change the milestone", Collate::pick_issue_milestone)))
+        .child(heading(k, "issue-milestone-title", "Milestone", gear("issue-edit-milestone", "Change the milestone", d.can_milestone, Collate::pick_issue_milestone)))
         .child(match &d.milestone {
             Some(m) => text(m.clone()).font(k.ty.text_small).color(k.c.text_base),
             None => text("No milestone".to_owned()).font(k.ty.text_small).color(k.c.text_faint),

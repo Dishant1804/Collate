@@ -64,6 +64,11 @@ pub struct Detail {
     /// The reader may close it, or reopen it once closed; an issue's author may though they
     /// can't edit the rest.
     pub can_close: bool,
+    /// The reader may change who has it, its labels and its milestone, each its own right, so
+    /// one who triages has them without the rest.
+    pub can_assign: bool,
+    pub can_label: bool,
+    pub can_milestone: bool,
     /// The milestone it's in, by title.
     pub milestone: Option<String>,
     /// The pull requests that close it when they merge: number, title and state (`OPEN`,
@@ -106,7 +111,7 @@ const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name colo
 
 /// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("id body reactionGroups{{content users{{totalCount}}}} viewerCanUpdate viewerCanClose viewerCanReopen viewerSubscription locked milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+    format!("id body reactionGroups{{content users{{totalCount}}}} viewerCanUpdate viewerCanClose viewerCanReopen viewerCanAssign viewerCanLabel viewerCanSetMilestone viewerSubscription locked milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
 RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
@@ -282,6 +287,8 @@ fn detail(v: &Value) -> Detail {
     let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
     Detail { issue: issue(v), id: s(v, "id"), subscribed: v["viewerSubscription"] == "SUBSCRIBED", locked: v["locked"].as_bool().unwrap_or(false), reactions: post(v).reactions, body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
         can_close: v[if v["state"] != "CLOSED" { "viewerCanClose" } else { "viewerCanReopen" }].as_bool().unwrap_or(false),
+        can_assign: v["viewerCanAssign"].as_bool().unwrap_or(false), can_label: v["viewerCanLabel"].as_bool().unwrap_or(false),
+        can_milestone: v["viewerCanSetMilestone"].as_bool().unwrap_or(false),
         milestone: v["milestone"]["title"].as_str().map(str::to_owned),
         pulls: v["closedByPullRequestsReferences"]["nodes"].as_array().into_iter().flatten()
             .map(|p| (p["number"].as_u64().unwrap_or(0) as u32, s(p, "title"), s(p, "state"))).collect() }

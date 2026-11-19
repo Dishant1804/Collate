@@ -2961,6 +2961,20 @@ fn issues_open_from_the_view_menu_and_for_an_agent() {
 }
 
 #[test]
+fn one_who_triages_an_issue_labels_it_without_editing_it() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &[])])));
+        s.open_issues();
+        s.open_issue(3);
+        s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), can_label: true, can_assign: true, ..Default::default() }));
+    });
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
+    assert!(rt.find("issue-edit-labels").is_some() && rt.find("issue-edit-assignees").is_some() && rt.find("issue-assign-me").is_some(), "each right shows its own gear");
+    assert!(rt.find("issue-edit").is_none() && rt.find("issue-edit-milestone").is_none(), "and nothing it doesn't give");
+}
+
+#[test]
 fn a_locked_issue_says_why_it_takes_no_comment() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);
@@ -3051,7 +3065,7 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert!(rt.state.issues.write.is_none() && rt.state.issues.number == Some(3), "Esc closes the question, not the issue");
     assert!(rt.find("issue-edit").is_none(), "an issue the reader can't change offers no Edit");
     assert!(rt.find("issue-side").is_some() && rt.find("issue-assign-me").is_none(), "its assignees and labels are beside it");
-    rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.can_edit = true });
+    rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { (d.can_edit, d.can_assign, d.can_label, d.can_milestone) = (true, true, true, true) });
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-assign-me").is_some(), "one that can be changed offers to assign you");
     rt.update(|s, _| {
