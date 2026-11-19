@@ -3000,6 +3000,25 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert!(menu.find("copy").is_some() && menu.find("THUMBS_UP").is_some(), "its link and reactions");
     rt.resolve_popup(Some("quote")).unwrap();
     assert!(rt.state.issues.reply.text.starts_with("> Same here") && rt.state.issues.reply.focused, "a quoted reply is started below");
+    rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.comments[0].mine = true; d.comments[0].id = "IC_1".into() });
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "issue-comment-0-more");
+    rt.resolve_popup(Some("edit")).unwrap();
+    // The dialog settles in before its buttons are where they're drawn.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.issues.text.text, "Same here", "your own comment opens to edit");
+    assert!(rt.find("issue-write-message").is_some());
+    click(&mut rt, "issue-write-cancel");
+    assert!(rt.state.issues.write.is_none(), "Cancel closes it");
+    click(&mut rt, "issue-comment-0-more");
+    rt.resolve_popup(Some("delete")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-write-ok").is_some() && rt.find("issue-write-message").is_none(), "deleting asks first");
+    rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.issues.write.is_none() && rt.state.issues.number == Some(3), "Esc closes the question, not the issue");
     rt.update(|s, _| s.issues.reply.focused = false);
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
     rt.frame(1.0 / 60.0);

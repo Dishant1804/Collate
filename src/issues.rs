@@ -38,6 +38,17 @@ pub struct IssuesState {
     pub detail: Option<Result<Detail, String>>,
     /// The comment being written at the foot of the open issue.
     pub reply: TextEdit,
+    /// The dialog up over the open issue, and its text.
+    pub write: Option<Write>,
+    pub text: TextEdit,
+}
+
+/// What the issue dialog does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Write {
+    /// The reader's comment, by its place among the comments.
+    EditComment(usize),
+    DeleteComment(usize),
 }
 
 impl IssuesState {
@@ -98,7 +109,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new("") }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new("") }
     }
 }
 
@@ -222,15 +233,20 @@ impl Collate {
         self.issue_act("Reacting…", move |gh| gh.react(&id, content).map(|_| "Reacted".to_owned()), |_| {});
     }
 
-    /// Comment `at`'s menu: its link, a quoted reply and a reaction.
+    /// Comment `at`'s menu: its link, a quoted reply and a reaction, and for the reader's own,
+    /// editing and deleting it.
     fn issue_post_menu(&mut self, at: usize, tx: &mut Tx) {
         let Some(Ok(d)) = &self.issues.detail else { return };
         let Some(c) = d.comments.get(at).cloned() else { return };
         let react = PopupMenu::new().items(github::REACTIONS.iter().map(|(name, emoji)| PopupItem::new(*name, *emoji)));
+        let mine = c.mine && !c.id.is_empty();
         let menu = PopupMenu::new()
             .item(PopupItem::new("copy", "Copy Link"))
             .item(PopupItem::new("quote", "Quote Reply"))
-            .submenu_enabled("React", react, !c.id.is_empty());
+            .submenu_enabled("React", react, !c.id.is_empty())
+            .separator()
+            .item(PopupItem::new("edit", "Edit").enabled(mine))
+            .item(PopupItem::new("delete", "Delete…").enabled(mine));
         tx.popup_menu(menu, format!("issue-comment-{at}-more"), move |s: &mut Collate, picked, tx| match picked {
             Some("copy") => {
                 tx.copy(c.url.clone());
@@ -242,6 +258,8 @@ impl Collate {
                 s.issues.reply.focused = true;
                 tx.scroll_into_view("issue-composer");
             }
+            Some("edit") => s.start_issue_write(Write::EditComment(at)),
+            Some("delete") => s.start_issue_write(Write::DeleteComment(at)),
             Some(name) => {
                 if let Some((content, _)) = github::REACTIONS.iter().find(|(n, _)| *n == name) {
                     s.react_to_issue_post(c.id.clone(), content);
@@ -249,6 +267,31 @@ impl Collate {
             }
             None => {}
         });
+    }
+
+    pub fn start_issue_write(&mut self, w: Write) {
+        let Some(Ok(d)) = &self.issues.detail else { return };
+        self.issues.text = TextEdit::new(match w {
+            Write::EditComment(at) => d.comments.get(at).map_or("", |c| c.body.as_str()),
+            Write::DeleteComment(_) => "",
+        });
+        self.issues.text.focused = true;
+        self.issues.write = Some(w);
+    }
+
+    fn send_issue_write(&mut self) {
+        let (Some(w), Some(Ok(d))) = (self.issues.write.take(), &self.issues.detail) else { return };
+        let body = self.issues.text.text.trim().to_owned();
+        match w {
+            Write::EditComment(at) => {
+                let Some(id) = d.comments.get(at).map(|c| c.id.clone()) else { return };
+                self.issue_act("Saving…", move |gh| gh.edit_post(&id, false, &body).map(|_| "Saved the comment".to_owned()), |_| {});
+            }
+            Write::DeleteComment(at) => {
+                let Some(id) = d.comments.get(at).map(|c| c.id.clone()) else { return };
+                self.issue_act("Deleting…", move |gh| gh.delete_post(&id).map(|_| "Deleted the comment".to_owned()), |_| {});
+            }
+        }
     }
 
     fn pick_close_reason(&mut self, tx: &mut Tx) {
@@ -603,6 +646,27 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
     col().key("issues").w_full().grow(1.0).min_h(0.0).child(head)
         .child(col().key("issue-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false })
             .child(row().key("issue-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(16.0).pb(48.0).gap(40.0).items_start().child(main)))
+}
+
+/// The dialog over the open issue: editing the reader's comment, or asking before deleting it.
+pub fn write_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let Some(w) = s.issues.write else { return };
+    let (title, what, button) = match w {
+        Write::EditComment(_) => ("Edit comment", "Saved to GitHub.", "Save"),
+        Write::DeleteComment(_) => ("Delete this comment?", "It's removed from the issue for everyone, and can't be brought back.", "Delete"),
+    };
+    let delete = matches!(w, Write::DeleteComment(_));
+    let blocked = s.busy.is_some() || (!delete && s.issues.text.text.trim().is_empty());
+    let mut body = col().key("issue-write-body").w_full().gap(12.0);
+    if !delete {
+        body = body.child(TextArea::new(&s.issues.text).placeholder("Write a comment").label("Comment").rows(8).max_height(320.0)
+            .on_edit(|s: &mut Collate| &mut s.issues.text).width(None).build(k).key("issue-write-message").w_full());
+    }
+    let buttons = row().key("issue-write-buttons").w_full().gap(8.0).items_center().child(row().grow(1.0))
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.issues.write = None).build(k).hand(true).key("issue-write-cancel"))
+        .child(Button::new(button).variant(if delete { ButtonVariant::Danger } else { ButtonVariant::Contrast }).disabled(blocked)
+            .on_press(|s: &mut Collate| s.send_issue_write()).build(k).hand(!blocked).key("issue-write-ok"));
+    crate::described_dialog(k, "issue-write", title, what, body.child(buttons)).width(560.0).on_close(|s: &mut Collate| s.issues.write = None).build(k, layer);
 }
 
 /// The box at the foot of the activity for the reader's comment, beside their face.

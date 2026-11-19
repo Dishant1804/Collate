@@ -672,7 +672,7 @@ impl Collate {
     /// it, and it goes to the top of the project list.
     /// A dialog is up, which takes its own keys.
     fn dialog_open(&self) -> bool {
-        self.confirm.is_some() || self.words.is_some() || self.prompt.is_some() || self.risky.is_some() || self.compare.is_some() || self.blame.is_some() || self.file_log.is_some()
+        self.confirm.is_some() || self.words.is_some() || self.prompt.is_some() || self.risky.is_some() || self.compare.is_some() || self.blame.is_some() || self.file_log.is_some() || self.issues.write.is_some()
     }
 
     /// Something modal is up (a dialog, the palette, the merge editor, the keys): the review
@@ -3668,6 +3668,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     }
 
     pulls::compose_dialog(s, k, layer);
+    issues::write_dialog(s, k, layer);
     pulls::rewrite_dialog(s, k, layer);
 
     if let Some((from, to)) = &s.compare {
