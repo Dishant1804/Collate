@@ -220,12 +220,12 @@ pub static GITHUB_ICON: Icon = Icon {
 
 // Lucide's pencil, link, gear, check, message and clock (ISC licence): the overview's edit and
 // copy link, the sidebar's settings, how a reviewer stands, and when it last changed.
-crate::lucide!(PENCIL_ICON, "collate-pencil", r#"<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>"#);
-crate::lucide!(LINK_ICON, "collate-link", r#"<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>"#);
-crate::lucide!(GEAR_ICON, "collate-gear", r#"<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>"#);
+crate::lucide!(pub(crate) PENCIL_ICON, "collate-pencil", r#"<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>"#);
+crate::lucide!(pub(crate) LINK_ICON, "collate-link", r#"<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>"#);
+crate::lucide!(pub(crate) GEAR_ICON, "collate-gear", r#"<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>"#);
 crate::lucide!(CHECK_ICON, "collate-check", r#"<path d="M20 6 9 17l-5-5"/>"#);
-crate::lucide!(MESSAGE_ICON, "collate-message", r#"<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>"#);
-crate::lucide!(CLOCK_ICON, "collate-clock", r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#);
+crate::lucide!(pub(crate) MESSAGE_ICON, "collate-message", r#"<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>"#);
+crate::lucide!(pub(crate) CLOCK_ICON, "collate-clock", r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#);
 
 /// A macOS notification, through AppleScript: no permission to ask for, and nothing to bundle.
 fn notify(title: &str, body: &str) {
@@ -1376,13 +1376,8 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     if p.labels.is_empty() {
         labels = labels.child(text("None yet").font(k.ty.text_small).color(k.c.text_faint));
     } else {
-        // Each in its own colour, as on GitHub: a tint of it, so the name reads in both themes.
-        let tint = |name: &str| pr.label_colors.iter().find(|(n, _)| n == name).and_then(|(_, c)| rune::color::hex(&format!("#{c}"))).unwrap_or(k.c.text_muted);
-        labels = labels.child(row().w_full().gap(4.0).flex_wrap().children(p.labels.iter().map(|l| {
-            let c = tint(l);
-            row().key(format!("label-{l}")).h(20.0).px(8.0).items_center().radius(10.0).fill(k.alpha(c, 0.22)).border(1.0, k.alpha(c, 0.55))
-                .child(text(l.clone()).font(k.ty.text_xsmall_medium).color(k.c.text_base))
-        })));
+        let tint = |name: &str| label_color(k, pr.label_colors.iter().find(|(n, _)| n == name).map_or("", |(_, c)| c.as_str()));
+        labels = labels.child(row().w_full().gap(4.0).flex_wrap().children(p.labels.iter().map(|l| label_pill(k, l, tint(l)))));
     }
     let mut assignees = col().key("pr-assignees").w_full().gap(2.0).child(heading(k, "pr-assignees-title", "Assignees", Some(gear("pr-edit-assignees", Compose::Assignees, "Change the assignees"))));
     if pr.assignees.is_empty() {
@@ -1417,6 +1412,17 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         .child(row().key("pr-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(24.0).pb(48.0).gap(40.0).items_start().child(main)
             // Held at the top while the description and activity scroll past, as on GitHub.
             .child(side.sticky_top(24.0))))
+}
+
+/// A label's colour from GitHub's hex (no `#`), or muted text when it has none.
+pub fn label_color(k: &Kit, hex: &str) -> rune::Color {
+    rune::color::hex(&format!("#{hex}")).unwrap_or(k.c.text_muted)
+}
+
+/// A label in its own colour, as on GitHub: a tint of it, so the name reads in both themes.
+pub fn label_pill(k: &Kit, name: &str, c: rune::Color) -> El {
+    row().key(format!("label-{name}")).h(20.0).px(8.0).items_center().radius(10.0).fill(k.alpha(c, 0.22)).border(1.0, k.alpha(c, 0.55))
+        .child(text(name.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_base))
 }
 
 /// A comment's body as GitHub renders it: its Markdown, the HTML GitHub draws as the same, and

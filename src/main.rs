@@ -148,8 +148,8 @@ static REFRESH_ICON: Icon = Icon {
 /// The sidebar's places, Lucide's icons (ISC licence, licenses/lucide.txt): a changed file,
 /// changes not yet ready and ready to commit, the graph, pull requests and the map's tiles.
 macro_rules! lucide {
-    ($name:ident, $id:literal, $body:literal) => {
-        static $name: Icon = Icon { name: $id, view: 24.0, body: concat!(r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#, $body, "</g>") };
+    ($vis:vis $name:ident, $id:literal, $body:literal) => {
+        $vis static $name: Icon = Icon { name: $id, view: 24.0, body: concat!(r#"<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#, $body, "</g>") };
     };
 }
 pub(crate) use lucide;

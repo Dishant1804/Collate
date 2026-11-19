@@ -4,7 +4,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rune::{Cursor, El, col, icon, row, text};
+use rune::{Cursor, El, Icon, col, icon, row, text};
+use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use crate::Hand;
@@ -29,6 +30,22 @@ impl Default for IssuesState {
     }
 }
 
+// Lucide's circle-check and circle-slash (ISC licence): an issue closed as done, and one closed
+// as not planned or a duplicate, as GitHub marks them.
+crate::lucide!(DONE_ICON, "collate-issue-done", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
+crate::lucide!(SKIPPED_ICON, "collate-issue-skipped", r#"<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/>"#);
+
+/// The issue's state as GitHub marks it: its icon, colour and name.
+pub fn state_mark(k: &Kit, i: &Issue) -> (&'static Icon, rune::Color, &'static str) {
+    match i.reason.as_str() {
+        _ if i.open => (&ISSUES_ICON, k.c.success.icon, "Open"),
+        // The kit has no violet of its own; the syntax colours' keyword violet follows the theme.
+        "COMPLETED" => (&DONE_ICON, SyntaxTheme::from_kit(k).color(Syntax::Keyword), "Closed"),
+        "DUPLICATE" => (&SKIPPED_ICON, k.c.text_faint, "Duplicate"),
+        _ => (&SKIPPED_ICON, k.c.text_faint, "Not planned"),
+    }
+}
+
 /// The signed-in login and the issues.
 type List = (String, Vec<Issue>);
 
@@ -50,6 +67,13 @@ impl Collate {
         self.load_issues();
     }
 
+    /// Asks for the pictures of everyone the issues show: the reader, the authors and the assignees.
+    fn request_issue_faces(&mut self) {
+        let Some(Ok((me, issues))) = &self.issues.list else { return };
+        let logins = std::iter::once(me.as_str()).chain(issues.iter().flat_map(|i| std::iter::once(i.author.as_str()).chain(i.assignees.iter().map(String::as_str))));
+        self.avatars.request_logins(logins.collect::<Vec<_>>());
+    }
+
     /// Read the list again, off the UI thread. Whatever list shows stays until it lands.
     pub fn load_issues(&mut self) {
         let (Some(root), Some(app)) = (current_repo().map(|r| r.root.clone()), HANDLE.get().cloned()) else { return };
@@ -68,6 +92,7 @@ impl Collate {
                 }
                 s.issues.loading = false;
                 s.issues.list = Some(got);
+                s.request_issue_faces();
             });
         });
     }
@@ -124,19 +149,38 @@ fn group_head(k: &Kit, title: &'static str, count: usize, folded: bool) -> El {
             .icon_rotation(if folded { -std::f32::consts::FRAC_PI_2 } else { 0.0 }).motion(k.motion.control).a11y_hidden())
 }
 
-/// One issue in the list: its state, title, who opened it and when, and its labels.
+/// One issue in the list: its state, title and labels, who opened it and when, who has it,
+/// and how much it's been talked about.
 fn issue_row(s: &Collate, k: &Kit, i: &Issue) -> El {
     let n = i.number;
-    let (hue, state) = if i.open { (k.c.success.icon, "Open") } else { (k.c.text_faint, "Closed") };
-    let mut words = col().grow(1.0).min_w(0.0).gap(2.0)
-        .child(text(i.title.clone()).font(k.ty.ui_medium).color(k.c.text_base).truncate())
-        .child(text(format!("#{n} - {} - {}", i.author, i.updated.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).truncate());
-    if !i.labels.is_empty() {
-        words = words.child(text(i.labels.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(", ")).font(k.ty.text_small).color(k.c.text_faint).truncate());
+    let (mark, hue, state) = state_mark(k, i);
+    let mut title = row().w_full().min_w(0.0).gap(6.0).items_center()
+        .child(text(i.title.clone()).font(k.ty.ui_medium).color(k.c.text_base).truncate().shrink());
+    for (name, color) in i.labels.iter().take(3) {
+        title = title.child(crate::pulls::label_pill(k, name, crate::pulls::label_color(k, color)));
     }
-    row().key(format!("issue-{n}")).w_full().px(EDGE).py(8.0).gap(12.0).items_center()
+    if i.labels.len() > 3 {
+        title = title.child(text(format!("+{}", i.labels.len() - 3)).font(k.ty.text_xsmall_medium).color(k.c.text_faint));
+    }
+    let words = col().grow(1.0).min_w(0.0).gap(2.0)
+        .child(title)
+        .child(text(format!("#{n} - opened by {} - {}", i.author, i.created.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).truncate());
+    let mut line = row().key(format!("issue-{n}")).w_full().px(EDGE).py(8.0).gap(12.0).items_center()
         .label(format!("#{n} {}", i.title)).description(state)
-        .child(icon(&ISSUES_ICON, 16.0).color(hue).a11y_hidden())
-        .child(words)
-        .child(crate::history_view::face(k, s, &i.author, 20.0))
+        .child(icon(mark, 16.0).color(hue).a11y_hidden())
+        .child(words);
+    // Who has it, overlapping as GitHub stacks them.
+    let mut faces = row().items_center();
+    for (at, a) in i.assignees.iter().take(3).enumerate() {
+        faces = faces.child(crate::history_view::face(k, s, a, 20.0).ml(if at == 0 { 0.0 } else { -6.0 }));
+    }
+    line = line.child(faces);
+    let comments = row().w(40.0).gap(4.0).items_center().justify_end();
+    let comments = if i.comments > 0 {
+        comments.child(icon(&crate::pulls::MESSAGE_ICON, 14.0).color(k.c.icon_muted).a11y_hidden())
+            .child(text(i.comments.to_string()).font(k.ty.text_small).color(k.c.text_muted))
+    } else {
+        comments
+    };
+    line.child(comments)
 }
