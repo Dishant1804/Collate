@@ -2963,6 +2963,38 @@ fn issues_open_from_the_view_menu_and_for_an_agent() {
 }
 
 #[test]
+fn every_button_of_an_issue_shows_a_hand_and_has_a_name() {
+    let mut rt = loaded();
+    rt.update(|s, _| {
+        s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &["bug"])])));
+        s.open_issues();
+        s.open_issue(3);
+        let said = crate::github::Post { author: "bo".into(), body: "Same here".into(), time: "2026-11-02T10:00:00Z".into(), reactions: vec![("THUMBS_UP".into(), 2)], id: "IC_1".into(), mine: true, ..Default::default() };
+        s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &["bug"]), id: "I_1".into(), body: "It crashes.".into(), comments: vec![said],
+            reactions: vec![("HEART".into(), 1)], can_edit: true, can_close: true, can_assign: true, can_label: true, can_milestone: true,
+            pulls: vec![(7, "Fix the crash".into(), "OPEN".into())], ..Default::default() }));
+        s.issues.reply = TextEdit::new("me too");
+    });
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
+    let sweep = |rt: &mut Runtime<Collate>| {
+        let buttons: Vec<_> = rt.elements().into_iter().filter(|e| e.role == "button" && !e.exiting && e.key.as_deref().is_some_and(|k| k.starts_with("issue"))
+            && e.visible[2] > 0.0 && e.visible[3] > 0.0).collect();
+        for b in &buttons {
+            let key = b.key.clone().unwrap();
+            assert!(b.label.is_some() || b.text.is_some() || rt.elements().iter().any(|e| e.path.starts_with(&b.path) && e.text.is_some()), "{key} has a name");
+            rt.pointer_move(b.visible[0] + b.visible[2] / 2.0, b.visible[1] + b.visible[3] / 2.0);
+            rt.frame(1.0 / 60.0);
+            assert_eq!(rt.cursor(), rune::Cursor::Pointer, "{key} shows a hand");
+        }
+        buttons.len()
+    };
+    assert!(sweep(&mut rt) > 10, "the overview's buttons are found");
+    rt.update(|s, tx| s.close_issue(tx));
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
+    assert!(sweep(&mut rt) >= 2, "and the list's: its rows and New Issue");
+}
+
+#[test]
 fn one_who_triages_an_issue_labels_it_without_editing_it() {
     let mut rt = loaded();
     rt.update(|s, _| {
