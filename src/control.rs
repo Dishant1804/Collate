@@ -122,7 +122,12 @@ pub fn handle(s: &mut Collate, method: &str, p: &Value, tx: &mut Tx) -> Result<V
             let view = text(p, "view")?;
             match view {
                 "pulls" => s.open_pulls(),
-                "issues" => s.open_issues(),
+                "issues" => {
+                    s.open_issues();
+                    if let Some(n) = p["number"].as_u64() {
+                        s.open_issue(n as u32);
+                    }
+                }
                 "map" => {
                     s.pulls.open = false;
                     s.open_map();
@@ -395,6 +400,10 @@ fn state(s: &Collate) -> Value {
         Some(json!({ "path": f.path(), "side": side_name(side), "start": a, "end": b, "text": s.diff.selected_text() }))
     });
     let pr = s.pulls.pr.as_ref().map(|p| json!({ "number": p.pull.number, "title": p.pull.title }));
+    let issue = s.issues.number.filter(|_| s.issues.open).map(|n| {
+        let d = s.issues.detail.as_ref().and_then(|d| d.as_ref().ok());
+        json!({ "number": n, "title": d.map(|d| d.issue.title.as_str()), "open": d.map(|d| d.issue.open) })
+    });
     json!({
         "pid": std::process::id(),
         "repo": repo_root(),
@@ -407,6 +416,7 @@ fn state(s: &Collate) -> Value {
         "commit": if s.scope == Scope::History { s.commit.clone() } else { None },
         "base": if s.scope == Scope::Branch { s.base.clone() } else { None },
         "pull_request": pr,
+        "issue": issue,
         "loaded": s.loaded,
         "error": s.error,
         "modal": modal(s),
@@ -563,8 +573,9 @@ const TOOLS: &[(&str, &str, &str, &str, &str)] = &[
     ("collate_commands", "commands", "Every command of Collate's menu bar: its id, title, menu, key, and whether it can run now and is checked. Run one with collate_run.", "", ""),
     ("collate_run", "run", "Runs a menu bar command by its id, as the reader choosing it would; refused when it can't run now. Commands like stage, unstage, discard, comment, copy-lines and add-to-chat act on the selected lines (collate_select), else on the change in view. Discards and other risky commands ask the reader in a dialog first. Returns the state after.",
         r#""command": {"type": "string", "description": "The command's id, from collate_commands: next-file, stage, stage-file, commit, split, view-history, …"}"#, r#""command""#),
-    ("collate_show", "show", "Switches the view: all (every uncommitted change), staged, unstaged, branch (the branch against its base, as a pull request shows it), history (the commit graph), pulls (the pull request list), issues (the issue list) or map (the repository map).",
-        r#""view": {"type": "string", "enum": ["all", "staged", "unstaged", "branch", "history", "pulls", "issues", "map"]}"#, r#""view""#),
+    ("collate_show", "show", "Switches the view: all (every uncommitted change), staged, unstaged, branch (the branch against its base, as a pull request shows it), history (the commit graph), pulls (the pull request list), issues (the issue list, or one issue by number) or map (the repository map).",
+        r#""view": {"type": "string", "enum": ["all", "staged", "unstaged", "branch", "history", "pulls", "issues", "map"]},
+    "number": {"type": "integer", "description": "With issues: the issue to open. Optional."}"#, r#""view""#),
     ("collate_open_file", "open_file", "Scrolls the diff to a file, and to a line of it when given, selecting that line. The file must be in the diff shown.",
         r#""path": {"type": "string", "description": "The file's path in the repository."},
     "line": {"type": "integer", "description": "A line number, on the new side unless side is old. Optional."},

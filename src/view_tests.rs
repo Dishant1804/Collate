@@ -2958,6 +2958,8 @@ fn issues_open_from_the_view_menu_and_for_an_agent() {
     assert!(!rt.state.issues.open);
     let ran = agent_asks(&mut rt, "run", json!({ "command": "view-issues" })).unwrap();
     assert_eq!(ran["state"]["place"], "issues", "the View menu's Issues");
+    let state = agent_asks(&mut rt, "show", json!({ "view": "issues", "number": 12 })).unwrap();
+    assert_eq!((rt.state.issues.number, state["issue"]["number"].as_u64()), (Some(12), Some(12)), "an agent opens one issue by number");
 }
 
 #[test]
