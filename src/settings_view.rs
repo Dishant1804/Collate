@@ -5,7 +5,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit, SegmentedControl
 
 use crate::diff::DiffMode;
 use crate::git::Scope;
-use crate::settings::{Agent, CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
+use crate::settings::{Agent, CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_LABELS, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
 use crate::{ADD_PROJECT, AGENT_ICON, ALL_ICON, Collate, Screen, current_repo, grammars, lucide, project_labels, themes, tilde, update};
 
 /// The width every settings control is right-aligned in, so each description wraps at the
@@ -269,7 +269,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let rows: Vec<El> = match tab {
         0 => vec![
             theme_picker(s, k, menus),
-            setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(s, k, menus, "font", "Code size", &["11", "12", "13", "14", "16"], &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
+            setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(s, k, menus, "font", "Code size", &FONT_LABELS, &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
             setting(k, "density", "Line spacing", &[], "", pick(s, k, menus, "density", "Line spacing", &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
             setting(k, "swap", "Swap sidebars", &[], "The staging panel on the left, the views on the right", switch(k, "Swap sidebars", st.swap_panes, |c, v| c.swap_panes = v)),
             setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(s, k, menus, "motion", "Animations", &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),

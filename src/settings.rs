@@ -141,7 +141,9 @@ pub enum Channel {
     Source,
 }
 
-pub const FONT_SIZES: [f32; 5] = [11.0, 12.0, 13.0, 14.0, 16.0];
+pub const FONT_SIZES: [f32; 13] = [11.0, 12.0, 13.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 32.0, 36.0, 40.0, 48.0];
+/// `FONT_SIZES` as the settings dropdown names them.
+pub const FONT_LABELS: [&str; 13] = ["11", "12", "13", "14", "16", "18", "20", "24", "28", "32", "36", "40", "48"];
 /// Context lines to keep; the last is the whole file.
 pub const CONTEXT_LINES: [u32; 4] = [3, 10, 25, FULL_FILE];
 pub const FULL_FILE: u32 = 1_000_000;
