@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 
 use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::syntax::{Syntax, SyntaxTheme};
-use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, TextArea, TextInput};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, SegmentedControl, TextArea, TextInput};
 
 use crate::Hand;
 use crate::github_issues::{self, Detail, Issue};
 use crate::github::{self, Gh};
-use crate::{COLUMN_TOP, Collate, EDGE, HANDLE, ISSUES_ICON, REFRESH_ICON, current_repo, message};
+use crate::{COLUMN_TOP, Collate, EDGE, HANDLE, ISSUES_ICON, MORE_ICON, REFRESH_ICON, current_repo, message};
 
 pub struct IssuesState {
     /// The list shows in place of the diff.
@@ -216,6 +216,39 @@ impl Collate {
             None => ("Reopening…", format!("Reopened #{n}")),
         };
         self.issue_act(doing, move |gh| gh.set_issue_open(n, reason, &body).map(|_| done), |s| s.issues.reply = TextEdit::new(""));
+    }
+
+    fn react_to_issue_post(&mut self, id: String, content: &'static str) {
+        self.issue_act("Reacting…", move |gh| gh.react(&id, content).map(|_| "Reacted".to_owned()), |_| {});
+    }
+
+    /// Comment `at`'s menu: its link, a quoted reply and a reaction.
+    fn issue_post_menu(&mut self, at: usize, tx: &mut Tx) {
+        let Some(Ok(d)) = &self.issues.detail else { return };
+        let Some(c) = d.comments.get(at).cloned() else { return };
+        let react = PopupMenu::new().items(github::REACTIONS.iter().map(|(name, emoji)| PopupItem::new(*name, *emoji)));
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("copy", "Copy Link"))
+            .item(PopupItem::new("quote", "Quote Reply"))
+            .submenu_enabled("React", react, !c.id.is_empty());
+        tx.popup_menu(menu, format!("issue-comment-{at}-more"), move |s: &mut Collate, picked, tx| match picked {
+            Some("copy") => {
+                tx.copy(c.url.clone());
+                s.say("Copied the comment's link", false);
+            }
+            Some("quote") => {
+                let quoted: String = c.body.trim().lines().map(|l| format!("> {l}\n")).collect();
+                s.issues.reply = TextEdit::new(format!("{quoted}\n"));
+                s.issues.reply.focused = true;
+                tx.scroll_into_view("issue-composer");
+            }
+            Some(name) => {
+                if let Some((content, _)) = github::REACTIONS.iter().find(|(n, _)| *n == name) {
+                    s.react_to_issue_post(c.id.clone(), content);
+                }
+            }
+            None => {}
+        });
     }
 
     fn pick_close_reason(&mut self, tx: &mut Tx) {
@@ -634,14 +667,20 @@ fn comment_card(s: &Collate, k: &Kit, at: usize, c: &github::Post) -> El {
     let key = format!("issue-comment-{at}");
     let head = row().w_full().px(12.0).py(8.0).gap(6.0).items_center().fill(k.alpha(k.c.text_base, 0.03))
         .child(text(c.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
-        .child(text(format!("commented on {}", c.time.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).grow(1.0));
+        .child(text(format!("commented on {}", c.time.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).grow(1.0))
+        .child(IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label(format!("Actions for {}'s comment", c.author))
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.issue_post_menu(at, tx)).build(k).hand(true).key(format!("{key}-more")).mr(-6.0));
     let mut card = col().key(key.clone()).w_full().radius(k.radius.md).border(1.0, k.c.border_weak).child(head)
         .child(col().w_full().h(1.0).fill(k.c.border_weak))
         .child(col().w_full().px(12.0).py(10.0).child(crate::pulls::rich(s, k, &format!("{key}-body"), &c.body, k.ty.text_small)));
     if !c.reactions.is_empty() {
         card = card.child(row().key(format!("{key}-reactions")).w_full().px(12.0).pb(10.0).gap(6.0).flex_wrap().children(c.reactions.iter().filter_map(|(name, n)| {
-            let (_, emoji) = github::REACTIONS.iter().find(|(c, _)| c == name)?;
-            Some(row().h(24.0).px(8.0).gap(4.0).items_center().radius(12.0).border(1.0, k.c.border_weak).label(format!("{n} {name}"))
+            let (content, emoji) = github::REACTIONS.iter().find(|(c, _)| c == name)?;
+            let id = c.id.clone();
+            // A press adds the reader's own, as on GitHub.
+            Some(row().key(format!("{key}-react-{content}")).h(24.0).px(8.0).gap(4.0).items_center().radius(12.0).border(1.0, k.c.border_weak)
+                .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("{n} {content}, add yours"))
+                .on_press(move |s: &mut Collate| s.react_to_issue_post(id.clone(), content))
                 .child(text((*emoji).to_owned()).font(k.ty.text_small).a11y_hidden())
                 .child(text(n.to_string()).font(k.ty.text_small).color(k.c.text_muted).a11y_hidden()))
         })));

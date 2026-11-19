@@ -2995,6 +2995,11 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.issue.open = false });
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-reopen").is_some() && rt.find("issue-close").is_none(), "and a closed one reopened");
+    click(&mut rt, "issue-comment-0-more");
+    let menu = rt.popup_menu().expect("a comment's menu");
+    assert!(menu.find("copy").is_some() && menu.find("THUMBS_UP").is_some(), "its link and reactions");
+    rt.resolve_popup(Some("quote")).unwrap();
+    assert!(rt.state.issues.reply.text.starts_with("> Same here") && rt.state.issues.reply.focused, "a quoted reply is started below");
     rt.update(|s, _| s.issues.reply.focused = false);
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
     rt.frame(1.0 / 60.0);
