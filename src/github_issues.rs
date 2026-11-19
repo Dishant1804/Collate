@@ -331,16 +331,16 @@ fn event(e: &Value) -> Option<Event> {
 
 /// The issues on the reader, assigned to them, then the ones they opened, then those that
 /// mention them, then the rest; then the closed. Each issue is in the first group it fits.
-pub fn group<'a>(issues: &'a [Issue], me: &str) -> [(&'static str, Vec<&'a Issue>); 5] {
+pub fn group<'a>(issues: &[&'a Issue], me: &str) -> [(&'static str, Vec<&'a Issue>); 5] {
     let assigned = |i: &Issue| i.assignees.iter().any(|a| a == me);
-    let open = issues.iter().filter(|i| i.open);
+    let open = issues.iter().copied().filter(|i| i.open);
     let pick = |f: &dyn Fn(&Issue) -> bool| open.clone().filter(|i| f(i)).collect::<Vec<_>>();
     [
         ("Assigned to You", pick(&|i| assigned(i))),
         ("Created by You", pick(&|i| !assigned(i) && i.author == me)),
         ("Mentioning You", pick(&|i| !assigned(i) && i.author != me && i.mentions)),
         ("Everyone Else", pick(&|i| !assigned(i) && i.author != me && !i.mentions)),
-        ("Closed", issues.iter().filter(|i| !i.open).collect()),
+        ("Closed", issues.iter().copied().filter(|i| !i.open).collect()),
     ]
 }
 
@@ -400,7 +400,7 @@ mod tests {
         };
         let all = [i(1, "ana", &["me"], true, true), i(2, "me", &["me"], false, true), i(3, "me", &[], true, true), i(4, "bo", &[], true, true),
             i(5, "bo", &["ana"], false, true), i(6, "me", &["me"], false, false)];
-        let g = group(&all, "me");
+        let g = group(&all.iter().collect::<Vec<_>>(), "me");
         let numbers: Vec<Vec<u32>> = g.iter().map(|(_, is)| is.iter().map(|i| i.number).collect()).collect();
         assert_eq!(numbers, [vec![1, 2], vec![3], vec![4], vec![5], vec![6]], "each in the first group it fits; a closed one asks nothing");
         assert_eq!(g.map(|(t, _)| t), ["Assigned to You", "Created by You", "Mentioning You", "Everyone Else", "Closed"]);

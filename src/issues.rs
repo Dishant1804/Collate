@@ -94,13 +94,16 @@ impl Sort {
     }
 
     /// Order the issues; ties keep the order they came in, newest activity first.
-    fn apply(self, issues: &mut [Issue]) {
+    fn apply<I: std::borrow::Borrow<Issue>>(self, issues: &mut [I]) {
+        fn by<I: std::borrow::Borrow<Issue>>(i: &I) -> &Issue {
+            i.borrow()
+        }
         match self {
             // The times are ISO 8601, so they order as text.
-            Sort::Updated => issues.sort_by(|a, b| b.updated.cmp(&a.updated)),
-            Sort::Newest => issues.sort_by(|a, b| b.created.cmp(&a.created)),
-            Sort::Oldest => issues.sort_by(|a, b| a.created.cmp(&b.created)),
-            Sort::Commented => issues.sort_by_key(|i| std::cmp::Reverse(i.comments)),
+            Sort::Updated => issues.sort_by(|a, b| by(b).updated.cmp(&by(a).updated)),
+            Sort::Newest => issues.sort_by(|a, b| by(b).created.cmp(&by(a).created)),
+            Sort::Oldest => issues.sort_by(|a, b| by(a).created.cmp(&by(b).created)),
+            Sort::Commented => issues.sort_by_key(|i| std::cmp::Reverse(by(i).comments)),
         }
     }
 }
@@ -644,7 +647,7 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
                 list = list.child(group_head(k, title, group.len(), folded));
                 if !folded {
                     for i in group {
-                        list = list.child(issue_row(s, k, &i));
+                        list = list.child(issue_row(s, k, i));
                     }
                 }
             }
@@ -656,12 +659,12 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
 }
 
 /// The groups the list shows, as filtered and sorted, leaving out the empty ones.
-fn sections(s: &Collate) -> Vec<(&'static str, Vec<Issue>)> {
+fn sections(s: &Collate) -> Vec<(&'static str, Vec<&Issue>)> {
     let Some(Ok((me, issues))) = &s.issues.list else { return Vec::new() };
     let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
-    let mut shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && has_assignee(i, s.issues.assignee.as_deref()) && matches(i, &words)).cloned().collect();
+    let mut shown: Vec<&Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && has_assignee(i, s.issues.assignee.as_deref()) && matches(i, &words)).collect();
     s.issues.sort.apply(&mut shown);
-    github_issues::group(&shown, me).into_iter().filter(|(_, g)| !g.is_empty()).map(|(t, g)| (t, g.into_iter().cloned().collect())).collect()
+    github_issues::group(&shown, me).into_iter().filter(|(_, g)| !g.is_empty()).collect()
 }
 
 impl Collate {
