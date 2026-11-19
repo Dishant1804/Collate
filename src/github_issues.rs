@@ -91,7 +91,27 @@ fn detail_query() -> String {
     format!("query($owner:String!,$name:String!,$n:Int!){{repository(owner:$owner,name:$name){{issue(number:$n){{{FIELDS} {}}}}}}}", detail_fields())
 }
 
+/// What an issue's people and labels can be set to in this repository.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Options {
+    /// Who can be assigned, by login.
+    pub people: Vec<String>,
+    /// Each label's name and colour, by name.
+    pub labels: Vec<(String, String)>,
+}
+
+const OPTIONS: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){assignableUsers(first:100){nodes{login}} labels(first:100,orderBy:{field:NAME,direction:ASC}){nodes{name color}}}}";
+
 impl Gh {
+    pub fn issue_options(&self) -> Result<Options, String> {
+        let v = self.query(OPTIONS)?;
+        let r = &v["data"]["repository"];
+        Ok(Options {
+            people: r["assignableUsers"]["nodes"].as_array().into_iter().flatten().map(login).collect(),
+            labels: r["labels"]["nodes"].as_array().into_iter().flatten().map(|l| (s(l, "name"), s(l, "color"))).collect(),
+        })
+    }
+
     /// Issue `n`, opened.
     pub fn issue(&self, n: u32) -> Result<Detail, String> {
         let v = self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={n}"), "-f", &format!("query={}", detail_query())], None)?;

@@ -9,7 +9,7 @@ use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, SegmentedControl, TextArea, TextInput};
 
 use crate::Hand;
-use crate::github_issues::{self, Detail, Issue};
+use crate::github_issues::{self, Detail, Issue, Options};
 use crate::github::{self, Gh};
 use crate::{COLUMN_TOP, Collate, EDGE, HANDLE, ISSUES_ICON, MORE_ICON, REFRESH_ICON, current_repo, message};
 
@@ -43,6 +43,8 @@ pub struct IssuesState {
     pub text: TextEdit,
     /// The title, while the issue is edited.
     pub title: TextEdit,
+    /// Who can be assigned and the labels there are, read once an issue opens.
+    pub options: Option<Result<Options, String>>,
 }
 
 /// What the issue dialog does.
@@ -113,7 +115,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new("") }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new(""), options: None }
     }
 }
 
@@ -161,6 +163,22 @@ impl Collate {
         self.issues.pick = Some(n);
         self.issues.detail = None;
         self.load_issue();
+        if self.issues.options.is_none() {
+            self.load_issue_options();
+        }
+    }
+
+    /// Read who can be assigned and the labels there are, off the UI thread.
+    fn load_issue_options(&mut self) {
+        let (Some(root), Some(app)) = (current_repo().map(|r| r.root.clone()), HANDLE.get().cloned()) else { return };
+        std::thread::spawn(move || {
+            let got = Gh::new(&root).issue_options();
+            app.update(move |s, _| {
+                if current_repo().is_some_and(|r| r.root == root) {
+                    s.issues.options = Some(got);
+                }
+            });
+        });
     }
 
     /// Back from an issue to the list, where it was.
@@ -303,6 +321,29 @@ impl Collate {
                 self.issue_act("Saving…", move |gh| gh.edit_issue(n, &title, &body).map(|_| format!("Saved #{n}")), |_| {});
             }
         }
+    }
+
+    /// The assignees' menu: everyone who can be, those on it ticked; a pick adds or takes them off.
+    fn pick_issue_assignees(&mut self, tx: &mut Tx) {
+        let (Some(n), Some(Ok(d))) = (self.issues.number, &self.issues.detail) else { return };
+        let on = d.issue.assignees.clone();
+        let menu = match &self.issues.options {
+            Some(Ok(o)) => {
+                // Those on it first, then the rest, as GitHub lists them.
+                let rest = o.people.iter().filter(|p| !on.contains(p));
+                PopupMenu::new().items(on.iter().chain(rest).map(|p| PopupItem::new(p.clone(), p.clone()).checked(on.contains(p))))
+            }
+            Some(Err(e)) => PopupMenu::new().item(PopupItem::new("", format!("Couldn't read who can be assigned: {e}")).enabled(false)),
+            None => PopupMenu::new().item(PopupItem::new("", "Reading who can be assigned…").enabled(false)),
+        };
+        tx.popup_menu(menu, "issue-edit-assignees", move |s: &mut Collate, picked: Option<&str>, _| {
+            let Some(who) = picked.filter(|p| !p.is_empty()).map(str::to_owned) else { return };
+            if on.contains(&who) {
+                s.issue_act("Unassigning…", move |gh| gh.issue_assignees(n, &[], &[&who]).map(|_| format!("Took {who} off #{n}")), |_| {});
+            } else {
+                s.issue_act("Assigning…", move |gh| gh.issue_assignees(n, &[&who], &[]).map(|_| format!("Assigned {who} to #{n}")), |_| {});
+            }
+        });
     }
 
     fn assign_me_to_issue(&mut self) {
@@ -739,7 +780,11 @@ fn side(s: &Collate, k: &Kit, d: &Detail) -> El {
     use crate::pulls::{REGULAR_PAD, heading};
     let i = &d.issue;
     let busy = s.busy.is_some();
-    let mut assignees = col().key("issue-assignees").w_full().gap(2.0).child(heading(k, "issue-assignees-title", "Assignees", None));
+    // A gear opens each list's editor, as on GitHub.
+    let gear = |key: &'static str, label: &str, open: fn(&mut Collate, &mut Tx)| d.can_edit.then(|| IconButton::new(&crate::pulls::GEAR_ICON).variant(IconButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small).label(label.to_owned()).disabled(busy).on_press_tx(open).build(k).hand(!busy).key(key).mr(-4.0));
+    let mut assignees = col().key("issue-assignees").w_full().gap(2.0)
+        .child(heading(k, "issue-assignees-title", "Assignees", gear("issue-edit-assignees", "Change the assignees", Collate::pick_issue_assignees)));
     if i.assignees.is_empty() {
         let mut none = row().w_full().h(24.0).gap(4.0).items_center().child(text("No one -".to_owned()).font(k.ty.text_small).color(k.c.text_faint));
         if d.can_edit {

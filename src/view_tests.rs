@@ -3024,6 +3024,15 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.can_edit = true });
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-assign-me").is_some(), "one that can be changed offers to assign you");
+    rt.update(|s, _| {
+        s.issues.options = Some(Ok(crate::github_issues::Options { people: vec!["bo".into(), "me".into()], labels: vec![("bug".into(), "d73a4a".into())] }));
+        if let Some(Ok(d)) = &mut s.issues.detail { d.issue.assignees = vec!["me".into()] }
+    });
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "issue-edit-assignees");
+    let menu = rt.popup_menu().expect("the assignees' menu");
+    assert!(menu.find("me").is_some_and(|i| i.is_checked()) && menu.find("bo").is_some_and(|i| !i.is_checked()), "those on it ticked");
+    rt.resolve_popup(None).unwrap();
     click(&mut rt, "issue-edit");
     assert!(rt.find("issue-write-title").is_some() && rt.state.issues.text.text == "It **crashes**.", "Edit opens its title and description");
     rt.update(|s, _| s.issues.title = TextEdit::new(""));
