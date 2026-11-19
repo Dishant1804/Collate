@@ -1432,7 +1432,7 @@ fn body_view(s: &Collate, k: &Kit, key: &str, body: &str) -> El {
 }
 
 /// [`body_view`] at a given body size: the description reads at the page's size.
-fn rich(s: &Collate, k: &Kit, key: &str, body: &str, font: rune::TextStyle) -> El {
+pub(crate) fn rich(s: &Collate, k: &Kit, key: &str, body: &str, font: rune::TextStyle) -> El {
     parts_view(s, k, key, &crate::body::parse(body.trim()), font)
 }
 

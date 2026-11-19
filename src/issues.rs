@@ -9,7 +9,7 @@ use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, TextInput};
 
 use crate::Hand;
-use crate::github_issues::{self, Issue};
+use crate::github_issues::{self, Detail, Issue};
 use crate::github::{self, Gh};
 use crate::{COLUMN_TOP, Collate, EDGE, HANDLE, ISSUES_ICON, REFRESH_ICON, current_repo, message};
 
@@ -33,6 +33,9 @@ pub struct IssuesState {
     pub sort: Sort,
     /// The issue picked with the keys, by number.
     pub pick: Option<u32>,
+    /// The issue open in place of the list, by number, and what's read of it.
+    pub number: Option<u32>,
+    pub detail: Option<Result<Detail, String>>,
 }
 
 impl IssuesState {
@@ -93,7 +96,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None }
     }
 }
 
@@ -131,7 +134,38 @@ impl Collate {
         self.pulls.open = false;
         self.close_pull();
         self.issues.open = true;
+        self.issues.number = None;
         self.load_issues();
+    }
+
+    /// Open issue `n` in place of the list, shown at once from the list while the rest is read.
+    pub fn open_issue(&mut self, n: u32) {
+        self.issues.number = Some(n);
+        self.issues.pick = Some(n);
+        self.issues.detail = None;
+        self.load_issue();
+    }
+
+    /// Back from an issue to the list, where it was.
+    pub fn close_issue(&mut self, tx: &mut Tx) {
+        if let Some(n) = self.issues.number.take() {
+            self.issues.detail = None;
+            tx.scroll_into_view(format!("issue-{n}"));
+        }
+    }
+
+    /// Read the open issue again, off the UI thread.
+    fn load_issue(&mut self) {
+        let (Some(n), Some(root), Some(app)) = (self.issues.number, current_repo().map(|r| r.root.clone()), HANDLE.get().cloned()) else { return };
+        std::thread::spawn(move || {
+            let got = Gh::new(&root).issue(n);
+            app.update(move |s, _| {
+                // The reader went back, or on to another issue, meanwhile.
+                if s.issues.number == Some(n) && current_repo().is_some_and(|r| r.root == root) {
+                    s.issues.detail = Some(got);
+                }
+            });
+        });
     }
 
     /// Asks for the pictures of everyone the issues show: the reader, the authors and the assignees.
@@ -165,8 +199,11 @@ impl Collate {
     }
 }
 
-/// The list of issues, in place of the diff.
+/// The list of issues, or the issue open, in place of the diff.
 pub fn issues_view(s: &Collate, k: &Kit) -> El {
+    if let Some(n) = s.issues.number {
+        return overview(s, k, n);
+    }
     let refresh = IconButton::new(&REFRESH_ICON).variant(IconButtonVariant::GhostMuted).label("Reload issues").disabled(s.issues.loading).on_press(|s: &mut Collate| {
         s.issues.list = None;
         s.load_issues();
@@ -398,7 +435,8 @@ fn issue_row(s: &Collate, k: &Kit, i: &Issue) -> El {
         .child(text(format!("#{n} - opened by {} - {}", i.author, i.created.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).truncate());
     let mut line = row().key(format!("issue-{n}")).w_full().px(EDGE).py(8.0).gap(12.0).items_center()
         .fill(if s.issues.pick == Some(n) { k.c.hover } else { rune::Color::TRANSPARENT })
-        .label(format!("#{n} {}", i.title)).description(state)
+        .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("#{n} {}", i.title)).description(state).help("Open this issue")
+        .on_press(move |s: &mut Collate| s.open_issue(n))
         .child(icon(mark, 16.0).color(hue).a11y_hidden())
         .child(words);
     // Who has it, overlapping as GitHub stacks them.
@@ -415,6 +453,50 @@ fn issue_row(s: &Collate, k: &Kit, i: &Issue) -> El {
         comments
     };
     line.child(comments)
+}
+
+/// The issue open, as GitHub lays it out: its title and state, who opened it, and what it says.
+fn overview(s: &Collate, k: &Kit, n: u32) -> El {
+    let listed = s.issues.list.as_ref().and_then(|l| l.as_ref().ok()).and_then(|(_, all)| all.iter().find(|i| i.number == n));
+    let detail = s.issues.detail.as_ref().and_then(|d| d.as_ref().ok());
+    let back = row().key("issue-back").h(28.0).px(EDGE).gap(4.0).items_center().cursor(Cursor::Pointer).role("button").label("Back to Issues").help("Back to the list (Esc)")
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_issue(tx))
+        .child(icon(k.glyph.chevron_down, 16.0).color(k.c.icon_muted).icon_rotation(std::f32::consts::FRAC_PI_2).a11y_hidden())
+        .child(text("Issues".to_owned()).font(k.ty.text_small_medium).color(k.c.text_muted));
+    let head = row().key("issue-head").w_full().pt(COLUMN_TOP).child(back);
+    let Some(i) = detail.map(|d| &d.issue).or(listed) else {
+        let body = match &s.issues.detail {
+            Some(Err(e)) => message(k, "Can't read the issue", e),
+            _ => message(k, "Reading the issue…", ""),
+        };
+        return col().key("issues").w_full().grow(1.0).min_h(0.0).child(head).child(body);
+    };
+    let (mark, hue, state) = state_mark(k, i);
+    let title_font = rune::TextStyle { size: 23.0, line_height: 32.0, weight: 600.0, ..k.ty.ui_medium };
+    let pill = row().key("issue-state").h(22.0).px(8.0).gap(5.0).items_center().radius(11.0).fill(k.alpha(hue, 0.16))
+        .child(icon(mark, 12.0).color(hue))
+        .child(text(state.to_owned()).font(k.ty.text_small_medium).color(hue));
+    let muted = |t: String| text(t).font(k.ty.text_small).color(k.c.text_muted);
+    let byline = row().key("issue-byline").w_full().gap(6.0).items_center().flex_wrap()
+        .child(pill)
+        .child(crate::history_view::face(k, s, &i.author, 20.0).ml(2.0))
+        .child(text(i.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
+        .child(muted(format!("opened this issue on {}", i.created.get(..10).unwrap_or(""))))
+        .child(text(format!("#{n}")).font(k.ty.text_small).color(k.c.text_faint));
+    let body = match &s.issues.detail {
+        None => text("Reading…".to_owned()).key("issue-body").font(k.ty.ui).color(k.c.text_faint),
+        Some(Err(e)) => message(k, "Can't read the issue", e),
+        Some(Ok(d)) if d.body.trim().is_empty() => text("No description provided.".to_owned()).key("issue-body").font(k.ty.ui).color(k.c.text_faint),
+        Some(Ok(d)) => crate::pulls::rich(s, k, "issue-body", &d.body, k.ty.ui),
+    };
+    let main = col().key("issue-main").grow(1.0).min_w(0.0).max_w(780.0).gap(28.0)
+        .child(col().key("issue-title").w_full().gap(10.0)
+            .child(text(i.title.clone()).font(title_font).color(k.c.text_base).wrap().w_full())
+            .child(byline))
+        .child(body);
+    col().key("issues").w_full().grow(1.0).min_h(0.0).child(head)
+        .child(col().key("issue-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false })
+            .child(row().key("issue-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(16.0).pb(48.0).gap(40.0).items_start().child(main)))
 }
 
 #[cfg(test)]

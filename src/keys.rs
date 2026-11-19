@@ -187,13 +187,18 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if tx.focused().is_some_and(|f| f.contains("filter") || f.contains("message") || f.contains("search")) {
         return false;
     }
-    // The issues list steps through its rows; the other keys still switch views.
-    if s.issues.open && !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt {
+    if s.issues.open && s.issues.number.is_some() && ev.key == Key::Escape {
+        s.close_issue(tx);
+        return true;
+    }
+    // The issues list steps through its rows and opens one; the other keys still switch views.
+    if s.issues.open && s.issues.number.is_none() && !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt {
         let text = if let Key::Text(t) = &ev.key { t.as_str() } else { "" };
         match (&ev.key, text) {
             (Key::Down, _) | (_, "j") => return { s.step_issue(true, tx); true },
             (Key::Up, _) | (_, "k") => return { s.step_issue(false, tx); true },
             (_, "/") => return { s.issues.filter.focused = true; true },
+            (Key::Enter, _) if let Some(n) = s.issues.pick => return { s.open_issue(n); true },
             _ => {}
         }
     }

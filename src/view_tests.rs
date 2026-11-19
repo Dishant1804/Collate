@@ -2959,3 +2959,30 @@ fn issues_open_from_the_view_menu_and_for_an_agent() {
     let ran = agent_asks(&mut rt, "run", json!({ "command": "view-issues" })).unwrap();
     assert_eq!(ran["state"]["place"], "issues", "the View menu's Issues");
 }
+
+#[test]
+fn an_issue_opens_from_its_row_and_esc_goes_back() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    rt.update(|s, _| {
+        s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &[]), issue(4, "me", &[])])));
+        s.open_issues();
+    });
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "issue-3");
+    assert_eq!(rt.state.issues.number, Some(3));
+    assert!(rt.find("issue-title").is_some() && rt.find("issue-state").is_some() && rt.find("issue-list").is_none(), "it shows in place of the list, at once from it");
+    rt.update(|s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into() })));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-body").is_some(), "its description shows once read");
+    rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.issues.number.is_none() && rt.find("issue-3").is_some(), "Esc goes back to the list");
+    for key in [Key::Text("j".into()), Key::Enter] {
+        rt.key(KeyEvent { key, mods: Default::default() });
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.issues.number, Some(3), "Enter opens the issue picked");
+    click(&mut rt, "issue-back");
+    assert!(rt.state.issues.number.is_none(), "so does the back button");
+}

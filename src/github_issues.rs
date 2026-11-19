@@ -42,7 +42,26 @@ fn closed_query() -> String {
 /// The open issues that mention `$me`, by number.
 const MENTIONS: &str = "query($owner:String!,$name:String!,$me:String!){repository(owner:$owner,name:$name){issues(states:OPEN,first:100,filterBy:{mentioned:$me}){nodes{number}}}}";
 
+/// One issue, opened: what the list knows, and what it says.
+#[derive(Clone, Debug, Default)]
+pub struct Detail {
+    pub issue: Issue,
+    pub body: String,
+}
+
+const DETAIL: &str = "body";
+
+fn detail_query() -> String {
+    format!("query($owner:String!,$name:String!,$n:Int!){{repository(owner:$owner,name:$name){{issue(number:$n){{{FIELDS} {DETAIL}}}}}}}")
+}
+
 impl Gh {
+    /// Issue `n`, opened.
+    pub fn issue(&self, n: u32) -> Result<Detail, String> {
+        let v = self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={n}"), "-f", &format!("query={}", detail_query())], None)?;
+        Ok(detail(&v["data"]["repository"]["issue"]))
+    }
+
     fn query(&self, q: &str) -> Result<Value, String> {
         self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", &format!("query={q}")], None)
     }
@@ -91,6 +110,10 @@ fn issue(v: &Value) -> Issue {
         url: s(v, "url"),
         mentions: false,
     }
+}
+
+fn detail(v: &Value) -> Detail {
+    Detail { issue: issue(v), body: s(v, "body") }
 }
 
 /// The issues on the reader, assigned to them, then the ones they opened, then those that
