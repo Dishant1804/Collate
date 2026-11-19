@@ -4,9 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rune::{Cursor, El, Icon, col, icon, row, text};
+use rune::{Cursor, El, Icon, TextEdit, col, icon, row, text};
 use rune_kit::syntax::{Syntax, SyntaxTheme};
-use rune_kit::{IconButton, IconButtonVariant, Kit};
+use rune_kit::{IconButton, IconButtonVariant, Kit, TextInput};
 
 use crate::Hand;
 use crate::github_issues::{self, Issue};
@@ -21,12 +21,14 @@ pub struct IssuesState {
     pub loading: bool,
     /// The list's groups folded to their titles, by title.
     pub folded: HashSet<&'static str>,
+    /// Words the list is narrowed to.
+    pub filter: TextEdit,
 }
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
         // Closed issues are there to look back on, not to act on.
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::from(["Closed"]) }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::from(["Closed"]), filter: TextEdit::new("") }
     }
 }
 
@@ -104,17 +106,31 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         s.issues.list = None;
         s.load_issues();
     });
-    let head = row().key("issues-head").w_full().h(28.0).px(EDGE).gap(8.0).items_center()
-        .child(text("Issues".to_owned()).font(k.ty.ui_medium).color(k.c.text_base).grow(1.0))
-        .child(refresh.build(k).hand(!s.issues.loading).key("issues-reload"));
+    let mut filter = TextInput::new(&s.issues.filter).placeholder("Filter by title, number, author, assignee or label").leading_icon(k.glyph.search);
+    if !s.issues.filter.text.is_empty() {
+        filter = filter.clear_button();
+    }
+    let filter = filter.on_edit(|s: &mut Collate| &mut s.issues.filter).width(None).build(k).key("issues-filter").w(280.0);
+    let mut head = row().key("issues-head").w_full().h(28.0).px(EDGE).gap(8.0).items_center()
+        .child(text("Issues".to_owned()).font(k.ty.ui_medium).color(k.c.text_base).grow(1.0));
+    // Filtering needs the issues, so it waits until GitHub is connected.
+    if !matches!(&s.issues.list, Some(Err(e)) if github::needs_connect(e)) {
+        head = head.child(filter);
+    }
+    let head = head.child(refresh.build(k).hand(!s.issues.loading).key("issues-reload"));
     let body = match &s.issues.list {
         None => message(k, "Reading issues…", ""),
         Some(Err(e)) if github::needs_connect(e) => crate::pulls::connect_view(s, k, "See this repository's issues, comment on them, and open new ones without leaving Collate."),
         Some(Err(e)) => message(k, "Can't read issues", e),
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
         Some(Ok((me, issues))) => {
+            let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
+            let shown: Vec<Issue> = issues.iter().filter(|i| matches(i, &words)).cloned().collect();
+            if shown.is_empty() {
+                return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(message(k, "No issues match", "Try fewer or other words."));
+            }
             let mut list = col().key("issues-list").w_full().pb(16.0);
-            for (title, group) in github_issues::group(issues, me) {
+            for (title, group) in github_issues::group(&shown, me) {
                 if group.is_empty() {
                     continue;
                 }
@@ -130,6 +146,13 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         }
     };
     col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(body)
+}
+
+/// Whether every word is in the issue's title, number, author, assignees or labels.
+fn matches(i: &Issue, words: &[String]) -> bool {
+    let labels: Vec<&str> = i.labels.iter().map(|(l, _)| l.as_str()).collect();
+    let hay = format!("{} #{} {} {} {}", i.title, i.number, i.author, i.assignees.join(" "), labels.join(" ")).to_lowercase();
+    words.iter().all(|w| hay.contains(w.as_str()))
 }
 
 /// A group's title and count; a click anywhere on it folds the group to it or opens it again.
@@ -183,4 +206,17 @@ fn issue_row(s: &Collate, k: &Kit, i: &Issue) -> El {
         comments
     };
     line.child(comments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_filter_wants_every_word_somewhere() {
+        let i = Issue { number: 12, title: "Crash on launch".into(), author: "ana".into(), assignees: vec!["bo".into()], labels: vec![("bug".into(), String::new())], ..Issue::default() };
+        let w = |s: &str| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        assert!(matches(&i, &w("crash bug")) && matches(&i, &w("#12")) && matches(&i, &w("bo ana")) && matches(&i, &[]));
+        assert!(!matches(&i, &w("crash feature")), "every word, not any");
+    }
 }
