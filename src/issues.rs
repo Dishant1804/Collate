@@ -27,6 +27,8 @@ pub struct IssuesState {
     pub shown: Shown,
     /// The label the list is narrowed to; empty for issues with none.
     pub label: Option<String>,
+    /// The login the list is narrowed to the issues of; empty for issues no one has.
+    pub assignee: Option<String>,
 }
 
 /// The issues the list shows: open ones to act on, closed ones to look back on, or both.
@@ -50,7 +52,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None }
     }
 }
 
@@ -147,12 +149,12 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
         Some(Ok((me, issues))) => {
             let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
-            let shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && matches(i, &words)).cloned().collect();
+            let shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && has_assignee(i, s.issues.assignee.as_deref()) && matches(i, &words)).cloned().collect();
             if shown.is_empty() {
-                let (title, hint) = match (s.issues.shown, words.is_empty() && s.issues.label.is_none()) {
+                let (title, hint) = match (s.issues.shown, words.is_empty() && s.issues.label.is_none() && s.issues.assignee.is_none()) {
                     (Shown::Open, true) => ("No open issues", "Closed shows the ones done with."),
                     (Shown::Closed, true) => ("No closed issues", "None were closed lately."),
-                    _ => ("No issues match", "Try fewer words or another label."),
+                    _ => ("No issues match", "Try fewer words, or another label or assignee."),
                 };
                 return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(filters(s, k)).child(message(k, title, hint));
             }
@@ -191,7 +193,13 @@ fn filters(s: &Collate, k: &Kit) -> El {
         Some(l) => format!("Label: {l}"),
     };
     let label = menu_button(k, "issues-label", label, s.issues.label.is_some(), "Show only issues with a label", |s, tx| s.pick_issue_label(tx));
-    row().key("issues-filters").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state).child(label)
+    let assignee = match s.issues.assignee.as_deref() {
+        None => "Assignee".to_owned(),
+        Some("") => "No assignee".to_owned(),
+        Some(a) => format!("Assignee: {a}"),
+    };
+    let assignee = menu_button(k, "issues-assignee", assignee, s.issues.assignee.is_some(), "Show only issues someone has", |s, tx| s.pick_issue_assignee(tx));
+    row().key("issues-filters").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state).child(label).child(assignee)
 }
 
 /// A button that opens a menu, with the chevron that says so; it stands out while it narrows.
@@ -227,6 +235,40 @@ impl Collate {
             Some(p) => s.issues.label = p.strip_prefix("label:").map(str::to_owned),
             None => {}
         });
+    }
+}
+
+impl Collate {
+    /// Narrow the list to someone's issues, the reader first, or to those no one has.
+    fn pick_issue_assignee(&mut self, tx: &mut Tx) {
+        let Some(Ok((me, issues))) = &self.issues.list else { return };
+        let mut logins: Vec<&str> = issues.iter().flat_map(|i| i.assignees.iter().map(String::as_str)).filter(|a| a != me).collect();
+        logins.sort_by_key(|a| a.to_lowercase());
+        logins.dedup();
+        let now = match self.issues.assignee.as_deref() {
+            None => "any".to_owned(),
+            Some("") => "none".to_owned(),
+            Some(a) => format!("login:{a}"),
+        };
+        let menu = PopupMenu::new().item(PopupItem::new("any", "Anyone")).item(PopupItem::new("none", "No One"))
+            .item(PopupItem::new(format!("login:{me}"), format!("{me} (you)"))).separator()
+            .items(logins.iter().map(|a| PopupItem::new(format!("login:{a}"), *a)))
+            .selected(now);
+        tx.popup_menu(menu, "issues-assignee", |s: &mut Collate, picked, _| match picked {
+            Some("any") => s.issues.assignee = None,
+            Some("none") => s.issues.assignee = Some(String::new()),
+            Some(p) => s.issues.assignee = p.strip_prefix("login:").map(str::to_owned),
+            None => {}
+        });
+    }
+}
+
+/// Whether `login` has the issue, or no one when it's empty; any issue when there's no login.
+fn has_assignee(i: &Issue, login: Option<&str>) -> bool {
+    match login {
+        None => true,
+        Some("") => i.assignees.is_empty(),
+        Some(a) => i.assignees.iter().any(|n| n == a),
     }
 }
 

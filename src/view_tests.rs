@@ -2901,6 +2901,14 @@ fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
     click(&mut rt, "issues-label");
     rt.resolve_popup(Some("any")).unwrap();
     rt.frame(1.0 / 60.0);
+    click(&mut rt, "issues-assignee");
+    assert!(rt.popup_menu().expect("the assignee menu").find("login:me").is_some_and(|m| m.title() == "me (you)"), "the reader is named as such");
+    rt.resolve_popup(Some("none")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-3").is_none() && rt.find("issue-4").is_some(), "No One leaves the issues nobody has");
+    click(&mut rt, "issues-assignee");
+    rt.resolve_popup(Some("any")).unwrap();
+    rt.frame(1.0 / 60.0);
     click(&mut rt, "issue-group-Created by You");
     assert!(rt.find("issue-6").is_some() && rt.find("issue-4").is_none(), "a group's title folds and opens it");
     click(&mut rt, "view-all");
