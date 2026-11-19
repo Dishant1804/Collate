@@ -23,7 +23,7 @@ saying why.
 
 - `collate_show` `view`: `all` (everything uncommitted), `staged`, `unstaged`, `branch` (the
   branch against its base, as its pull request will read), `history` (the commit graph),
-  `pulls`, `map`.
+  `pulls`, `issues` (with `number`, that issue), `map`.
 - `collate_open_commit` `rev`: a commit (`HEAD~2`, a tag) or a range `main..topic`; shows it in
   History.
 - `collate_open_file` `path` [`line`, `side`]: scrolls to the file, or to the line and selects it.
@@ -47,6 +47,10 @@ saying why.
 - Useful ids: `next-change`, `prev-change`, `next-file`, `prev-file`, `split`, `wrap`,
   `whitespace`, `collapse`, `expand`, `viewed`, `stage-file`, `unstage-file`, `stage-all`,
   `commit`, `amend`, `fetch`, `pull`, `push`, `new-branch`, `stash`, `blame`, `terminal`.
+- On an open issue (`state.issue`): `issue-comment` (focuses the reader's comment box),
+  `issue-edit`, `issue-close`, `issue-close-not-planned`, `issue-reopen`, `issue-copy-link`,
+  `issue-on-github`; `new-issue` and `reload-issues` from the list. Ask before closing or
+  reopening.
 - `collate_comment` `path` `line` `body` leaves a comment under a line; `collate_delete_comment`
   removes one by index. Comments are the reader's review notes: add them when asked to review,
   and say how many you left.

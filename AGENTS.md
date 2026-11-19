@@ -31,7 +31,8 @@ install failed; a `cargo build` alone doesn't update the app.
   built from; add a new action there too. `src/watcher.rs`: the watcher thread and `prepare`.
 - `src/history_view.rs`, `src/settings_view.rs`: History's graph and commit card, the settings
   panel. `src/comments.rs`: the reader's comments. `src/view_tests.rs`: the view tests.
-- `src/pulls.rs`: pull requests and their overview. `src/body.rs`: comment bodies, their HTML as
+- `src/pulls.rs`: pull requests and their overview. `src/issues.rs`, `src/github_issues.rs`: issues,
+  their overview and dialogs, and their `gh` calls. `src/body.rs`: comment bodies, their HTML as
   Markdown and `<details>` as folds.
 - `src/git.rs`: every `git` call. `src/patch.rs`: patches for staging hunks, lines, words.
 - `src/diff/`: `model.rs` (files, hunks, parsing), `myers.rs` (line and word diff),
