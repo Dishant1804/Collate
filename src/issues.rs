@@ -395,6 +395,35 @@ impl Collate {
         });
     }
 
+    /// The open issue's menu: its link, GitHub, and whether the reader hears of it or others
+    /// may comment.
+    fn issue_menu(&mut self, tx: &mut Tx) {
+        let (Some(n), Some(Ok(d))) = (self.issues.number, &self.issues.detail) else { return };
+        let (url, id, subscribed, locked) = (d.issue.url.clone(), d.id.clone(), d.subscribed, d.locked);
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("copy", "Copy Link"))
+            .item(PopupItem::new("github", "Open on GitHub"))
+            .separator()
+            .item(PopupItem::new("subscribe", if subscribed { "Unsubscribe" } else { "Subscribe" }).enabled(!id.is_empty()))
+            .item(PopupItem::new("lock", if locked { "Unlock Conversation" } else { "Lock Conversation" }).enabled(d.can_edit));
+        tx.popup_menu(menu, "issue-more", move |s: &mut Collate, picked: Option<&str>, tx| match picked {
+            Some("copy") => {
+                tx.copy(url.clone());
+                s.say(format!("Copied the link to #{n}"), false);
+            }
+            Some("github") => crate::open_url(&url),
+            Some("subscribe") => {
+                let done = if subscribed { format!("You won't hear of #{n} unless you're in it") } else { format!("You'll hear of everything on #{n}") };
+                s.issue_act("Saving…", move |gh| gh.subscribe(&id, !subscribed).map(|_| done), |_| {});
+            }
+            Some("lock") => {
+                let done = if locked { format!("Anyone can comment on #{n} again") } else { format!("Only collaborators can comment on #{n} now") };
+                s.issue_act(if locked { "Unlocking…" } else { "Locking…" }, move |gh| gh.lock_issue(n, !locked).map(|_| done), |_| {});
+            }
+            _ => {}
+        });
+    }
+
     fn assign_me_to_issue(&mut self) {
         let Some(n) = self.issues.number else { return };
         self.issue_act("Assigning…", move |gh| gh.issue_assignees(n, &["@me"], &[]).map(|_| format!("Assigned you to #{n}")), |_| {});
@@ -704,7 +733,11 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_issue(tx))
         .child(icon(k.glyph.chevron_down, 16.0).color(k.c.icon_muted).icon_rotation(std::f32::consts::FRAC_PI_2).a11y_hidden())
         .child(text("Issues".to_owned()).font(k.ty.text_small_medium).color(k.c.text_muted));
-    let head = row().key("issue-head").w_full().pt(COLUMN_TOP).child(back);
+    let mut head = row().key("issue-head").w_full().pt(COLUMN_TOP).pr(EDGE).items_center().child(back).child(row().grow(1.0));
+    if detail.is_some() {
+        head = head.child(IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).label("More actions for this issue").help("Copy its link, open it on GitHub, subscribe, lock")
+            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.issue_menu(tx)).build(k).hand(true).key("issue-more"));
+    }
     let Some(i) = detail.map(|d| &d.issue).or(listed) else {
         let body = match &s.issues.detail {
             Some(Err(e)) => message(k, "Can't read the issue", e),

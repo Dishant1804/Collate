@@ -46,6 +46,12 @@ const MENTIONS: &str = "query($owner:String!,$name:String!,$me:String!){reposito
 #[derive(Clone, Debug, Default)]
 pub struct Detail {
     pub issue: Issue,
+    /// The GraphQL node id, to subscribe to or react to it.
+    pub id: String,
+    /// The reader hears of everything on it.
+    pub subscribed: bool,
+    /// Only those with write access may comment.
+    pub locked: bool,
     pub body: String,
     /// The comments, oldest first.
     pub comments: Vec<Post>,
@@ -88,7 +94,7 @@ const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name colo
 
 /// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("body viewerCanUpdate milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+    format!("id body viewerCanUpdate viewerSubscription locked milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
 RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
@@ -149,6 +155,11 @@ impl Gh {
         let n = n.to_string();
         let set = title.map(|t| format!("--milestone={t}"));
         self.run(&["issue", "edit", &n, set.as_deref().unwrap_or("--remove-milestone")], None)
+    }
+
+    /// Lock issue `n`'s conversation to collaborators, or unlock it.
+    pub fn lock_issue(&self, n: u32, lock: bool) -> Result<String, String> {
+        self.run(&["issue", if lock { "lock" } else { "unlock" }, &n.to_string()], None)
     }
 
     /// `gh issue edit`'s `--add-<what>` and `--remove-<what>`.
@@ -228,7 +239,7 @@ fn detail(v: &Value) -> Detail {
     let items = v["timelineItems"]["nodes"].as_array().into_iter().flatten();
     let (comments, events): (Vec<&Value>, Vec<&Value>) = items.partition(|e| e["__typename"] == "IssueComment");
     let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
-    Detail { issue: issue(v), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
+    Detail { issue: issue(v), id: s(v, "id"), subscribed: v["viewerSubscription"] == "SUBSCRIBED", locked: v["locked"].as_bool().unwrap_or(false), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
         milestone: v["milestone"]["title"].as_str().map(str::to_owned),
         pulls: v["closedByPullRequestsReferences"]["nodes"].as_array().into_iter().flatten()
             .map(|p| (p["number"].as_u64().unwrap_or(0) as u32, s(p, "title"), s(p, "state"))).collect() }
