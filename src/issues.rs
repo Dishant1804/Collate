@@ -8,7 +8,7 @@ use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use crate::Hand;
 use crate::github_issues::{self, Issue};
-use crate::github::Gh;
+use crate::github::{self, Gh};
 use crate::{COLUMN_TOP, Collate, EDGE, HANDLE, ISSUES_ICON, REFRESH_ICON, current_repo, message};
 
 pub struct IssuesState {
@@ -69,6 +69,7 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         .child(refresh.build(k).hand(!s.issues.loading).key("issues-reload"));
     let body = match &s.issues.list {
         None => message(k, "Reading issues…", ""),
+        Some(Err(e)) if github::needs_connect(e) => crate::pulls::connect_view(s, k, "See this repository's issues, comment on them, and open new ones without leaving Collate."),
         Some(Err(e)) => message(k, "Can't read issues", e),
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
         Some(Ok((me, issues))) => {

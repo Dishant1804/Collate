@@ -292,6 +292,8 @@ impl Collate {
                             s.say(format!("Connected to GitHub as {me}"), false);
                             s.pulls.list = None;
                             s.load_pulls();
+                            s.issues.list = None;
+                            s.load_issues();
                         }
                     });
                     return;
@@ -854,9 +856,9 @@ fn decision(k: &Kit, p: &Pull) -> (&'static str, rune::Color) {
     }
 }
 
-/// In place of the list until GitHub is connected: what connecting gives, and the button.
-fn connect_view(s: &Collate, k: &Kit) -> El {
-    let detail = s.pulls.connecting.unwrap_or("See this repository's pull requests, review them, and get a notification when someone asks for your review.");
+/// In place of a list until GitHub is connected: what connecting gives (`gives`), and the button.
+pub fn connect_view(s: &Collate, k: &Kit, gives: &'static str) -> El {
+    let detail = s.pulls.connecting.unwrap_or(gives);
     let button = Button::new("Connect to GitHub").icon(&GITHUB_ICON).variant(ButtonVariant::Contrast)
         .help("Sign in with the GitHub CLI, installing it first if it's missing").on_press(|s: &mut Collate| s.connect_github()).build(k).hand(true).key("connect-github");
     col().key("connect").grow(1.0).w_full().center().gap(6.0).fill(k.c.bg_base)
@@ -889,7 +891,7 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
     let head = head.child(refresh.build(k).hand(!s.pulls.loading).key("pulls-reload"));
     let body = match &s.pulls.list {
         None => message(k, "Reading pull requests…", ""),
-        Some(Err(e)) if github::needs_connect(e) => connect_view(s, k),
+        Some(Err(e)) if github::needs_connect(e) => connect_view(s, k, "See this repository's pull requests, review them, and get a notification when someone asks for your review."),
         Some(Err(e)) => message(k, "Can't read pull requests", e),
         Some(Ok((_, pulls))) if pulls.is_empty() => message(k, "No pull requests", "Open one from this branch with New Pull Request."),
         Some(Ok((me, pulls))) => {

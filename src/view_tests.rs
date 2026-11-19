@@ -2894,3 +2894,19 @@ fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
     click(&mut rt, "view-all");
     assert!(!rt.state.issues.open && rt.find("issues").is_none(), "a view of the changes leaves it");
 }
+
+#[test]
+fn issues_ask_to_connect_github_instead_of_an_error() {
+    let mut rt = loaded();
+    for e in [github::NO_CLI, github::SIGNED_OUT] {
+        rt.update(move |s, _| {
+            s.issues.list = Some(Err(e.into()));
+            s.issues.open = true;
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("connect-github").is_some(), "{e}: a Connect button");
+    }
+    rt.update(|s, _| s.issues.list = Some(Err("HTTP 502".into())));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("connect-github").is_none(), "other failures still say what went wrong");
+}
