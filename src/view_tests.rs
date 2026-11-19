@@ -3025,7 +3025,8 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-assign-me").is_some(), "one that can be changed offers to assign you");
     rt.update(|s, _| {
-        s.issues.options = Some(Ok(crate::github_issues::Options { people: vec!["bo".into(), "me".into()], labels: vec![("bug".into(), "d73a4a".into())], milestones: vec!["v1".into()] }));
+        s.issues.options = Some(Ok(crate::github_issues::Options { people: vec!["bo".into(), "me".into()], labels: vec![("bug".into(), "d73a4a".into())], milestones: vec!["v1".into()],
+            templates: vec![crate::github_issues::Template { name: "Bug report".into(), title: "[Bug] ".into(), body: "What happened?".into(), labels: vec!["bug".into()], ..Default::default() }] }));
         if let Some(Ok(d)) = &mut s.issues.detail { d.issue.assignees = vec!["me".into()] }
     });
     rt.frame(1.0 / 60.0);
@@ -3065,6 +3066,14 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
         rt.frame(1.0 / 60.0);
     }
     assert!(rt.state.issues.title.focused && rt.state.issues.title.text.is_empty(), "New Issue opens empty, at its title");
+    click(&mut rt, "issue-new-template");
+    rt.resolve_popup(Some("Bug report")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.issues.title.text == "[Bug] " && rt.state.issues.text.text == "What happened?" && rt.state.issues.new_labels == ["bug"], "a template fills it in");
+    click(&mut rt, "issue-new-template");
+    rt.resolve_popup(Some("")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.issues.title.text.is_empty() && rt.state.issues.new_labels.is_empty(), "Blank clears it");
     click(&mut rt, "issue-write-ok");
     assert!(rt.state.issues.write == Some(crate::issues::Write::New), "and waits for one");
     click(&mut rt, "issue-new-labels");

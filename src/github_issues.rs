@@ -113,9 +113,22 @@ pub struct Options {
     pub labels: Vec<(String, String)>,
     /// The open milestones, by title.
     pub milestones: Vec<String>,
+    /// The repository's issue templates, as a new issue starts from them.
+    pub templates: Vec<Template>,
 }
 
-const OPTIONS: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){assignableUsers(first:100){nodes{login}} labels(first:100,orderBy:{field:NAME,direction:ASC}){nodes{name color}} milestones(states:OPEN,first:50,orderBy:{field:DUE_DATE,direction:ASC}){nodes{title}}}}";
+/// An issue template: what a new issue opens with.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Template {
+    pub name: String,
+    pub title: String,
+    pub body: String,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+}
+
+const OPTIONS: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){assignableUsers(first:100){nodes{login}} labels(first:100,orderBy:{field:NAME,direction:ASC}){nodes{name color}} milestones(states:OPEN,first:50,orderBy:{field:DUE_DATE,direction:ASC}){nodes{title}} \
+issueTemplates{name title body labels(first:10){nodes{name}} assignees(first:10){nodes{login}}}}}";
 
 impl Gh {
     pub fn issue_options(&self) -> Result<Options, String> {
@@ -125,6 +138,13 @@ impl Gh {
             people: r["assignableUsers"]["nodes"].as_array().into_iter().flatten().map(login).collect(),
             labels: r["labels"]["nodes"].as_array().into_iter().flatten().map(|l| (s(l, "name"), s(l, "color"))).collect(),
             milestones: r["milestones"]["nodes"].as_array().into_iter().flatten().map(|m| s(m, "title")).collect(),
+            templates: r["issueTemplates"].as_array().into_iter().flatten().map(|t| Template {
+                name: s(t, "name"),
+                title: s(t, "title"),
+                body: s(t, "body"),
+                labels: t["labels"]["nodes"].as_array().into_iter().flatten().map(|l| s(l, "name")).collect(),
+                assignees: t["assignees"]["nodes"].as_array().into_iter().flatten().map(login).collect(),
+            }).collect(),
         })
     }
 

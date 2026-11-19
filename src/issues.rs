@@ -43,6 +43,8 @@ pub struct IssuesState {
     pub text: TextEdit,
     /// The title, while the issue is edited.
     pub title: TextEdit,
+    /// The template the new issue started from, by name.
+    pub template: Option<String>,
     /// The labels and assignees a new issue opens with.
     pub new_labels: Vec<String>,
     pub new_assignees: Vec<String>,
@@ -120,7 +122,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new(""), new_labels: Vec::new(), new_assignees: Vec::new(), options: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new(""), template: None, new_labels: Vec::new(), new_assignees: Vec::new(), options: None }
     }
 }
 
@@ -311,6 +313,7 @@ impl Collate {
         });
         self.issues.title = TextEdit::new(d.filter(|_| w == Write::Edit).map_or("", |d| d.issue.title.as_str()));
         if w == Write::New {
+            self.issues.template = None;
             self.issues.new_labels.clear();
             self.issues.new_assignees.clear();
             if self.issues.options.is_none() {
@@ -486,6 +489,24 @@ impl Collate {
                 Some(at) => _ = list.remove(at),
                 None => list.push(x),
             }
+        });
+    }
+
+    /// The templates a new issue can start from; one fills in what it says, a blank one clears it.
+    fn pick_issue_template(&mut self, tx: &mut Tx) {
+        let Some(Ok(o)) = &self.issues.options else { return };
+        let templates = o.templates.clone();
+        let menu = PopupMenu::picker(std::iter::once(("".to_owned(), "Blank".to_owned())).chain(templates.iter().map(|t| (t.name.clone(), t.name.clone()))),
+            self.issues.template.as_deref().unwrap_or(""));
+        tx.popup_menu(menu, "issue-new-template", move |s: &mut Collate, picked: Option<&str>, _| {
+            let Some(name) = picked else { return };
+            let t = templates.iter().find(|t| t.name == name).cloned().unwrap_or_default();
+            s.issues.template = (!name.is_empty()).then(|| name.to_owned());
+            s.issues.title = TextEdit::new(&t.title);
+            s.issues.title.focused = true;
+            s.issues.text = TextEdit::new(&t.body);
+            s.issues.new_labels = t.labels;
+            s.issues.new_assignees = t.assignees;
         });
     }
 
@@ -888,6 +909,13 @@ pub fn write_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         };
     let mut body = col().key("issue-write-body").w_full().gap(12.0);
     let titled = matches!(w, Write::Edit | Write::New);
+    let templates = s.issues.options.as_ref().and_then(|o| o.as_ref().ok()).is_some_and(|o| !o.templates.is_empty());
+    if w == Write::New && templates {
+        // First, since it fills in the rest.
+        let name = s.issues.template.clone().unwrap_or_else(|| "Blank".to_owned());
+        body = body.child(row().w_full().ml(-crate::pulls::REGULAR_PAD).child(menu_button(k, "issue-new-template", format!("Template: {name}"), s.issues.template.is_some(),
+            "Start from one of the repository's templates; it replaces what's written", Collate::pick_issue_template)));
+    }
     if titled {
         body = body.child(TextInput::new(&s.issues.title).placeholder("Title").on_edit(|s: &mut Collate| &mut s.issues.title).width(None).build(k).key("issue-write-title").w_full());
     }
