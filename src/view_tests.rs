@@ -3108,3 +3108,21 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     click(&mut rt, "issue-pull-7");
     assert!(rt.state.pulls.open && !rt.state.issues.open, "a pull request that closes it opens in Pull Requests");
 }
+
+#[test]
+fn the_issues_menu_acts_on_the_issue_open() {
+    let mut rt = loaded();
+    let enabled = |rt: &Runtime<Collate>, id: &str| (crate::commands::find(id).unwrap().enabled)(&rt.state);
+    assert!(!enabled(&rt, "new-issue") && !enabled(&rt, "issue-close"), "nothing to act on before the issues are read");
+    rt.update(|s, _| {
+        s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &[])])));
+        s.open_issues();
+        s.open_issue(3);
+        s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), can_edit: true, ..Default::default() }));
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(enabled(&rt, "issue-close") && enabled(&rt, "issue-close-not-planned") && !enabled(&rt, "issue-reopen"), "an open issue closes");
+    rt.update(|s, tx| crate::commands::run(s, "new-issue", tx));
+    assert_eq!(rt.state.issues.write, Some(crate::issues::Write::New), "New Issue opens its dialog");
+    assert!(rt.state.issues.number.is_none(), "over the list");
+}

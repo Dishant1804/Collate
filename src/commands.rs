@@ -61,6 +61,15 @@ fn shows(s: &Collate, scope: Scope) -> bool {
     s.scope == scope && !s.map.open && !s.pulls.open && !s.issues.open && s.pulls.pr.is_none()
 }
 
+/// An issue is open and read, and nothing else is running.
+fn issue_shown(s: &Collate) -> Option<&crate::github_issues::Detail> {
+    (ready(s) && s.issues.open && s.issues.number.is_some()).then_some(())?;
+    s.issues.detail.as_ref()?.as_ref().ok()
+}
+fn issue_can(s: &Collate, open: bool) -> bool {
+    s.busy.is_none() && issue_shown(s).is_some_and(|d| d.can_edit && d.issue.open == open)
+}
+
 fn letter(s: &mut Collate, key: &str, tx: &mut Tx) {
     keys::letter(s, key, tx);
 }
@@ -155,6 +164,35 @@ pub const COMMANDS: &[Command] = &[
     cmd("tags", "Tags…", "Branch", "", idle, |s, tx| s.tags_menu(tx)),
     sep("Branch"),
     cmd("compare", "Compare Branches or Tags…", "Branch", "", idle, |s, _| s.branch_do("compare")),
+    cmd("new-issue", "New Issue…", "Issues", "", |s| ready(s) && matches!(s.issues.list, Some(Ok(_))), |s, _| {
+        s.open_issues();
+        s.start_issue_write(crate::issues::Write::New);
+    }),
+    cmd("reload-issues", "Reload Issues", "Issues", "", |s| ready(s) && !s.issues.loading, |s, _| {
+        s.issues.list = None;
+        s.load_issues();
+    }),
+    sep("Issues"),
+    cmd("issue-comment", "Comment on Issue", "Issues", "", |s| issue_shown(s).is_some(), |s, tx| {
+        s.issues.reply.focused = true;
+        tx.scroll_into_view("issue-composer");
+    }),
+    cmd("issue-edit", "Edit Issue…", "Issues", "", |s| issue_shown(s).is_some_and(|d| d.can_edit), |s, _| s.start_issue_write(crate::issues::Write::Edit)),
+    cmd("issue-close", "Close Issue", "Issues", "", |s| issue_can(s, true), |s, _| s.set_issue_open(Some("completed"))),
+    cmd("issue-close-not-planned", "Close as Not Planned", "Issues", "", |s| issue_can(s, true), |s, _| s.set_issue_open(Some("not planned"))),
+    cmd("issue-reopen", "Reopen Issue", "Issues", "", |s| issue_can(s, false), |s, _| s.set_issue_open(None)),
+    sep("Issues"),
+    cmd("issue-copy-link", "Copy Issue Link", "Issues", "", |s| issue_shown(s).is_some(), |s, tx| {
+        if let Some(url) = issue_shown(s).map(|d| d.issue.url.clone()) {
+            tx.copy(url);
+            s.say("Copied the issue's link", false);
+        }
+    }),
+    cmd("issue-on-github", "Open Issue on GitHub", "Issues", "", |s| issue_shown(s).is_some(), |s, _| {
+        if let Some(d) = issue_shown(s) {
+            crate::open_url(&d.issue.url);
+        }
+    }),
     cmd("add-to-chat", "Add Lines to Chat", "Agent", "i", |s| diffing(s) && s.loose.is_none(), |s, tx| letter(s, "i", tx)),
     cmd("review", "Review the Change", "Agent", "", |s| diffing(s) && s.loose.is_none(), |s, _| s.ask_checklist(None)),
     cmd("send-comments", "Send Comments", "Agent", "", |s| ready(s) && !s.comments.is_empty(), |s, _| s.send_comments()),
