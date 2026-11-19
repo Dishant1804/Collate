@@ -2915,6 +2915,18 @@ fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
     assert_eq!(rt.state.issues.sort, crate::issues::Sort::Commented, "Sort orders the groups");
     click(&mut rt, "issue-group-Created by You");
     assert!(rt.find("issue-6").is_some() && rt.find("issue-4").is_none(), "a group's title folds and opens it");
+    rt.on_key = Some(on_key);
+    let press = |rt: &mut Runtime<Collate>, key: Key| {
+        rt.key(KeyEvent { key, mods: Default::default() });
+        rt.frame(1.0 / 60.0);
+    };
+    press(&mut rt, Key::Text("j".into()));
+    press(&mut rt, Key::Text("j".into()));
+    assert_eq!(rt.state.issues.pick, Some(5), "j steps down the rows shown, past a folded group");
+    press(&mut rt, Key::Up);
+    assert_eq!(rt.state.issues.pick, Some(3), "and ↑ back up");
+    press(&mut rt, Key::Text("/".into()));
+    assert!(rt.state.issues.filter.focused, "/ goes to the filter");
     click(&mut rt, "view-all");
     assert!(!rt.state.issues.open && rt.find("issues").is_none(), "a view of the changes leaves it");
 }

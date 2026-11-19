@@ -31,6 +31,8 @@ pub struct IssuesState {
     pub assignee: Option<String>,
     /// How each group is ordered.
     pub sort: Sort,
+    /// The issue picked with the keys, by number.
+    pub pick: Option<u32>,
 }
 
 impl IssuesState {
@@ -91,7 +93,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None }
     }
 }
 
@@ -186,28 +188,24 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         Some(Err(e)) if github::needs_connect(e) => crate::pulls::connect_view(s, k, "See this repository's issues, comment on them, and open new ones without leaving Collate."),
         Some(Err(e)) => message(k, "Can't read issues", e),
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
-        Some(Ok((me, issues))) => {
-            let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
-            let mut shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && has_assignee(i, s.issues.assignee.as_deref()) && matches(i, &words)).cloned().collect();
-            if shown.is_empty() {
-                let (title, hint) = match (s.issues.shown, words.is_empty() && s.issues.label.is_none() && s.issues.assignee.is_none()) {
-                    (Shown::Open, true) => ("No open issues", "Closed shows the ones done with."),
-                    (Shown::Closed, true) => ("No closed issues", "None were closed lately."),
+        Some(Ok(_)) => {
+            let sections = sections(s);
+            if sections.is_empty() {
+                let narrowed = !s.issues.filter.text.trim().is_empty() || s.issues.label.is_some() || s.issues.assignee.is_some();
+                let (title, hint) = match (s.issues.shown, narrowed) {
+                    (Shown::Open, false) => ("No open issues", "Closed shows the ones done with."),
+                    (Shown::Closed, false) => ("No closed issues", "None were closed lately."),
                     _ => ("No issues match", "Try fewer words, or another label or assignee."),
                 };
                 return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(filters(s, k)).child(message(k, title, hint));
             }
-            s.issues.sort.apply(&mut shown);
             let mut list = col().key("issues-list").w_full().pb(16.0);
-            for (title, group) in github_issues::group(&shown, me) {
-                if group.is_empty() {
-                    continue;
-                }
+            for (title, group) in sections {
                 let folded = s.issues.folded.contains(title);
                 list = list.child(group_head(k, title, group.len(), folded));
                 if !folded {
                     for i in group {
-                        list = list.child(issue_row(s, k, i));
+                        list = list.child(issue_row(s, k, &i));
                     }
                 }
             }
@@ -218,7 +216,35 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
     col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(body)
 }
 
+/// The groups the list shows, as filtered and sorted, leaving out the empty ones.
+fn sections(s: &Collate) -> Vec<(&'static str, Vec<Issue>)> {
+    let Some(Ok((me, issues))) = &s.issues.list else { return Vec::new() };
+    let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
+    let mut shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && has_assignee(i, s.issues.assignee.as_deref()) && matches(i, &words)).cloned().collect();
+    s.issues.sort.apply(&mut shown);
+    github_issues::group(&shown, me).into_iter().filter(|(_, g)| !g.is_empty()).map(|(t, g)| (t, g.into_iter().cloned().collect())).collect()
+}
+
+impl Collate {
+    /// Move the list's pick to the next issue shown, or the one before, and bring it into view.
+    pub fn step_issue(&mut self, down: bool, tx: &mut Tx) {
+        let shown: Vec<u32> = sections(self).into_iter().filter(|(t, _)| !self.issues.folded.contains(t)).flat_map(|(_, g)| g.into_iter().map(|i| i.number)).collect();
+        let at = self.issues.pick.and_then(|n| shown.iter().position(|m| *m == n));
+        let next = match (at, down) {
+            (None, true) => shown.first(),
+            (None, false) => shown.last(),
+            (Some(a), true) => shown.get(a + 1).or(shown.get(a)),
+            (Some(a), false) => shown.get(a.saturating_sub(1)),
+        };
+        if let Some(&n) = next {
+            self.issues.pick = Some(n);
+            tx.scroll_into_view(format!("issue-{n}"));
+        }
+    }
+}
+
 /// The row under the head that narrows the list: by state, then the menus.
+/// Not keyed as a filter: a focused control under a key with "filter" in it keeps the letters.
 fn filters(s: &Collate, k: &Kit) -> El {
     let at = [Shown::Open, Shown::Closed, Shown::All];
     let state = SegmentedControl::new(&["Open", "Closed", "All"], at.iter().position(|w| *w == s.issues.shown))
@@ -247,7 +273,7 @@ fn filters(s: &Collate, k: &Kit) -> El {
             }
         });
     });
-    row().key("issues-filters").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state).child(label).child(assignee)
+    row().key("issues-bar").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state).child(label).child(assignee)
         .child(row().grow(1.0)).child(sort)
 }
 
@@ -371,6 +397,7 @@ fn issue_row(s: &Collate, k: &Kit, i: &Issue) -> El {
         .child(title)
         .child(text(format!("#{n} - opened by {} - {}", i.author, i.created.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).truncate());
     let mut line = row().key(format!("issue-{n}")).w_full().px(EDGE).py(8.0).gap(12.0).items_center()
+        .fill(if s.issues.pick == Some(n) { k.c.hover } else { rune::Color::TRANSPARENT })
         .label(format!("#{n} {}", i.title)).description(state)
         .child(icon(mark, 16.0).color(hue).a11y_hidden())
         .child(words);
