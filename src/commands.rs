@@ -47,7 +47,7 @@ fn ready(s: &Collate) -> bool {
 }
 /// The diff is shown, not the Map or the pull request list.
 fn diffing(s: &Collate) -> bool {
-    (ready(s) || (s.loose.is_some() && !s.modal_open())) && !s.map.open && !s.pulls.open
+    (ready(s) || (s.loose.is_some() && !s.modal_open())) && !s.map.open && !s.pulls.open && !s.issues.open
 }
 /// The diff shown can be staged and discarded.
 fn editable(s: &Collate) -> bool {
@@ -58,7 +58,7 @@ fn idle(s: &Collate) -> bool {
     ready(s) && s.loose.is_none() && s.busy.is_none()
 }
 fn shows(s: &Collate, scope: Scope) -> bool {
-    s.scope == scope && !s.map.open && !s.pulls.open && s.pulls.pr.is_none()
+    s.scope == scope && !s.map.open && !s.pulls.open && !s.issues.open && s.pulls.pr.is_none()
 }
 
 fn letter(s: &mut Collate, key: &str, tx: &mut Tx) {

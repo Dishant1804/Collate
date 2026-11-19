@@ -39,6 +39,7 @@ const MAX_LABELS: usize = 500;
 
 impl Collate {
     pub fn open_map(&mut self) {
+        self.issues.open = false;
         self.map.open = true;
         self.map.hover = None;
         self.build_map();

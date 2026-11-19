@@ -314,6 +314,7 @@ impl Collate {
     /// Show the list as last read, and read it again.
     pub fn open_pulls(&mut self) {
         self.map.open = false;
+        self.issues.open = false;
         self.pulls.open = true;
         self.load_pulls();
     }

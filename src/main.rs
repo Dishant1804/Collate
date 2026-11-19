@@ -18,9 +18,11 @@ mod control;
 mod diff;
 mod git;
 mod github;
+mod github_issues;
 mod grammars;
 mod graph;
 mod history_view;
+mod issues;
 mod keys;
 mod map;
 mod map_view;
@@ -158,6 +160,7 @@ lucide!(AGENT_ICON, "collate-bot", r#"<path d="M12 8V4H8"/><rect width="16" heig
 lucide!(STAGED_ICON, "collate-circle-check", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
 lucide!(GRAPH_ICON, "collate-git-graph", r#"<circle cx="5" cy="6" r="3"/><path d="M5 9v6"/><circle cx="5" cy="18" r="3"/><path d="M12 3v18"/><circle cx="19" cy="6" r="3"/><path d="M16 15.7A9 9 0 0 0 19 9"/>"#);
 lucide!(PULLS_ICON, "collate-git-pull-request", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M6 9v12"/>"#);
+lucide!(ISSUES_ICON, "collate-circle-dot", r#"<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>"#);
 // A pull request's state in the list, as GitHub marks it (open is PULLS_ICON, merged MERGE_ICON).
 lucide!(PULL_DRAFT_ICON, "collate-git-pull-request-draft", r#"<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M18 6V5"/><path d="M18 11v-1"/><path d="M6 9v12"/>"#);
 lucide!(PULL_CLOSED_ICON, "collate-git-pull-request-closed", r#"<circle cx="6" cy="6" r="3"/><path d="M6 9v12"/><path d="m21 3-6 6"/><path d="m21 9-6-6"/><path d="M18 11.5V15"/><circle cx="18" cy="18" r="3"/>"#);
@@ -419,6 +422,7 @@ struct Collate {
     languages: grammars::Languages,
     /// The Pull Requests place and the pull request under review.
     pulls: pulls::PullsState,
+    issues: issues::IssuesState,
     /// Whether a newer Collate was looked for, found or installed.
     update: update::Status,
     /// The next commit rewrites the last one.
@@ -573,6 +577,7 @@ fn init() -> Collate {
         settings_tab: 0,
         languages: grammars::Languages::new(grammars::root().as_deref()),
         pulls: pulls::PullsState::default(),
+        issues: issues::IssuesState::default(),
         update: update::Status::default(),
         commit_ids: Vec::new(),
         graph_commits: Vec::new(),
@@ -641,8 +646,9 @@ fn init() -> Collate {
 
 impl Collate {
     fn set_scope(&mut self, scope: Scope) {
-        // Any view of the changes leaves the pull request list, and any but History its pull request.
+        // Any view of the changes leaves the pull request and issue lists, and any but History its pull request.
         self.pulls.open = false;
+        self.issues.open = false;
         if scope != Scope::History {
             self.close_pull();
         }
@@ -724,6 +730,10 @@ impl Collate {
         self.pulls = pulls::PullsState { open: on_pulls, folded, ..Default::default() };
         self.pulls.list = current_repo().and_then(|r| pulls::cached(&r.root)).map(Ok);
         self.load_pulls();
+        self.issues = issues::IssuesState { open: self.issues.open, ..Default::default() };
+        if self.issues.open {
+            self.load_issues();
+        }
         self.place_comments();
         self.stale.clear();
         self.seen.clear();
@@ -1098,6 +1108,7 @@ impl Collate {
         self.compared = None;
         self.pulls.pr = None;
         self.pulls.open = false;
+        self.issues.open = false;
         self.map.open = false;
         self.set_scope(Scope::History);
         self.set_commit(id);
@@ -3515,6 +3526,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     } else { body };
     let body = if s.has_project && s.map.open { map_view::map_view(s, k) } else { body };
     let body = if s.has_project && s.pulls.open { pulls::pulls_view(s, k) } else { body };
+    let body = if s.has_project && s.issues.open { issues::issues_view(s, k) } else { body };
     let body = match &s.loose {
         Some(name) => loose_view(s, k, name),
         None => body,
@@ -4094,7 +4106,7 @@ const NAV_W: f32 = 24.0 * 2.0 + 2.0;
 fn views_sidebar(s: &Collate, k: &Kit) -> El {
     let place = |key: &str, label: &str, glyph: &'static Icon, scope: Scope, badge: Option<usize>, detail: Option<String>| {
         let number = Scope::ALL.iter().position(|&a| a == scope).map_or(0, |i| i + 1);
-        let elsewhere = s.map.open || s.pulls.open || s.pulls.pr.is_some();
+        let elsewhere = s.map.open || s.pulls.open || s.pulls.pr.is_some() || s.issues.open;
         let mut r = SidebarRow::new(label.to_owned()).icon(glyph).selected(s.scope == scope && !elsewhere).on_select(move |s: &mut Collate, _: &mut Tx| s.show_scope(scope));
         if let Some(n) = badge.filter(|&n| n > 0) {
             r = r.badge(n.to_string());
@@ -4119,6 +4131,8 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
             }
             r.build(k).hand(true).key("view-pulls").help("The repository's open pull requests")
         },
+        SidebarRow::new("Issues").icon(&ISSUES_ICON).selected(s.issues.open).on_select(|s: &mut Collate, _: &mut Tx| s.open_issues())
+            .build(k).hand(true).key("view-issues").help("The repository's issues"),
         // The whole repository, with this view's changes on it.
         SidebarRow::new("Map").icon(&MAP_ICON).selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
             s.pulls.open = false;

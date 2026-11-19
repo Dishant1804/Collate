@@ -325,7 +325,7 @@ impl Gh {
         Gh { root: root.to_owned() }
     }
 
-    fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
+    pub(crate) fn run(&self, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
         let mut c = Command::new(find("gh").ok_or(NO_CLI)?);
         c.args(args).current_dir(&self.root).env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1").env("GH_NO_UPDATE_NOTIFIER", "1");
         c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -345,7 +345,7 @@ impl Gh {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    fn json(&self, args: &[&str], stdin: Option<&str>) -> Result<Value, String> {
+    pub(crate) fn json(&self, args: &[&str], stdin: Option<&str>) -> Result<Value, String> {
         let out = self.run(args, stdin)?;
         serde_json::from_str(&out).map_err(|e| format!("Unexpected reply from gh: {e}"))
     }
@@ -689,11 +689,11 @@ fn annotations_of(v: &Value, head: &str) -> Vec<Annotation> {
     out
 }
 
-fn s(v: &Value, k: &str) -> String {
+pub(crate) fn s(v: &Value, k: &str) -> String {
     v[k].as_str().unwrap_or("").to_owned()
 }
 
-fn login(v: &Value) -> String {
+pub(crate) fn login(v: &Value) -> String {
     v["login"].as_str().unwrap_or("ghost").to_owned()
 }
 

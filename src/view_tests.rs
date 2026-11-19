@@ -2863,3 +2863,23 @@ fn scroll_zoom_steps_the_code_size_and_can_be_turned_off() {
     assert!(!s.zoom(5.0), "off, the scroll goes on as usual");
     assert_eq!(s.settings.font_size, crate::settings::FONT_SIZES[0]);
 }
+
+fn issue(number: u32, author: &str, assignees: &[&str]) -> crate::github_issues::Issue {
+    crate::github_issues::Issue {
+        number, title: format!("Problem {number}"), author: author.into(), open: true, assignees: assignees.iter().map(|a| (*a).to_owned()).collect(),
+        updated: "2026-11-10T09:00:00Z".into(), ..Default::default()
+    }
+}
+
+#[test]
+fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
+    let mut rt = loaded();
+    assert!(rt.find("view-issues").is_some(), "Issues is in the sidebar");
+    click(&mut rt, "view-issues");
+    assert!(rt.state.issues.open && rt.find("issues").is_some(), "it shows in place of the diff");
+    rt.update(|s, _| s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &[]), issue(4, "me", &[])]))));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-3").is_some() && rt.find("issue-4").is_some());
+    click(&mut rt, "view-all");
+    assert!(!rt.state.issues.open && rt.find("issues").is_none(), "a view of the changes leaves it");
+}
