@@ -4,9 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rune::{Cursor, El, Icon, TextEdit, Tx, col, icon, row, text};
+use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::syntax::{Syntax, SyntaxTheme};
-use rune_kit::{IconButton, IconButtonVariant, Kit, SegmentedControl, TextInput};
+use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, TextInput};
 
 use crate::Hand;
 use crate::github_issues::{self, Issue};
@@ -25,6 +25,8 @@ pub struct IssuesState {
     pub filter: TextEdit,
     /// Which issues the list shows by state.
     pub shown: Shown,
+    /// The label the list is narrowed to; empty for issues with none.
+    pub label: Option<String>,
 }
 
 /// The issues the list shows: open ones to act on, closed ones to look back on, or both.
@@ -48,7 +50,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None }
     }
 }
 
@@ -145,12 +147,12 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
         Some(Ok((me, issues))) => {
             let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
-            let shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && matches(i, &words)).cloned().collect();
+            let shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && matches(i, &words)).cloned().collect();
             if shown.is_empty() {
-                let (title, hint) = match (s.issues.shown, words.is_empty()) {
+                let (title, hint) = match (s.issues.shown, words.is_empty() && s.issues.label.is_none()) {
                     (Shown::Open, true) => ("No open issues", "Closed shows the ones done with."),
                     (Shown::Closed, true) => ("No closed issues", "None were closed lately."),
-                    _ => ("No issues match", "Try fewer or other words."),
+                    _ => ("No issues match", "Try fewer words or another label."),
                 };
                 return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(filters(s, k)).child(message(k, title, hint));
             }
@@ -183,7 +185,58 @@ fn filters(s: &Collate, k: &Kit) -> El {
         .on_pick(move |s: &mut Collate, i, _: &mut Tx| s.issues.shown = at[i])
         .build(k).hand(true)
         .key("issues-state");
-    row().key("issues-filters").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state)
+    let label = match s.issues.label.as_deref() {
+        None => "Label".to_owned(),
+        Some("") => "No label".to_owned(),
+        Some(l) => format!("Label: {l}"),
+    };
+    let label = menu_button(k, "issues-label", label, s.issues.label.is_some(), "Show only issues with a label", |s, tx| s.pick_issue_label(tx));
+    row().key("issues-filters").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state).child(label)
+}
+
+/// A button that opens a menu, with the chevron that says so; it stands out while it narrows.
+fn menu_button(k: &Kit, key: &'static str, title: String, set: bool, help: &'static str, open: fn(&mut Collate, &mut Tx)) -> El {
+    let chevron = k.glyph.chevron_down;
+    Button::new(title.clone())
+        .variant(if set { ButtonVariant::Outline } else { ButtonVariant::GhostMuted })
+        .label_with(move |font, ink| row().gap(4.0).items_center().child(text(title).font(font).color(ink)).child(icon(chevron, 14.0).color(ink).a11y_hidden()))
+        .help(help)
+        .on_press_tx(open)
+        .build(k).hand(true)
+        .key(key)
+}
+
+impl Collate {
+    /// Narrow the list to a label the issues have, or to those with none.
+    fn pick_issue_label(&mut self, tx: &mut Tx) {
+        let Some(Ok((_, issues))) = &self.issues.list else { return };
+        let mut names: Vec<&str> = issues.iter().flat_map(|i| i.labels.iter().map(|(l, _)| l.as_str())).collect();
+        names.sort_by_key(|l| l.to_lowercase());
+        names.dedup();
+        let now = match self.issues.label.as_deref() {
+            None => "any".to_owned(),
+            Some("") => "none".to_owned(),
+            Some(l) => format!("label:{l}"),
+        };
+        let menu = PopupMenu::new().item(PopupItem::new("any", "Any Label")).item(PopupItem::new("none", "No Label")).separator()
+            .items(names.iter().map(|l| PopupItem::new(format!("label:{l}"), *l)))
+            .selected(now);
+        tx.popup_menu(menu, "issues-label", |s: &mut Collate, picked, _| match picked {
+            Some("any") => s.issues.label = None,
+            Some("none") => s.issues.label = Some(String::new()),
+            Some(p) => s.issues.label = p.strip_prefix("label:").map(str::to_owned),
+            None => {}
+        });
+    }
+}
+
+/// Whether the issue has the label, or none when it's empty; any issue when there's no label.
+fn has_label(i: &Issue, label: Option<&str>) -> bool {
+    match label {
+        None => true,
+        Some("") => i.labels.is_empty(),
+        Some(l) => i.labels.iter().any(|(n, _)| n == l),
+    }
 }
 
 /// Whether every word is in the issue's title, number, author, assignees or labels.

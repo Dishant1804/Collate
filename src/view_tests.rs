@@ -2892,6 +2892,15 @@ fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
     click(&mut rt, "issues-state/segment1");
     assert!(rt.find("issue-6").is_some() && rt.find("issue-3").is_none(), "Closed shows only the closed");
     click(&mut rt, "issues-state/segment2");
+    click(&mut rt, "issues-label");
+    let menu = rt.popup_menu().expect("the label menu");
+    assert!(menu.find("label:bug").is_some() && menu.find("none").is_some(), "it offers the labels the issues have, and none");
+    rt.resolve_popup(Some("label:bug")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-3").is_some() && rt.find("issue-4").is_none(), "a label narrows the list to its issues");
+    click(&mut rt, "issues-label");
+    rt.resolve_popup(Some("any")).unwrap();
+    rt.frame(1.0 / 60.0);
     click(&mut rt, "issue-group-Created by You");
     assert!(rt.find("issue-6").is_some() && rt.find("issue-4").is_none(), "a group's title folds and opens it");
     click(&mut rt, "view-all");
