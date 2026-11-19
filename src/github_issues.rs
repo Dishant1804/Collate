@@ -106,6 +106,15 @@ impl Gh {
         self.run(&["issue", "edit", &n.to_string(), &format!("--title={title}"), "--body-file", "-"], Some(body))
     }
 
+    /// Add `add` to issue `n`'s assignees and take `remove` off, by login (`@me` for the reader).
+    pub fn issue_assignees(&self, n: u32, add: &[&str], remove: &[&str]) -> Result<String, String> {
+        let n = n.to_string();
+        let mut args = vec!["issue".to_owned(), "edit".to_owned(), n];
+        args.extend(add.iter().map(|a| format!("--add-assignee={a}")));
+        args.extend(remove.iter().map(|a| format!("--remove-assignee={a}")));
+        self.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), None)
+    }
+
     /// Close issue `n` for `reason` (`completed` or `not planned`), or reopen it with `None`,
     /// saying `comment` as it goes if there's one.
     pub fn set_issue_open(&self, n: u32, reason: Option<&str>, comment: &str) -> Result<String, String> {

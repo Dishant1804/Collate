@@ -305,6 +305,11 @@ impl Collate {
         }
     }
 
+    fn assign_me_to_issue(&mut self) {
+        let Some(n) = self.issues.number else { return };
+        self.issue_act("Assigning…", move |gh| gh.issue_assignees(n, &["@me"], &[]).map(|_| format!("Assigned you to #{n}")), |_| {});
+    }
+
     fn pick_close_reason(&mut self, tx: &mut Tx) {
         let menu = PopupMenu::new().items([PopupItem::new("completed", "Close as Completed"), PopupItem::new("not planned", "Close as Not Planned")]);
         tx.popup_menu(menu, "issue-close-reason", |s: &mut Collate, picked: Option<&str>, _| match picked {
@@ -659,9 +664,13 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
         activity = activity.children(items.into_iter().map(|(_, el)| el));
         main = main.child(activity).child(composer(s, k));
     }
+    let mut page = row().key("issue-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(16.0).pb(48.0).gap(40.0).items_start().child(main);
+    if let Some(d) = detail {
+        // Held at the top while the description and activity scroll past, as on GitHub.
+        page = page.child(side(s, k, d).sticky_top(16.0));
+    }
     col().key("issues").w_full().grow(1.0).min_h(0.0).child(head)
-        .child(col().key("issue-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false })
-            .child(row().key("issue-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(16.0).pb(48.0).gap(40.0).items_start().child(main)))
+        .child(col().key("issue-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false }).child(page))
 }
 
 /// The dialog over the open issue: editing the reader's comment, or asking before deleting it.
@@ -723,6 +732,34 @@ fn composer(s: &Collate, k: &Kit) -> El {
     row().key("issue-composer").w_full().gap(12.0).items_start()
         .child(crate::history_view::face(k, s, me, 32.0).mt(2.0))
         .child(col().grow(1.0).min_w(0.0).gap(8.0).child(area).child(row().w_full().gap(8.0).items_center().child(row().grow(1.0)).child(state).child(send)))
+}
+
+/// Beside the issue: who has it and its labels.
+fn side(s: &Collate, k: &Kit, d: &Detail) -> El {
+    use crate::pulls::{REGULAR_PAD, heading};
+    let i = &d.issue;
+    let busy = s.busy.is_some();
+    let mut assignees = col().key("issue-assignees").w_full().gap(2.0).child(heading(k, "issue-assignees-title", "Assignees", None));
+    if i.assignees.is_empty() {
+        let mut none = row().w_full().h(24.0).gap(4.0).items_center().child(text("No one -".to_owned()).font(k.ty.text_small).color(k.c.text_faint));
+        if d.can_edit {
+            none = none.child(Button::new("Assign yourself").variant(ButtonVariant::GhostMuted).disabled(busy)
+                .on_press(|s: &mut Collate| s.assign_me_to_issue()).build(k).hand(!busy).key("issue-assign-me").ml(-REGULAR_PAD));
+        }
+        assignees = assignees.child(none);
+    }
+    for a in &i.assignees {
+        assignees = assignees.child(row().key(format!("issue-assignee-{a}")).w_full().h(28.0).gap(8.0).items_center()
+            .child(crate::history_view::face(k, s, a, 20.0))
+            .child(text(a.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0)));
+    }
+    let mut labels = col().key("issue-labels").w_full().gap(4.0).child(heading(k, "issue-labels-title", "Labels", None));
+    labels = if i.labels.is_empty() {
+        labels.child(text("None yet".to_owned()).font(k.ty.text_small).color(k.c.text_faint))
+    } else {
+        labels.child(row().w_full().gap(4.0).flex_wrap().children(i.labels.iter().map(|(name, color)| crate::pulls::label_pill(k, name, crate::pulls::label_color(k, color)))))
+    };
+    col().key("issue-side").w(220.0).gap(24.0).child(assignees).child(labels)
 }
 
 /// An event in the activity, set between the comments as GitHub sets it: a mark in the faces'

@@ -1012,9 +1012,9 @@ pub fn pr_tabs(s: &Collate, k: &Kit) -> Option<El> {
 
 /// A section's small title on the overview, with an optional action at its end.
 /// A regular-size button's padding: pulled out by it, its glyph or label sits on the edge.
-const REGULAR_PAD: f32 = 12.0;
+pub(crate) const REGULAR_PAD: f32 = 12.0;
 
-fn heading(k: &Kit, key: &str, title: &str, action: Option<El>) -> El {
+pub(crate) fn heading(k: &Kit, key: &str, title: &str, action: Option<El>) -> El {
     let mut r = row().key(key.to_owned()).w_full().h(24.0).items_center()
         .child(text(title.to_owned()).font(k.ty.text_small_medium).color(k.c.text_muted).grow(1.0));
     if let Some(a) = action {

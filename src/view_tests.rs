@@ -3020,8 +3020,10 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.frame(1.0 / 60.0);
     assert!(rt.state.issues.write.is_none() && rt.state.issues.number == Some(3), "Esc closes the question, not the issue");
     assert!(rt.find("issue-edit").is_none(), "an issue the reader can't change offers no Edit");
+    assert!(rt.find("issue-side").is_some() && rt.find("issue-assign-me").is_none(), "its assignees and labels are beside it");
     rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.can_edit = true });
     rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-assign-me").is_some(), "one that can be changed offers to assign you");
     click(&mut rt, "issue-edit");
     assert!(rt.find("issue-write-title").is_some() && rt.state.issues.text.text == "It **crashes**.", "Edit opens its title and description");
     rt.update(|s, _| s.issues.title = TextEdit::new(""));
