@@ -730,7 +730,8 @@ impl Collate {
         self.pulls = pulls::PullsState { open: on_pulls, folded, ..Default::default() };
         self.pulls.list = current_repo().and_then(|r| pulls::cached(&r.root)).map(Ok);
         self.load_pulls();
-        self.issues = issues::IssuesState { open: self.issues.open, ..Default::default() };
+        let folded = std::mem::take(&mut self.issues.folded);
+        self.issues = issues::IssuesState { open: self.issues.open, folded, ..Default::default() };
         if self.issues.open {
             self.load_issues();
         }

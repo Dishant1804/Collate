@@ -23,6 +23,8 @@ pub struct Issue {
     pub created: String,
     pub updated: String,
     pub url: String,
+    /// It mentions the reader.
+    pub mentions: bool,
 }
 
 const FIELDS: &str = "number title url state stateReason createdAt updatedAt author{login} assignees(first:10){nodes{login}} labels(first:20){nodes{name color}} comments{totalCount}";
@@ -37,21 +39,35 @@ fn closed_query() -> String {
     format!("query($owner:String!,$name:String!){{repository(owner:$owner,name:$name){{issues(states:CLOSED,first:30,orderBy:{{field:UPDATED_AT,direction:DESC}}){{nodes{{{FIELDS}}}}}}}}}")
 }
 
+/// The open issues that mention `$me`, by number.
+const MENTIONS: &str = "query($owner:String!,$name:String!,$me:String!){repository(owner:$owner,name:$name){issues(states:OPEN,first:100,filterBy:{mentioned:$me}){nodes{number}}}}";
+
 impl Gh {
     fn query(&self, q: &str) -> Result<Value, String> {
         self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", &format!("query={q}")], None)
     }
 
-    /// The signed-in login, the repository's open issues and its last closed ones. The two
-    /// queries run at once.
+    /// The signed-in login, the repository's open issues and its last closed ones, with those
+    /// that mention the reader marked. The queries run at once; the mentions need the login
+    /// first, which is a call of its own, so they're read beside the rest rather than after.
     pub fn issues(&self) -> Result<(String, Vec<Issue>), String> {
-        let (open, closed) = std::thread::scope(|t| {
+        let failed = |_| Err("Reading issues failed".to_owned());
+        let (open, closed, mentions) = std::thread::scope(|t| {
             let closed = t.spawn(|| self.query(&closed_query()));
-            (self.query(&open_query()), closed.join().unwrap_or_else(|_| Err("Reading issues failed".into())))
+            let mentions = t.spawn(|| {
+                let me = self.me()?;
+                self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", &format!("me={me}"), "-f", &format!("query={MENTIONS}")], None)
+            });
+            (self.query(&open_query()), closed.join().unwrap_or_else(failed), mentions.join().unwrap_or_else(failed))
         });
-        let (open, closed) = (open?, closed?);
+        let (open, closed, mentions) = (open?, closed?, mentions?);
         let me = open["data"]["viewer"]["login"].as_str().ok_or("Unexpected reply from gh: no login")?.to_owned();
-        Ok((me, [nodes(&open), nodes(&closed)].concat()))
+        let mentioned: Vec<u64> = mentions["data"]["repository"]["issues"]["nodes"].as_array().into_iter().flatten().filter_map(|n| n["number"].as_u64()).collect();
+        let mut all = [nodes(&open), nodes(&closed)].concat();
+        for i in &mut all {
+            i.mentions = mentioned.contains(&(i.number as u64));
+        }
+        Ok((me, all))
     }
 }
 
@@ -73,7 +89,23 @@ fn issue(v: &Value) -> Issue {
         created: s(v, "createdAt"),
         updated: s(v, "updatedAt"),
         url: s(v, "url"),
+        mentions: false,
     }
+}
+
+/// The issues on the reader, assigned to them, then the ones they opened, then those that
+/// mention them, then the rest; then the closed. Each issue is in the first group it fits.
+pub fn group<'a>(issues: &'a [Issue], me: &str) -> [(&'static str, Vec<&'a Issue>); 5] {
+    let assigned = |i: &Issue| i.assignees.iter().any(|a| a == me);
+    let open = issues.iter().filter(|i| i.open);
+    let pick = |f: &dyn Fn(&Issue) -> bool| open.clone().filter(|i| f(i)).collect::<Vec<_>>();
+    [
+        ("Assigned to You", pick(&|i| assigned(i))),
+        ("Created by You", pick(&|i| !assigned(i) && i.author == me)),
+        ("Mentioning You", pick(&|i| !assigned(i) && i.author != me && i.mentions)),
+        ("Everyone Else", pick(&|i| !assigned(i) && i.author != me && !i.mentions)),
+        ("Closed", issues.iter().filter(|i| !i.open).collect()),
+    ]
 }
 
 #[cfg(test)]
@@ -94,5 +126,18 @@ mod tests {
         assert_eq!((a.assignees.as_slice(), a.labels.as_slice(), a.comments), (&["me".to_owned()][..], &[("bug".to_owned(), "d73a4a".to_owned())][..], 3));
         let b = &issues[1];
         assert_eq!((b.open, b.reason.as_str(), b.author.as_str(), b.comments), (false, "NOT_PLANNED", "ghost", 0), "a deleted account reads as GitHub's ghost");
+    }
+
+    #[test]
+    fn issues_group_by_what_they_want_of_the_reader() {
+        let i = |number: u32, author: &str, assignees: &[&str], mentions: bool, open: bool| Issue {
+            number, author: author.into(), assignees: assignees.iter().map(|a| (*a).to_owned()).collect(), mentions, open, ..Issue::default()
+        };
+        let all = [i(1, "ana", &["me"], true, true), i(2, "me", &["me"], false, true), i(3, "me", &[], true, true), i(4, "bo", &[], true, true),
+            i(5, "bo", &["ana"], false, true), i(6, "me", &["me"], false, false)];
+        let g = group(&all, "me");
+        let numbers: Vec<Vec<u32>> = g.iter().map(|(_, is)| is.iter().map(|i| i.number).collect()).collect();
+        assert_eq!(numbers, [vec![1, 2], vec![3], vec![4], vec![5], vec![6]], "each in the first group it fits; a closed one asks nothing");
+        assert_eq!(g.map(|(t, _)| t), ["Assigned to You", "Created by You", "Mentioning You", "Everyone Else", "Closed"]);
     }
 }

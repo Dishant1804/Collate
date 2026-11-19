@@ -2880,6 +2880,17 @@ fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
     rt.update(|s, _| s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &[]), issue(4, "me", &[])]))));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-3").is_some() && rt.find("issue-4").is_some());
+    rt.update(|s, _| s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &["me"]), issue(4, "me", &[]), issue(5, "bo", &[]),
+        crate::github_issues::Issue { open: false, ..issue(6, "bo", &[]) }]))));
+    rt.frame(1.0 / 60.0);
+    for key in ["issue-group-Assigned to You", "issue-group-Created by You", "issue-group-Everyone Else", "issue-group-Closed"] {
+        assert!(rt.find(key).is_some(), "{key}");
+    }
+    assert!(rt.find("issue-group-Mentioning You").is_none(), "an empty group isn't shown");
+    assert!(rt.find("issue-6").is_none(), "the closed start folded");
+    click(&mut rt, "issue-group-Closed");
+    click(&mut rt, "issue-group-Created by You");
+    assert!(rt.find("issue-6").is_some() && rt.find("issue-4").is_none(), "a group's title folds and opens it");
     click(&mut rt, "view-all");
     assert!(!rt.state.issues.open && rt.find("issues").is_none(), "a view of the changes leaves it");
 }

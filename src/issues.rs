@@ -1,21 +1,31 @@
 //! The Issues place: the repository's issues, grouped by what they want of the reader, and one
 //! issue's overview, in place of the diff, as the pull requests are.
 
-use rune::{El, col, icon, row, text};
+use std::collections::HashSet;
+
+use rune::{Cursor, El, col, icon, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
 
 use crate::Hand;
-use crate::github_issues::Issue;
+use crate::github_issues::{self, Issue};
 use crate::github::Gh;
 use crate::{COLUMN_TOP, Collate, EDGE, HANDLE, ISSUES_ICON, REFRESH_ICON, current_repo, message};
 
-#[derive(Default)]
 pub struct IssuesState {
     /// The list shows in place of the diff.
     pub open: bool,
     /// The signed-in login and the issues, once read.
     pub list: Option<Result<(String, Vec<Issue>), String>>,
     pub loading: bool,
+    /// The list's groups folded to their titles, by title.
+    pub folded: HashSet<&'static str>,
+}
+
+impl Default for IssuesState {
+    fn default() -> IssuesState {
+        // Closed issues are there to look back on, not to act on.
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::from(["Closed"]) }
+    }
 }
 
 impl Collate {
@@ -61,15 +71,41 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         None => message(k, "Reading issues…", ""),
         Some(Err(e)) => message(k, "Can't read issues", e),
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
-        Some(Ok((_, issues))) => {
+        Some(Ok((me, issues))) => {
             let mut list = col().key("issues-list").w_full().pb(16.0);
-            for i in issues {
-                list = list.child(issue_row(s, k, i));
+            for (title, group) in github_issues::group(issues, me) {
+                if group.is_empty() {
+                    continue;
+                }
+                let folded = s.issues.folded.contains(title);
+                list = list.child(group_head(k, title, group.len(), folded));
+                if !folded {
+                    for i in group {
+                        list = list.child(issue_row(s, k, i));
+                    }
+                }
             }
             col().key("issues-scroll").w_full().grow(1.0).min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(list)
         }
     };
     col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(body)
+}
+
+/// A group's title and count; a click anywhere on it folds the group to it or opens it again.
+fn group_head(k: &Kit, title: &'static str, count: usize, folded: bool) -> El {
+    row().key(format!("issue-group-{title}")).w_full().h(28.0).px(EDGE).gap(6.0).items_center().mt(8.0)
+        .cursor(Cursor::Pointer).role("button").label(title.to_owned()).description(format!("{count} issues")).expanded(!folded)
+        .help(if folded { "Show the group" } else { "Fold the group to its title" })
+        .on_press(move |s: &mut Collate| {
+            if !s.issues.folded.remove(title) {
+                s.issues.folded.insert(title);
+            }
+        })
+        .child(text(title.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).a11y_hidden())
+        .child(text(count.to_string()).font(k.ty.text_xsmall_medium).color(k.c.text_faint).grow(1.0).a11y_hidden())
+        // The staging panel's chevron, turned as it turns; its glyph, not its box, on the edge.
+        .child(icon(k.glyph.chevron_down, 16.0).mr(-4.0).color(k.c.icon_faint)
+            .icon_rotation(if folded { -std::f32::consts::FRAC_PI_2 } else { 0.0 }).motion(k.motion.control).a11y_hidden())
 }
 
 /// One issue in the list: its state, title, who opened it and when, and its labels.
