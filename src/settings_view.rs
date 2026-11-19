@@ -3,6 +3,7 @@
 use rune::{Color, Cursor, El, Icon, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit, SegmentedControl, Select, SelectAppearance, Switch};
 
+use crate::Hand;
 use crate::diff::DiffMode;
 use crate::git::Scope;
 use crate::settings::{Agent, CONTEXT_LINES, Channel, Density, Editor, FOLD_LARGE, FONT_LABELS, FONT_SIZES, Motion, REFRESH_MS, Settings, Theme};
@@ -96,7 +97,7 @@ fn icon_hit<S: 'static>(k: &Kit, glyph: &'static Icon, label: String, help: &str
 /// that tell it what to ask and how to write.
 fn agent_settings(s: &Collate, k: &Kit, menus: &mut Vec<El>) -> Vec<El> {
     let st = &s.settings;
-    let edit = |key: &'static str, pick: &'static str| Button::new("Edit…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Open the file in the editor from Review settings").on_press(move |s: &mut Collate| s.agent_menu_pick(pick)).build(k).key(key);
+    let edit = |key: &'static str, pick: &'static str| Button::new("Edit…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Open the file in the editor from Review settings").on_press(move |s: &mut Collate| s.agent_menu_pick(pick)).build(k).hand(true).key(key);
     let runs = format!("{} in the terminal under the diff (⌘J); {} for what it fills in, like a commit message", st.agent.command(), st.agent.print_command());
     vec![
         setting(k, "agent", "Coding agent", &[], "Gets your comments, review questions, commit messages and conflicts; it never pushes", pick(s, k, menus, "agent", "Coding agent", &Agent::ALL.map(Agent::title), &Agent::ALL, st.agent, |c, v| c.agent = v)),
@@ -137,7 +138,7 @@ fn update_settings(s: &Collate, k: &Kit, menus: &mut Vec<El>) -> Vec<El> {
         }),
     };
     vec![
-        row().key("version").w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(button.control_size(ControlSize::Small).build(k))),
+        row().key("version").w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(button.control_size(ControlSize::Small).build(k).hand(!s.update.busy()))),
         setting(k, "check", "Check for updates", &[], "Look for a new version when Collate opens and every few hours", switch(k, "Check for updates", st.check_updates, |c, v| c.check_updates = v)),
         setting(k, "auto-update", "Install automatically", &[], "Install a new version in the background; it opens when Collate next starts", switch(k, "Install automatically", st.auto_update, |c, v| c.auto_update = v)),
         setting(k, "from", "Update from", &[], "Latest source builds the newest commit on main, which needs Rust", pick(s, k, menus, "from", "Update from", &["Releases", "Latest source"], &CHANNELS, st.update_from, |c, v| c.update_from = v)),
@@ -156,6 +157,7 @@ fn pick<T: Copy + PartialEq + 'static>(s: &Collate, k: &Kit, menus: &mut Vec<El>
         .fit()
         .on_pick(move |s: &mut Collate, i, _: &mut Tx| s.configure(|c| set(c, values[i])))
         .build(k)
+        .hand(true)
 }
 
 /// A settings dropdown, `THEME_W` wide, its menu as wide and opening under it. `key` names it
@@ -178,7 +180,8 @@ fn dropdown(s: &Collate, k: &Kit, menus: &mut Vec<El>, key: &'static str, title:
                 choose(s, i);
             }
         })
-        .build(k, menus);
+        .build(k, menus)
+        .hand(true);
     // The kit's menu is at least 160 wide and ends on the trigger's right edge; as wide as the
     // trigger, it reads as the dropdown opening. The menu is the last thing the select layers.
     if open && let Some(menu) = menus.pop() {
@@ -234,7 +237,7 @@ fn switch(k: &Kit, title: &str, on: bool, set: fn(&mut Settings, bool)) -> El {
             kk.c.std_icon_invert = k.c.text_muted;
         }
     }
-    Switch::new(on).standard().label(title.to_owned()).hide_label().on_toggle(move |s: &mut Collate| s.configure(|c| set(c, !on))).build(&kk)
+    Switch::new(on).standard().label(title.to_owned()).hide_label().on_toggle(move |s: &mut Collate| s.configure(|c| set(c, !on))).build(&kk).hand(true)
 }
 
 pub const SETTINGS_TABS: [&str; 8] = ["Appearance", "Diff", "Languages", "Review", "Agent", "Projects", "Refresh", "Updates"];
@@ -296,7 +299,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             setting(k, "low", "Hide low-signal files", &[], "Lockfiles, bundles, snapshots and generated files", switch(k, "Hide low-signal files", st.hide_low_signal, |c, v| c.hide_low_signal = v)),
             setting(k, "order", "Source files first", &[], "Then tests, then lockfiles and generated files", switch(k, "Source files first", st.source_first, |c, v| c.source_first = v)),
             setting(k, "git-tool", "Git's diff and merge tool", &[], "git difftool and git mergetool open Collate", Button::new("Use Collate").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-                .help("Sets diff.tool and merge.tool in your global git config").on_press(|s: &mut Collate| s.register_git_tool()).build(k).key("register-tool")),
+                .help("Sets diff.tool and merge.tool in your global git config").on_press(|s: &mut Collate| s.register_git_tool()).build(k).hand(true).key("register-tool")),
         ],
         AGENT_TAB => agent_settings(s, k, menus),
         PROJECTS_TAB => {
@@ -312,7 +315,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
                         name = name.child(text("Open".to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_faint));
                     }
                     let words = col().grow(1.0).min_w(0.0).gap(4.0).child(name).child(text(tilde(p)).font(k.ty.text_small).color(k.c.text_muted).truncate());
-                    let remove = Button::new("Remove").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(open).help(if open { "The open project stays in the list" } else { "Remove from the list; the folder isn't touched" }).on_press(move |s: &mut Collate| s.forget_project(i)).build(k);
+                    let remove = Button::new("Remove").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(open).help(if open { "The open project stays in the list" } else { "Remove from the list; the folder isn't touched" }).on_press(move |s: &mut Collate| s.forget_project(i)).build(k).hand(!open);
                     row().key(format!("proj{i}")).w_full().py(14.0).gap(24.0).items_center().child(words).child(row().min_w(CONTROL_W).justify_end().child(remove))
                 })
                 .collect();
@@ -361,7 +364,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     }
     let mut content = col().key("settings-content").w_full().px(24.0).pb(16.0);
     if tab == PROJECTS_TAB {
-        let add = Button::new(ADD_PROJECT).variant(ButtonVariant::Outline).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.add_project()).build(k).key("settings-add");
+        let add = Button::new(ADD_PROJECT).variant(ButtonVariant::Outline).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.add_project()).build(k).hand(true).key("settings-add");
         content = content.child(row().key("projects-head").w_full().pt(12.0).pb(4.0).justify_end().child(add));
     }
     let content = content.child(list);
@@ -377,7 +380,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     if let Some(e) = &s.save_error {
         foot = foot.child(text(format!("Couldn't save: {e}")).font(k.ty.text_small).color(k.c.danger.icon));
     }
-    foot = foot.child(Button::new("Reset to Defaults").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.configure(|c| *c = Settings::default())).build(k).key("settings-reset"));
+    foot = foot.child(Button::new("Reset to Defaults").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.configure(|c| *c = Settings::default())).build(k).hand(true).key("settings-reset"));
     let right = col().key("settings-right").grow(1.0).min_w(0.0).h_full().child(scroll).child(hairline("foot-rule".into())).child(foot);
     let body = col()
         .key("settings-frame")

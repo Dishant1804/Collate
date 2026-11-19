@@ -4,6 +4,7 @@
 use rune::{Cursor, El, TextStyle, Tx, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit};
 
+use crate::Hand;
 use crate::Collate;
 use crate::merge::{Chunk, From, Merge, Take};
 
@@ -109,7 +110,7 @@ pub fn merge_dialog(m: &Merge, k: &Kit, layer: &mut Vec<El>) {
     }
     let nav = |key: &str, label: &str, help: &str, forward: bool| {
         Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help(help.to_owned()).disabled(conflicts.len() < 2)
-            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| step(s, forward, tx)).build(k).key(key.to_owned())
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| step(s, forward, tx)).build(k).hand(conflicts.len() >= 2).key(key.to_owned())
     };
     let top = row().key("merge-top").w_full().px(16.0).pb(8.0).gap(4.0).items_center()
         .child(text(summary).font(k.ty.text_small).color(k.c.text_muted).grow(1.0).key("merge-summary"))
@@ -118,8 +119,8 @@ pub fn merge_dialog(m: &Merge, k: &Kit, layer: &mut Vec<El>) {
     let scroll = col().key("merge-scroll").w_full().h(520.0).px(16.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(body.font(mono));
     let save_help = if unsettled > 0 { "Settle every conflict first" } else if m.output.is_some() { "Write the merged file for git" } else { "Write the merged file and mark it resolved" };
     let buttons = row().key("merge-buttons").w_full().px(16.0).py(12.0).gap(8.0).justify_end()
-        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.close_merge()).build(k).key("merge-cancel"))
-        .child(Button::new("Save").variant(ButtonVariant::Contrast).disabled(unsettled > 0).help(save_help).on_press(|s: &mut Collate| s.save_merge()).build(k).key("merge-save"));
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.close_merge()).build(k).hand(true).key("merge-cancel"))
+        .child(Button::new("Save").variant(ButtonVariant::Contrast).disabled(unsettled > 0).help(save_help).on_press(|s: &mut Collate| s.save_merge()).build(k).hand(unsettled == 0).key("merge-save"));
     Dialog::new("merge", format!("Merge - {}", m.path))
         .open(true)
         .width(1200.0)
@@ -146,7 +147,7 @@ fn conflict(k: &Kit, m: &Merge, n: usize, chunk: &Chunk) -> El {
                 }
                 take(s, how, tx);
             })
-            .build(k)
+            .build(k).hand(true)
             .key(format!("{key}-{n}"))
     };
     let head = row().key(format!("mc{n}-head")).w_full().px(8.0).py(4.0).gap(2.0).items_center()

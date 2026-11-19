@@ -623,6 +623,21 @@ fn the_sidebar_switches_views_and_the_file_menu_acts() {
 }
 
 #[test]
+fn a_hand_shows_over_what_can_be_pressed_and_the_arrow_over_a_disabled_button() {
+    let mut rt = loaded();
+    let (x, y) = rt.find("view-map").expect("the Map row");
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.cursor(), rune::Cursor::Pointer, "a sidebar row");
+    rt.state.message = TextEdit::new("");
+    rt.frame(1.0 / 60.0);
+    let (x, y) = rt.find("commit").expect("the Commit button");
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.cursor(), rune::Cursor::Default, "Commit waits for a message");
+}
+
+#[test]
 fn settings_float_over_the_review_and_close_with_escape() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);

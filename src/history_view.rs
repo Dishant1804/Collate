@@ -2,6 +2,7 @@
 //! header above a commit's diff.
 use rune::{Cursor, El, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
+use crate::Hand;
 
 use crate::diff::{EDGE, GHOST_PAD};
 use crate::git::Scope;
@@ -55,7 +56,7 @@ pub fn history_graph(s: &Collate, k: &Kit) -> El {
         .label("Refresh history")
         .help("Read the history again").shortcut("⌘R")
         .on_press(|s: &mut Collate| { s.load_history(); refresh(); })
-        .build(k)
+        .build(k).hand(true)
         .key("graph-refresh");
     let shown = s.commit_ids.len();
     let title = row().key("graph-title").w_full().h(36.0).px(EDGE).gap(8.0).items_center()
@@ -139,7 +140,7 @@ pub fn commit_card(s: &Collate, k: &Kit) -> Option<El> {
             .label("More actions for this commit")
             .help("Branch, cherry-pick, revert, reset")
             .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_menu("commit-more", tx))
-            .build(k)
+            .build(k).hand(true)
             .key("commit-more");
         card = card.child(row().key("commit-actions").w_full().justify_end().child(more.mr(-4.0)));
     }
@@ -181,7 +182,7 @@ pub fn commit_card(s: &Collate, k: &Kit) -> Option<El> {
 pub fn commit_header(s: &Collate, k: &Kit) -> El {
     let back = Button::new("‹ All Commits").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
         .help("Back to the commit list").shortcut("Esc")
-        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_commit_diff(tx)).build(k).key("history-back");
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_commit_diff(tx)).build(k).hand(true).key("history-back");
     let mut r = row().key("commit-header").w_full().px(EDGE).py(10.0).gap(12.0).items_center().child(back.ml(-GHOST_PAD));
     if let Some(tabs) = crate::pulls::pr_tabs(s, k) {
         r = r.child(tabs);
@@ -200,13 +201,13 @@ pub fn commit_header(s: &Collate, k: &Kit) -> El {
         let sha = c.id.clone();
         let copy = Button::new("Copy SHA").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
             .help("Copy the commit's full hash")
-            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(sha.clone()); s.say("Copied the commit hash", false); }).build(k).key("copy-sha");
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(sha.clone()); s.say("Copied the commit hash", false); }).build(k).hand(true).key("copy-sha");
         let more = IconButton::new(&MORE_ICON)
             .variant(IconButtonVariant::GhostMuted)
             .label("More actions for this commit")
             .help("Branch, cherry-pick, revert, reset")
             .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_menu("commit-header-more", tx))
-            .build(k)
+            .build(k).hand(true)
             .key("commit-header-more");
         r = r.child(avatar(k, s, c, 32.0))
             .child(col().grow(1.0).min_w(0.0).gap(2.0)

@@ -11,6 +11,7 @@ use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton,
 
 use rune_kit::syntax::{Syntax, SyntaxTheme};
 
+use crate::Hand;
 use crate::agent::Settle;
 use crate::github::{self, CheckState, Detail, Draft, Gh, Method, PrState, Pull, Verdict};
 use crate::{COLUMN_TOP, Collate, EDGE, GHOST_PAD, HANDLE, MERGE_ICON, MORE_ICON, PULLS_ICON, PULL_CLOSED_ICON, PULL_DRAFT_ICON, REFRESH_ICON, current_repo, diff, message, open_url};
@@ -856,7 +857,7 @@ fn decision(k: &Kit, p: &Pull) -> (&'static str, rune::Color) {
 fn connect_view(s: &Collate, k: &Kit) -> El {
     let detail = s.pulls.connecting.unwrap_or("See this repository's pull requests, review them, and get a notification when someone asks for your review.");
     let button = Button::new("Connect to GitHub").icon(&GITHUB_ICON).variant(ButtonVariant::Contrast)
-        .help("Sign in with the GitHub CLI, installing it first if it's missing").on_press(|s: &mut Collate| s.connect_github()).build(k).key("connect-github");
+        .help("Sign in with the GitHub CLI, installing it first if it's missing").on_press(|s: &mut Collate| s.connect_github()).build(k).hand(true).key("connect-github");
     col().key("connect").grow(1.0).w_full().center().gap(6.0).fill(k.c.bg_base)
         .child(icon(&GITHUB_ICON, 32.0).color(k.c.icon_faint).mb(8.0).a11y_hidden())
         .child(text("Connect to GitHub".to_owned()).font(k.ty.ui_medium).color(k.c.text_base))
@@ -871,7 +872,7 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
         s.load_pulls();
     });
     let create = Button::new("New Pull Request").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Open a pull request from this branch")
-        .disabled(s.branch.is_empty() || s.branch == "HEAD").on_press(|s: &mut Collate| s.start_compose(Compose::Create)).build(k).key("pr-new");
+        .disabled(s.branch.is_empty() || s.branch == "HEAD").on_press(|s: &mut Collate| s.start_compose(Compose::Create)).build(k).hand(!(s.branch.is_empty() || s.branch == "HEAD")).key("pr-new");
     let mono = rune::TextStyle { size: 11.5, line_height: 16.0, ..k.ty.mono };
     let mut filter = TextInput::new(&s.pulls.filter).placeholder("Filter by title, number, author, branch or label").leading_icon(k.glyph.search);
     if !s.pulls.filter.text.is_empty() {
@@ -884,7 +885,7 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
     if !matches!(&s.pulls.list, Some(Err(e)) if github::needs_connect(e)) {
         head = head.child(filter).child(create);
     }
-    let head = head.child(refresh.build(k).key("pulls-reload"));
+    let head = head.child(refresh.build(k).hand(!s.pulls.loading).key("pulls-reload"));
     let body = match &s.pulls.list {
         None => message(k, "Reading pull requests…", ""),
         Some(Err(e)) if github::needs_connect(e) => connect_view(s, k),
@@ -997,7 +998,7 @@ pub fn pr_tabs(s: &Collate, k: &Kit) -> Option<El> {
         .label("Pull request views")
         .fit()
         .on_pick(|s: &mut Collate, i, _: &mut Tx| s.pulls.tab = if i == 1 { PrTab::Files } else { PrTab::Overview })
-        .build(k)
+        .build(k).hand(true)
         .key("pr-tabs");
     let mono = rune::TextStyle { size: 12.0, line_height: 18.0, ..k.ty.mono };
     Some(row().key("pr-tabs-row").grow(1.0).min_w(0.0).gap(10.0).items_center().child(tabs)
@@ -1065,7 +1066,7 @@ fn activity_post(s: &Collate, k: &Kit, i: usize, p: &github::Post) -> El {
                 .icon_rotation(if shown { std::f32::consts::PI } else { 0.0 }).motion(k.motion.control).a11y_hidden());
     }
     let more = IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label(format!("Actions for {}'s comment", p.author))
-        .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.post_menu(i, tx)).build(k).key(format!("{key}-more")).mr(-6.0);
+        .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.post_menu(i, tx)).build(k).hand(true).key(format!("{key}-more")).mr(-6.0);
     let head = head.child(more);
     let mut c = col().key(key.to_owned()).w_full().radius(k.radius.md).border(1.0, k.c.border_weak).child(head);
     if !parts.is_empty() {
@@ -1110,12 +1111,12 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     let (web, link) = (p.url.clone(), p.url.clone());
     let tools = row().key("pr-tools").pt(4.0).gap(2.0).items_center().mr(-4.0)
         .child(tool(&PENCIL_ICON, "Edit title and description").disabled(!open)
-            .on_press(|s: &mut Collate| s.start_compose(Compose::Edit)).build(k).key("pr-edit"))
-        .child(tool(&GITHUB_ICON, "Open on GitHub").on_press(move |_: &mut Collate| open_url(&web)).build(k).key("pr-web"))
+            .on_press(|s: &mut Collate| s.start_compose(Compose::Edit)).build(k).hand(open).key("pr-edit"))
+        .child(tool(&GITHUB_ICON, "Open on GitHub").on_press(move |_: &mut Collate| open_url(&web)).build(k).hand(true).key("pr-web"))
         .child(tool(&LINK_ICON, "Copy link").help("Copy the pull request's address")
-            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(link.clone()); s.say("Copied the pull request's link", false); }).build(k).key("pr-copy-link"))
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| { tx.copy(link.clone()); s.say("Copied the pull request's link", false); }).build(k).hand(true).key("pr-copy-link"))
         .child(tool(&MORE_ICON, "More actions for this pull request").help("Check out, reload, update the branch")
-            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_menu(tx)).build(k).key("pr-more"));
+            .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_menu(tx)).build(k).hand(true).key("pr-more"));
     let pill = row().key("pr-state").h(22.0).px(8.0).gap(5.0).items_center().radius(11.0).fill(k.alpha(state_color, 0.16))
         .child(icon(state_icon, 12.0).color(state_color))
         .child(text(state_name.to_owned()).font(k.ty.text_small_medium).color(state_color));
@@ -1142,7 +1143,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     // Asked for the reader's review: the way to the files.
     if open && me.is_some_and(|me| pr.reviewers.iter().any(|(who, st)| who == me && st == "REQUESTED")) {
         let go = Button::new("Review Changes").variant(ButtonVariant::Contrast).control_size(ControlSize::Small)
-            .help("Open the files this pull request changes").on_press(|s: &mut Collate| s.pulls.tab = PrTab::Files).build(k).key("pr-review-changes");
+            .help("Open the files this pull request changes").on_press(|s: &mut Collate| s.pulls.tab = PrTab::Files).build(k).hand(true).key("pr-review-changes");
         main = main.child(row().key("pr-asked").w_full().px(14.0).py(10.0).gap(10.0).items_center().radius(k.radius.md).border(1.0, k.c.border_weak)
             .fill(k.alpha(k.c.text_base, 0.03))
             .child(text("Your review has been requested").font(k.ty.ui).color(k.c.text_base).grow(1.0))
@@ -1212,7 +1213,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
                 .help("Run the failed GitHub Actions jobs again").on_press(move |s: &mut Collate| {
                     let runs = runs.clone();
                     s.pr_act("Re-running…", move |gh| gh.rerun_failed(&runs).map(|_| format!("Re-running the failed checks of #{n}")), |_| {});
-                }).build(k).key("pr-rerun").mr(-GHOST_PAD));
+                }).build(k).hand(s.busy.is_none()).key("pr-rerun").mr(-GHOST_PAD));
         }
         if open {
             merge_box = merge_box.child(line());
@@ -1242,14 +1243,14 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     // Behind its base: the one-click fix GitHub offers, a merge of the base into it.
     if open && pr.merge_state == "BEHIND" {
         fixes.push(Button::new("Update Branch").variant(ButtonVariant::Outline).control_size(ControlSize::Small).disabled(s.busy.is_some())
-            .help("Merge the base's new commits into this branch, on GitHub").on_press(|s: &mut Collate| s.update_branch(false)).build(k).key("pr-update"));
+            .help("Merge the base's new commits into this branch, on GitHub").on_press(|s: &mut Collate| s.update_branch(false)).build(k).hand(s.busy.is_none()).key("pr-update"));
     }
     // Conflicts: GitHub can't settle them; the reader's agent can, here.
     if open && (pr.mergeable == "CONFLICTING" || pr.merge_state == "DIRTY") {
         let settle = Settle::Pull(p.number, p.head.clone(), p.base.clone());
         fixes.push(Button::new(format!("Settle with {}", s.settings.agent.title())).variant(ButtonVariant::Outline).control_size(ControlSize::Small)
             .help("Start the coding agent in the Agent tab to merge the base into this branch and settle the conflicts; it doesn't push")
-            .on_press(move |s: &mut Collate| s.settle_with_agent(settle.clone())).build(k).key("pr-agent"));
+            .on_press(move |s: &mut Collate| s.settle_with_agent(settle.clone())).build(k).hand(true).key("pr-agent"));
     }
     if open || !p.checks.is_empty() {
         merge_box = merge_box.child(line());
@@ -1262,20 +1263,20 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     merge_box = merge_box.child(status_row(k, "pr-ready", ready_mark, ready, &readiness_why(pr), fixes));
     if open && let Some(method) = &pr.meta.auto_merge {
         let off = Button::new("Disable Auto-Merge").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(s.busy.is_some())
-            .on_press(|s: &mut Collate| s.disable_auto_merge()).build(k).key("pr-auto-off").mr(-GHOST_PAD);
+            .on_press(|s: &mut Collate| s.disable_auto_merge()).build(k).hand(s.busy.is_none()).key("pr-auto-off").mr(-GHOST_PAD);
         let how = Method::ALL.into_iter().find(|m| m.name() == method).map_or(method.to_lowercase(), |m| m.title().to_lowercase());
         merge_box = merge_box.child(line())
             .child(status_row(k, "pr-auto", dot(k, Some(CheckState::Pending)), "Auto-merge enabled", &format!("It will {how} once its requirements pass"), vec![off]));
     }
     if open {
         let merge = Button::new("Merge…").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!can_merge || s.busy.is_some())
-            .help("Squash, merge or rebase into the base").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.merge_menu(tx)).build(k).key("pr-merge");
-        let delete = Checkbox::new(s.pulls.delete_branch).label("Delete branch").on_toggle(|s: &mut Collate| s.pulls.delete_branch ^= true).build(k).key("pr-delete-branch");
+            .help("Squash, merge or rebase into the base").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.merge_menu(tx)).build(k).hand(can_merge && s.busy.is_none()).key("pr-merge");
+        let delete = Checkbox::new(s.pulls.delete_branch).label("Delete branch").on_toggle(|s: &mut Collate| s.pulls.delete_branch ^= true).build(k).hand(true).key("pr-delete-branch");
         let mut merge_row = row().key("pr-merge-row").w_full().px(14.0).py(10.0).gap(12.0).items_center().fill(k.alpha(k.c.text_base, 0.03)).child(merge);
         // Waiting on checks or reviews: GitHub can merge it by itself once they pass.
         if !can_merge && pr.meta.auto_merge.is_none() {
             merge_row = merge_row.child(Button::new("Enable Auto-Merge…").variant(ButtonVariant::Outline).control_size(ControlSize::Small).disabled(s.busy.is_some())
-                .help("Merge it by itself once its checks and reviews pass").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.auto_merge_menu(tx)).build(k).key("pr-auto-merge"));
+                .help("Merge it by itself once its checks and reviews pass").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.auto_merge_menu(tx)).build(k).hand(s.busy.is_none()).key("pr-auto-merge"));
         }
         merge_box = merge_box.child(line()).child(merge_row.child(delete));
     }
@@ -1287,7 +1288,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     if open {
         let pending = s.pending().len();
         let verdict = |key: &str, label: &str, v: Verdict| Button::new(label.to_owned()).variant(ButtonVariant::Outline).control_size(ControlSize::Small)
-            .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.start_compose(Compose::Review(v))).build(k).key(key.to_owned());
+            .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.start_compose(Compose::Review(v))).build(k).hand(s.busy.is_none()).key(key.to_owned());
         // A comment on the whole of it, where GitHub keeps its box: at the foot of the timeline.
         let comment = row().key("pr-add-comment").w_full().h(36.0).px(12.0).items_center().radius(k.radius.md).border(1.0, k.c.border_weak)
             .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label("Add a comment").help("Comment on the pull request")
@@ -1318,7 +1319,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         .child(text(label).font(k.ty.text_small).color(tint).truncate().min_w(0.0).grow(1.0));
     // A gear opens each list's editor, as on GitHub.
     let gear = |key: &str, what: Compose, label: &str| IconButton::new(&GEAR_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
-        .label(label.to_owned()).disabled(!open).on_press(move |s: &mut Collate| s.start_compose(what)).build(k).key(key.to_owned()).mr(-4.0);
+        .label(label.to_owned()).disabled(!open).on_press(move |s: &mut Collate| s.start_compose(what)).build(k).hand(open).key(key.to_owned()).mr(-4.0);
     let mut props = col().key("pr-properties").w_full().gap(2.0).child(heading(k, "pr-properties-title", "Properties", None))
         .child(side_row("prop-state".into(), icon(state_icon, 14.0).color(state_color), state_name.to_owned(), k.c.text_base))
         .child(side_row("prop-commits".into(), icon(&MERGE_ICON, 14.0).color(k.c.icon_muted), format!("{} commit{}", pr.commits.len(), if pr.commits.len() == 1 { "" } else { "s" }), k.c.text_muted));
@@ -1328,7 +1329,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     // Under what it is, what changes that: a draft or not, open or closed. A merged one stays.
     if pr.state != "MERGED" {
         let act = |key: &str, glyph: &'static Icon, label: &str, help: &str, f: fn(&mut Collate)| Button::new(label.to_owned()).icon(glyph).variant(ButtonVariant::GhostMuted)
-            .help(help.to_owned()).disabled(s.busy.is_some()).on_press(f).build(k).key(key.to_owned()).ml(-REGULAR_PAD);
+            .help(help.to_owned()).disabled(s.busy.is_some()).on_press(f).build(k).hand(s.busy.is_none()).key(key.to_owned()).ml(-REGULAR_PAD);
         let mut acts = col().key("pr-state-actions").w_full().pt(4.0).gap(2.0).items_start();
         if open {
             acts = acts.child(if p.draft {
@@ -1363,7 +1364,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         if open && state != "REQUESTED" && Some(who.as_str()) != me {
             let again = who.clone();
             r = r.child(IconButton::new(&REFRESH_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label(format!("Ask {who} to review again"))
-                .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.rerequest(again.clone())).build(k).key(format!("rerequest-{who}")));
+                .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.rerequest(again.clone())).build(k).hand(s.busy.is_none()).key(format!("rerequest-{who}")));
         }
         reviewers = reviewers.child(r.child(mark.a11y_hidden()));
     }
@@ -1384,7 +1385,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         let mut none = row().w_full().h(24.0).gap(4.0).items_center().child(text("No one -").font(k.ty.text_small).color(k.c.text_faint));
         if open {
             none = none.child(Button::new("Assign yourself").variant(ButtonVariant::GhostMuted).disabled(s.busy.is_some())
-                .on_press(|s: &mut Collate| s.assign_me()).build(k).key("pr-assign-me").ml(-REGULAR_PAD));
+                .on_press(|s: &mut Collate| s.assign_me()).build(k).hand(s.busy.is_none()).key("pr-assign-me").ml(-REGULAR_PAD));
         }
         assignees = assignees.child(none);
     }
@@ -1483,9 +1484,9 @@ pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
     // Past the threads: the checks' annotations.
     let Some(th) = pr.threads.get(t) else { return annotation_row(k, pr, t - pr.threads.len()) };
     let resolve = Button::new(if th.resolved { "Unresolve" } else { "Resolve" }).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-        .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.toggle_thread(t)).build(k).key("resolve");
+        .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.toggle_thread(t)).build(k).hand(s.busy.is_none()).key("resolve");
     let reply = Button::new("Reply").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-        .on_press(move |s: &mut Collate| s.start_compose(Compose::Reply(t))).build(k).key("reply");
+        .on_press(move |s: &mut Collate| s.start_compose(Compose::Reply(t))).build(k).hand(true).key("reply");
     let mut head = row().w_full().gap(8.0).items_center()
         .child(text(if th.resolved { "Resolved thread" } else { "Thread" }.to_owned()).font(k.ty.text_xsmall_medium).color(k.c.text_muted).grow(1.0));
     // A suggestion applies to the working tree, so only with the pull request's branch checked out.
@@ -1493,7 +1494,7 @@ pub fn thread_row(s: &Collate, k: &Kit, t: usize) -> El {
     if !th.resolved && !th.left && th.line.is_some() && th.comments.iter().any(|c| github::suggestion(&c.body).is_some()) {
         let apply = Button::new("Apply Suggestion").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!pr_branch)
             .help(if pr_branch { "Put the suggested lines in the file, to commit" } else { "Check out the pull request's branch first, from the ⋯ menu" })
-            .on_press(move |s: &mut Collate| s.apply_suggestion(t)).build(k).key("apply");
+            .on_press(move |s: &mut Collate| s.apply_suggestion(t)).build(k).hand(pr_branch).key("apply");
         head = head.child(apply);
     }
     let head = head
@@ -1595,11 +1596,11 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     }
     let mut buttons = row().key("compose-buttons").w_full().gap(8.0).items_center();
     if c == Compose::Create {
-        buttons = buttons.child(Checkbox::new(s.pulls.draft).label("Draft").on_toggle(|s: &mut Collate| s.pulls.draft ^= true).build(k).key("compose-draft"));
+        buttons = buttons.child(Checkbox::new(s.pulls.draft).label("Draft").on_toggle(|s: &mut Collate| s.pulls.draft ^= true).build(k).hand(true).key("compose-draft"));
     }
     buttons = buttons.child(row().grow(1.0))
-        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.pulls.compose = None).build(k))
-        .child(Button::new(button).variant(if matches!(c, Compose::DeletePost(_)) { ButtonVariant::Danger } else { ButtonVariant::Contrast }).disabled(blocked).on_press(|s: &mut Collate| s.send_compose()).build(k).key("compose-ok"));
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.pulls.compose = None).build(k).hand(true))
+        .child(Button::new(button).variant(if matches!(c, Compose::DeletePost(_)) { ButtonVariant::Danger } else { ButtonVariant::Contrast }).disabled(blocked).on_press(|s: &mut Collate| s.send_compose()).build(k).hand(!blocked).key("compose-ok"));
     crate::described_dialog(k, "compose", title, what, body.child(buttons)).width(520.0).on_close(|s: &mut Collate| s.pulls.compose = None).build(k, layer);
 }
 
@@ -1625,7 +1626,7 @@ fn people_picker(s: &Collate, k: &Kit, reviewers: bool) -> El {
     let rows = col().key("reviewer-people").w_full().max_h(220.0).scroll(rune::ScrollSpec { stick_bottom: false }).gap(2.0).children(people.into_iter().map(|who| {
         let on = picked.contains(&who);
         let key = format!("pick-{who}");
-        Checkbox::new(on).label(who.clone()).on_toggle(move |s: &mut Collate| s.toggle_person(&who)).build(k).key(key)
+        Checkbox::new(on).label(who.clone()).on_toggle(move |s: &mut Collate| s.toggle_person(&who)).build(k).hand(true).key(key)
     }));
     let mut out = col().key("reviewer-picker").w_full().gap(8.0).child(rows);
     if let Some(note) = note {
@@ -1703,7 +1704,7 @@ pub fn rewrite_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         body = body.child(text(format!("The first {MAX} of {} lines.", lines.len())).font(k.ty.text_small).color(k.c.text_muted));
     }
     body = body.child(row().w_full().child(row().grow(1.0))
-        .child(Button::new("Done").variant(ButtonVariant::Contrast).on_press(|s: &mut Collate| s.pulls.rewrite = None).build(k).key("rewrite-done")));
+        .child(Button::new("Done").variant(ButtonVariant::Contrast).on_press(|s: &mut Collate| s.pulls.rewrite = None).build(k).hand(true).key("rewrite-done")));
     Dialog::new("rewrite", "What the force-push changed").open(true).width(760.0).fit().description(range_diff_summary(&lines))
         .on_close(|s: &mut Collate| s.pulls.rewrite = None).child(body).build(k, layer);
 }

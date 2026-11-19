@@ -25,6 +25,7 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color as Ansi, CursorShape, NamedColor, Rgb};
 use rune::{Color, Cursor, Drag, El, Icon, Key, KeyEvent, Mods, Phase, Span, TextEdit, TextStyle, Transition, Tx, WheelEvent, col, el, icon, rich, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
+use crate::Hand;
 
 /// The drawer's height when first opened, and its bounds: at least 180 points, so a few
 /// lines always show, and at most three quarters of the window, so the diff stays in view.
@@ -697,7 +698,7 @@ pub fn drawer<S: 'static>(t: &Terminals, k: &Kit, window_h: f32, access: Access<
         .gap(2.0)
         .items_center()
         .child(
-            IconButton::new(&PLUS_ICON).variant(IconButtonVariant::GhostMuted).label("New terminal").help("New terminal").on_press(new).build(k).key("terminal-new"),
+            IconButton::new(&PLUS_ICON).variant(IconButtonVariant::GhostMuted).label("New terminal").help("New terminal").on_press(new).build(k).hand(true).key("terminal-new"),
         )
         .child({
             let i = t.active;
@@ -706,7 +707,7 @@ pub fn drawer<S: 'static>(t: &Terminals, k: &Kit, window_h: f32, access: Access<
                 .label("Close terminal")
                 .help("Close terminal (ends its shell)")
                 .on_press(move |s: &mut S| access(s).close(i))
-                .build(k)
+                .build(k).hand(true)
                 .key("terminal-close")
         });
     col().key("terminal").w_full().h(height).fill(bg).child(hairline(k, "terminal-edge", true)).child(body).child(tools).child(handle)

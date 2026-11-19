@@ -3042,7 +3042,7 @@ fn loose_view(s: &Collate, k: &Kit, name: &str) -> El {
         n => format!("{n} files - +{add} -{del}"),
     };
     let close = Button::new(if s.has_project { "Back to Changes" } else { "Close" }).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-        .help("Leave this comparison").on_press(|s: &mut Collate| s.close_loose()).build(k).key("loose-close").mr(-GHOST_PAD);
+        .help("Leave this comparison").on_press(|s: &mut Collate| s.close_loose()).build(k).hand(true).key("loose-close").mr(-GHOST_PAD);
     let head = row().key("loose-head").w_full().px(EDGE).py(8.0).gap(8.0).items_center()
         .child(text(name.to_owned()).font(k.ty.ui_medium).color(k.c.text_base).truncate().min_w(0.0).shrink())
         .child(text(what).key("loose-summary").font(k.ty.text_small).color(k.c.text_muted).grow(1.0))
@@ -3066,7 +3066,8 @@ fn project_switcher(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         .label("Project")
         .open(s.project_open)
         .on_toggle(|s: &mut Collate| s.toggle_projects())
-        .trigger(k);
+        .trigger(k)
+        .hand(true);
     let popover = Popover::new("projects").trigger(trigger).label("Project").placement(Placement::BottomStart).padding(0.0).open(s.project_open)
         .on_close(|s: &mut Collate| s.close_projects());
     if !s.project_open {
@@ -3119,7 +3120,7 @@ fn project_switcher(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
                 let path = path.clone();
                 move |s: &mut Collate| s.toggle_favorite(&path)
             })
-            .build(k)
+            .build(k).hand(true)
             .key(format!("project-star-{i}"));
         let check = icon(k.glyph.check_small, 14.0).color(k.c.icon_base).opacity(if current == Some(i) { 1.0 } else { 0.0 }).a11y_hidden();
         rows = rows.child(
@@ -3178,10 +3179,10 @@ fn welcome(s: &Collate, k: &Kit) -> El {
                 .on_press_tx(move |s: &mut Collate, tx| s.open_project(&path, tx))
                 .child(text(labels[i].clone()).font(k.ty.ui_medium).color(if exists { k.c.text_base } else { k.c.text_faint }))
                 .child(text(tilde(p)).font(k.ty.text_small).color(k.c.text_faint).truncate().min_w(0.0).grow(1.0))
-                .child(Button::new("Remove").variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small).on_press(move |s: &mut Collate| s.forget_project(i)).build(k)),
+                .child(Button::new("Remove").variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small).on_press(move |s: &mut Collate| s.forget_project(i)).build(k).hand(true)),
         );
     }
-    let add = Button::new(if s.picking { "Choose a folder…" } else { ADD_PROJECT }).variant(ButtonVariant::Contrast).shortcut("⌘O").disabled(s.picking).on_press(|s: &mut Collate| s.add_project()).build(k).key("add-project");
+    let add = Button::new(if s.picking { "Choose a folder…" } else { ADD_PROJECT }).variant(ButtonVariant::Contrast).shortcut("⌘O").disabled(s.picking).on_press(|s: &mut Collate| s.add_project()).build(k).hand(!s.picking).key("add-project");
     let mut c = col()
         .key("welcome")
         .w_full()
@@ -3208,7 +3209,7 @@ fn welcome(s: &Collate, k: &Kit) -> El {
 fn next_step(s: &Collate, k: &Kit, id: &'static str) -> Option<El> {
     let c = commands::find(id).filter(|c| (c.enabled)(s))?;
     Some(Button::new(c.title.to_owned()).variant(ButtonVariant::Outline).control_size(ControlSize::Small).shortcut(commands::keycap(c.key))
-        .on_press_tx(move |s: &mut Collate, tx: &mut Tx| commands::run(s, id, tx)).build(k).key(format!("next-{id}")))
+        .on_press_tx(move |s: &mut Collate, tx: &mut Tx| commands::run(s, id, tx)).build(k).hand(true).key(format!("next-{id}")))
 }
 
 /// A small text button for file and hunk actions.
@@ -3218,7 +3219,7 @@ fn action(k: &Kit, key: &str, label: &str, help: &str, keys: &str, danger: bool,
     if !keys.is_empty() {
         b = b.shortcut(keys.to_owned());
     }
-    b.on_press(f).build(k).key(key.to_owned())
+    b.on_press(f).build(k).hand(true).key(key.to_owned())
 }
 
 /// The bar over the diff's foot while lines are selected: what's selected, and what to do with
@@ -3233,12 +3234,12 @@ fn selection_bar(s: &Collate, k: &Kit) -> Option<El> {
     let what = format!("{count} line{} selected", if count == 1 { "" } else { "s" });
     let agent = s.settings.agent.title();
     let copy = Button::new("Copy…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Copy the lines' reference (y), or the lines for an agent (Y)")
-        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.copy_menu(tx)).build(k).key("copy-sel");
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.copy_menu(tx)).build(k).hand(true).key("copy-sel");
     let close = IconButton::new(&rune_kit::glyphs::CLOSE).variant(IconButtonVariant::GhostMuted).label("Clear the selection").help("Clear the selection").shortcut("Esc")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| {
             s.diff.set_selection(None);
             tx.clear_text_selection();
-        }).build(k).key("selection-clear");
+        }).build(k).hand(true).key("selection-clear");
     let bar = row().key("selection-bar").h(36.0).pl(12.0).pr(4.0).gap(4.0).items_center().radius(k.radius.md)
         .border(1.0, k.c.border_weak).fill(k.c.bg_base);
     // A press on the bar leaves a text selection in the code, which the lines may follow:
@@ -3287,7 +3288,7 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
         let more_key = format!("file-more-{f}");
         let anchor = more_key.clone();
         let more = IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).label("More actions for this file").help("More actions")
-            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.file_menu(f, &anchor, tx)).build(k).key(more_key);
+            .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.file_menu(f, &anchor, tx)).build(k).hand(true).key(more_key);
         return r.child(more).child(viewed_toggle(k, f, s.is_viewed(f)));
     }
     let primary = match s.scope {
@@ -3306,7 +3307,7 @@ fn file_actions(s: &Collate, k: &Kit, f: usize) -> El {
         .label("More actions for this file")
         .help("More actions")
         .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.file_menu(f, &anchor, tx))
-        .build(k)
+        .build(k).hand(true)
         .key(more_key);
     r.child(more).child(viewed_toggle(k, f, s.is_viewed(f)))
 }
@@ -3418,7 +3419,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .label(format!("{} {name}", if trailing_open { "Hide" } else { "Show" }))
         .help(if swap { "Views sidebar" } else { "Staging panel" }).shortcut(keys)
         .on_press(move |s: &mut Collate| if swap { s.sidebar.toggle() } else { s.inspector.toggle() })
-        .build(k)
+        .build(k).hand(true)
         .key("panel-toggle");
     let term = IconButton::new(&terminal::TERMINAL_ICON)
         .variant(IconButtonVariant::GhostMuted)
@@ -3428,19 +3429,19 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .shortcut("⌘J")
         .disabled(no_project)
         .on_press(|s: &mut Collate| s.toggle_terminal())
-        .build(k)
+        .build(k).hand(!no_project)
         .key("terminal-toggle");
     let more = IconButton::new(&MORE_ICON)
         .variant(IconButtonVariant::GhostMuted)
         .label("View options and more")
         .help("View options, shortcuts, settings")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.more_menu(tx))
-        .build(k)
+        .build(k).hand(true)
         .key("more");
     // No title: the sidebar already marks the view shown.
     let toolbar = Toolbar::new()
         .leading(leading)
-        .trailing(row().gap(6.0).items_center().child(toolbar_search(s, k, layer)).child(modes.build(k).help("Diff layout").help_keys(["s"])).child(term).child(panel).child(more));
+        .trailing(row().gap(6.0).items_center().child(toolbar_search(s, k, layer)).child(modes.build(k).hand(true).help("Diff layout").help_keys(["s"])).child(term).child(panel).child(more));
 
     let n = s.diff.files().len();
     let body = if !s.has_project {
@@ -3549,7 +3550,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
                     if let Some(w) = &mut s.words {
                         w.picked[i] ^= true;
                     }
-                }).build(k))
+                }).build(k).hand(true))
                 .child(text(show(before)).font(mono).color(k.c.danger.fg))
                 .child(text("→").font(mono).color(k.c.text_faint))
                 .child(text(show(after)).font(mono).color(k.c.success.fg))
@@ -3557,12 +3558,12 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         let preview = apply_edits(&w.old, &w.new, &w.edits, &w.picked);
         let any = w.picked.iter().any(|&p| p);
         let pick_first = if any { "" } else { "Pick a word change above first" };
-        let mut buttons = row().key("word-buttons").w_full().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.words = None).build(k));
+        let mut buttons = row().key("word-buttons").w_full().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.words = None).build(k).hand(true));
         buttons = match s.scope {
-            Scope::Staged => buttons.child(Button::new("Unstage picked").variant(ButtonVariant::Contrast).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Staged)).build(k).key("words-unstage")),
+            Scope::Staged => buttons.child(Button::new("Unstage picked").variant(ButtonVariant::Contrast).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Staged)).build(k).hand(any).key("words-unstage")),
             _ => buttons
-                .child(Button::new("Discard picked").variant(ButtonVariant::Danger).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Uncommitted)).build(k).key("words-discard"))
-                .child(Button::new("Stage picked").variant(ButtonVariant::Contrast).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Unstaged)).build(k).key("words-stage")),
+                .child(Button::new("Discard picked").variant(ButtonVariant::Danger).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Uncommitted)).build(k).hand(any).key("words-discard"))
+                .child(Button::new("Stage picked").variant(ButtonVariant::Contrast).disabled(!any).help(pick_first).on_press(|s: &mut Collate| s.act_on_words(Scope::Unstaged)).build(k).hand(any).key("words-stage")),
         };
         let body = col()
             .key("words")
@@ -3593,8 +3594,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .w_full()
             .gap(8.0)
             .justify_end()
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.confirm = None).build(k))
-            .child(Button::new("Discard").variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_discard()).build(k).key("confirm-discard"));
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.confirm = None).build(k).hand(true))
+            .child(Button::new("Discard").variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_discard()).build(k).hand(true).key("confirm-discard"));
         described_dialog(k, "discard", title, format!("{what} A copy of the file is kept in .git/collate-backup."), buttons)
             .on_close(|s: &mut Collate| s.confirm = None)
             .build(k, layer);
@@ -3640,11 +3641,11 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
                 .on_press(move |s: &mut Collate| {
                     s.pulls.suggest = true;
                     s.prompt_text = TextEdit::new(&line);
-                }).build(k).key("prompt-suggest")).child(row().grow(1.0));
+                }).build(k).hand(true).key("prompt-suggest")).child(row().grow(1.0));
         }
         let buttons = buttons
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.prompt = None).build(k))
-            .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(empty).on_press(|s: &mut Collate| s.answer_prompt()).build(k).key("prompt-ok"));
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.prompt = None).build(k).hand(true))
+            .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(empty).on_press(|s: &mut Collate| s.answer_prompt()).build(k).hand(!empty).key("prompt-ok"));
         described_dialog(k, "prompt", title, what, col().key("prompt-body").w_full().gap(12.0).child(field).child(buttons))
             .on_close(|s: &mut Collate| s.prompt = None)
             .build(k, layer);
@@ -3659,7 +3660,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
                 .variant(ButtonVariant::Outline)
                 .help(format!("Choose the {}", label.to_lowercase()))
                 .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.pick_ref(to, tx))
-                .build(k)
+                .build(k).hand(true)
                 .key(key);
             row().w_full().gap(12.0).items_center().child(text(label.to_owned()).w(48.0).font(k.ty.text_small).color(k.c.text_muted)).child(pick)
         };
@@ -3669,9 +3670,9 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .w_full()
             .gap(8.0)
             .justify_end()
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.compare = None).build(k))
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.compare = None).build(k).hand(true))
             .child(Button::new("Compare").variant(ButtonVariant::Contrast).disabled(!ready)
-                .help(if ready { "" } else if from == to && !from.is_empty() { "Pick two different ends" } else { "Pick both ends first" }).on_press(|s: &mut Collate| s.run_compare()).build(k).key("compare-ok"));
+                .help(if ready { "" } else if from == to && !from.is_empty() { "Pick two different ends" } else { "Pick both ends first" }).on_press(|s: &mut Collate| s.run_compare()).build(k).hand(ready).key("compare-ok"));
         let body = col().key("compare-body").w_full().gap(10.0).child(end("compare-from", "From", from, false)).child(end("compare-to", "To", to, true)).child(buttons.pt(4.0));
         described_dialog(k, "compare", "Compare", "What changed from one branch, tag or commit to another.", body)
             .on_close(|s: &mut Collate| s.compare = None)
@@ -3738,8 +3739,8 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .w_full()
             .gap(8.0)
             .justify_end()
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.risky = None).build(k))
-            .child(Button::new(button).variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_risky()).build(k).key("risky-ok"));
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.risky = None).build(k).hand(true))
+            .child(Button::new(button).variant(ButtonVariant::Danger).on_press(|s: &mut Collate| s.confirm_risky()).build(k).hand(true).key("risky-ok"));
         described_dialog(k, "risky", title, what, buttons).on_close(|s: &mut Collate| s.risky = None).build(k, layer);
     }
 
@@ -3771,13 +3772,25 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .help(if s.can_go(back) { label.to_owned() } else { format!("{label}: nowhere {} yet", if back { "back" } else { "forward" }) })
             .shortcut(keys.to_owned())
             .on_press(move |s: &mut Collate| s.go(back))
-            .build(k)
+            .build(k).hand(s.can_go(back))
             .key(if back { "nav-back" } else { "nav-forward" })
     };
     let arrows = row().key("nav").gap(2.0).items_center().absolute(toggle_end + 8.0, (48.0 - 24.0) / 2.0)
         .child(arrow(&BACK_ICON, true, "Back", "⌘["))
         .child(arrow(&FORWARD_ICON, false, "Forward", "⌘]"));
     col().key("window").w_full().h_full().child(split).child(arrows)
+}
+
+/// Rune's kit controls keep the arrow; Collate shows a hand over whatever can be pressed, and
+/// the arrow again over a control that's disabled, so it doesn't promise a press.
+trait Hand {
+    fn hand(self, on: bool) -> Self;
+}
+
+impl Hand for El {
+    fn hand(self, on: bool) -> El {
+        self.cursor(if on { Cursor::Pointer } else { Cursor::Default })
+    }
 }
 
 /// How well `q` matches `path` as letters in order, ignoring case: higher is better, `None`
@@ -4085,7 +4098,7 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
         if let Some(d) = detail {
             r = r.detail(d);
         }
-        r.build(k).key(key.to_owned()).help(format!("Show {label}")).help_keys([number.to_string()])
+        r.build(k).hand(true).key(key.to_owned()).help(format!("Show {label}")).help_keys([number.to_string()])
     };
     let working = SidebarSection::new("Working Copy").rows([
         place("view-all", "All Changes", &ALL_ICON, Scope::Uncommitted, Some(s.total), None),
@@ -4100,13 +4113,13 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
             if s.pulls.asked() > 0 {
                 r = r.badge(s.pulls.asked().to_string());
             }
-            r.build(k).key("view-pulls").help("The repository's open pull requests")
+            r.build(k).hand(true).key("view-pulls").help("The repository's open pull requests")
         },
         // The whole repository, with this view's changes on it.
         SidebarRow::new("Map").icon(&MAP_ICON).selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
             s.pulls.open = false;
             s.open_map();
-        }).build(k).key("view-map"),
+        }).build(k).hand(true).key("view-map"),
     ]);
     let apart = |key: &str| col().key(key.to_owned()).w_full().h(12.0).a11y_hidden();
     // The same top inset as the other columns. Rune's section heading adds 4 pt above its own
@@ -4174,14 +4187,14 @@ fn file_section(s: &Collate, k: &Kit, (key, title): (&'static str, &str), count:
     if let Some((label, f, _)) = bulk.filter(|_| count > 0) {
         // A ghost button pads its label; pull it out by that much so the label, not the
         // invisible box, ends on the panel's edge with the filter above it.
-        let bulk = Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(f).build(k).key(format!("{key}-bulk"));
+        let bulk = Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).on_press(f).build(k).hand(true).key(format!("{key}-bulk"));
         head = head.child(if menu { bulk } else { bulk.mr(-GHOST_PAD) });
     }
     // Zed's split: the bulk action beside a ⌄ for the rest of what acts on every change. Its
     // glyph, not its box, ends on the panel's edge.
     if menu {
         let more = IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label("More actions for every change")
-            .help("Stash, discard or unstage every change").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.changes_menu("changes-more", tx)).build(k).key("changes-more");
+            .help("Stash, discard or unstage every change").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.changes_menu("changes-more", tx)).build(k).hand(true).key("changes-more");
         head = head.child(more.mr(-4.0));
     }
     // Folded, a list is its title alone and gives its space to the other.
@@ -4243,6 +4256,7 @@ fn file_list(s: &Collate, k: &Kit, staged_list: bool, quick: Option<bool>) -> El
         .on_select(reveal)
         .on_open(reveal)
         .build(s, k)
+        .hand(true)
         .on_secondary_press(|_: &mut Collate, p: PointerPress, tx: &mut Tx| {
             tx.element_at(p.x, p.y, move |s: &mut Collate, picked, tx| if let Some(picked) = picked { s.list_menu(picked.path(), p, tx) });
         })
@@ -4303,7 +4317,7 @@ fn panel_tabs(s: &Collate, k: &Kit) -> El {
         .label("Staging panel")
         .fit()
         .on_pick(|s: &mut Collate, i, _: &mut Tx| s.show_panel_tab(if i == 1 { PanelTab::Agent } else { PanelTab::Files }))
-        .build(k)
+        .build(k).hand(true)
         .key("panel-tabs")
 }
 
@@ -4328,7 +4342,7 @@ fn agent_panel(s: &Collate, k: &Kit) -> El {
         .child(icon(k.glyph.chevron_down, 12.0).color(k.c.icon_faint).a11y_hidden());
     let checkpoints = IconButton::new(&CHECKPOINTS_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small)
         .label("Checkpoints").help(format!("Put the working tree back as it was before {} ran", agent.title()))
-        .on_press(|s: &mut Collate| s.checkpoints_menu("agent-checkpoints")).build(k).key("agent-checkpoints");
+        .on_press(|s: &mut Collate| s.checkpoints_menu("agent-checkpoints")).build(k).hand(true).key("agent-checkpoints");
     let mut head = row().key("agent-head").w_full().px(PANEL_INSET).gap(8.0).items_center()
         .child(row().key("agent-head-lead").grow(1.0).min_w(0.0).gap(2.0).items_center().child(pick).child(checkpoints));
     if running {
@@ -4336,7 +4350,7 @@ fn agent_panel(s: &Collate, k: &Kit) -> El {
             Button::new("Restart").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
                 .help(format!("End {} and start {} again in this project", agent.title(), s.settings.agent.title()))
                 .on_press(|s: &mut Collate| s.start_agent_chat(None))
-                .build(k)
+                .build(k).hand(true)
                 .key("agent-restart"),
         );
     }
@@ -4350,7 +4364,7 @@ fn agent_panel(s: &Collate, k: &Kit) -> El {
         p = p.child(
             row().key("agent-elsewhere").w_full().h(28.0).px(PANEL_INSET).gap(8.0).items_center()
                 .child(text(format!("Running in {folder}")).font(k.ty.text_xsmall).color(k.c.text_faint).truncate().min_w(0.0).grow(1.0))
-                .child(Button::new("Start Here").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("End this session and start the agent in the open project").on_press(|s: &mut Collate| s.start_agent_chat(None)).build(k).key("agent-here").mr(-GHOST_PAD)),
+                .child(Button::new("Start Here").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("End this session and start the agent in the open project").on_press(|s: &mut Collate| s.start_agent_chat(None)).build(k).hand(true).key("agent-here").mr(-GHOST_PAD)),
         );
     }
     let bg = k.c.bg_base;
@@ -4376,7 +4390,7 @@ fn agent_panel(s: &Collate, k: &Kit) -> El {
     };
     let start = Button::new(format!("Start {}", agent.title())).variant(ButtonVariant::Contrast).disabled(s.agent_starting || here.is_none())
         .help(if here.is_none() { "Open a project first" } else { "Start the agent in this project" })
-        .on_press(|s: &mut Collate| s.start_agent_chat(None)).build(k).key("agent-start");
+        .on_press(|s: &mut Collate| s.start_agent_chat(None)).build(k).hand(!(s.agent_starting || here.is_none())).key("agent-start");
     p.child(
         col().key("agent-empty").w_full().grow(1.0).min_h(0.0).center().gap(8.0).px(24.0)
             .child(icon(&AGENT_ICON, 24.0).color(k.c.icon_faint).a11y_hidden())
@@ -4440,9 +4454,9 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         _ => format!("Commit what's staged (git commit{flags})"),
     };
     let commit = Button::new(label).variant(ButtonVariant::Contrast).control_size(ControlSize::Small).shortcut("⌘↩").disabled(!ready).help(help)
-        .on_press(|s: &mut Collate| s.commit()).build(k).key("commit");
+        .on_press(|s: &mut Collate| s.commit()).build(k).hand(ready).key("commit");
     let options = IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::Contrast).control_size(ControlSize::Small).disabled(s.committing)
-        .label("Commit options").help("Amend, Signoff, Skip Hooks").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_options_menu(tx)).build(k).key("commit-options");
+        .label("Commit options").help("Amend, Signoff, Skip Hooks").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_options_menu(tx)).build(k).hand(!s.committing).key("commit-options");
     let agent = s.settings.agent.title();
     // With nothing staged, the common case, it offers to stage everything first rather than
     // sit disabled.
@@ -4532,9 +4546,9 @@ fn repo_row(s: &Collate, k: &Kit) -> El {
             let r = if counted { r.child(text(counts).font(font).color(faint)) } else { r };
             r.child(text(verb).font(font).color(color))
         })
-        .on_press(move |s: &mut Collate| s.branch_do(pick)).build(k).key("remote");
+        .on_press(move |s: &mut Collate| s.branch_do(pick)).build(k).hand(!busy).key("remote");
     let more = IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::Neutral).control_size(ControlSize::Small).disabled(busy)
-        .label("Remote actions").help("Fetch, pull, push, or open a pull request").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.remote_menu(tx)).build(k).key("remote-more");
+        .label("Remote actions").help("Fetch, pull, push, or open a pull request").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.remote_menu(tx)).build(k).hand(!busy).key("remote-more");
     r = r.child(row().key("remote-split").gap(1.0).items_center().child(main).child(more));
     r
 }
@@ -4543,7 +4557,7 @@ fn repo_row(s: &Collate, k: &Kit) -> El {
 fn amend_row(s: &Collate, k: &Kit) -> Option<El> {
     s.amend.then(|| row().key("last-commit").w_full().h(28.0).px(SIDEBAR_INSET).gap(4.0).items_center()
         .child(text("This will update your most recent commit.").font(k.ty.text_xsmall).color(k.c.text_muted).truncate().min_w(0.0).grow(1.0))
-        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Make a new commit instead").on_press(|s: &mut Collate| s.amend = false).build(k).key("amend-cancel").mr(-GHOST_PAD)))
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Make a new commit instead").on_press(|s: &mut Collate| s.amend = false).build(k).hand(true).key("amend-cancel").mr(-GHOST_PAD)))
 }
 
 /// What the diff is, above it: the count, what it's measured against, the totals and how much
@@ -4561,10 +4575,11 @@ fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
                 .on_toggle(|s: &mut Collate| s.base_open = !s.base_open)
                 .on_close(|s: &mut Collate| s.base_open = false)
                 .on_choose(|s: &mut Collate, v: &str, _: &mut Tx| s.set_base(v))
-                .build(k, layer);
+                .build(k, layer)
+                .hand(true);
             // Any other two ends, from here as well as the Branch menu.
             let any = Button::new("Compare Others…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Compare any two branches, tags or commits")
-                .on_press(|s: &mut Collate| s.start_compare()).build(k).key("compare-any");
+                .on_press(|s: &mut Collate| s.start_compare()).build(k).hand(true).key("compare-any");
             Some(row().key("compare").gap(8.0).items_center().child(text("Compare against").font(k.ty.text_small).color(k.c.text_muted)).child(base).child(any))
         }
         // A pull request: all of it, what changed since the reader's review, or one commit.
@@ -4582,13 +4597,13 @@ fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
             let pick = Button::new(label.clone()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
                 .label_with(move |font, color| row().gap(4.0).items_center().child(text(label).font(font).color(color)).child(icon(chevron, 12.0).color(color)))
                 .help("All the changes, the changes since your last review, or one commit")
-                .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_part_menu(tx)).build(k).key("pr-part");
+                .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pr_part_menu(tx)).build(k).hand(true).key("pr-part");
             Some(row().key("compare").gap(6.0).items_center().child(text("Showing").font(k.ty.text_small).color(k.c.text_muted)).child(pick))
         }
         Scope::History => {
             let at = s.commit.as_ref().and_then(|c| s.commit_ids.iter().position(|x| x == c));
-            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help(if at.is_none_or(|i| i + 1 >= s.commit_ids.len()) { "The oldest commit the graph has read" } else { "Older commit" }).shortcut("<").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).key("older");
-            let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help(if at.is_none_or(|i| i == 0) { "The newest commit" } else { "Newer commit" }).shortcut(">").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).key("newer");
+            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help(if at.is_none_or(|i| i + 1 >= s.commit_ids.len()) { "The oldest commit the graph has read" } else { "Older commit" }).shortcut("<").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).hand(!(at.is_none_or(|i| i + 1 >= s.commit_ids.len()))).key("older");
+            let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help(if at.is_none_or(|i| i == 0) { "The newest commit" } else { "Newer commit" }).shortcut(">").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).hand(!(at.is_none_or(|i| i == 0))).key("newer");
             Some(row().key("compare").gap(6.0).items_center().child(older).child(newer))
         }
         _ => None,
@@ -4741,7 +4756,7 @@ fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
                 .control_size(ControlSize::Small)
                 .help("Start the coding agent in a terminal under the diff, asked to address every comment (Settings - Coding agent)")
                 .on_press(|s: &mut Collate| s.send_comments())
-                .build(k)
+                .build(k).hand(true)
                 .key("send-comments"),
         ));
     }
@@ -4785,15 +4800,15 @@ fn operation_bar(s: &Collate, k: &Kit) -> Option<El> {
         .child(text(say).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0).grow(1.0))
         .child(Button::new(format!("Settle with {}", s.settings.agent.title())).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
             .help("Start the coding agent in the terminal to settle the conflicts and continue; it doesn't push")
-            .on_press(|s: &mut Collate| if let Some(settle) = s.stopped_settle() { s.settle_with_agent(settle) }).build(k).key("op-agent"))
+            .on_press(|s: &mut Collate| if let Some(settle) = s.stopped_settle() { s.settle_with_agent(settle) }).build(k).hand(idle).key("op-agent"))
         .child(Button::new("Abort").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
-            .help(format!("Stop the {} and put everything back as it was", op.noun())).on_press(step("abort", "Aborted")).build(k).key("op-abort"));
+            .help(format!("Stop the {} and put everything back as it was", op.noun())).on_press(step("abort", "Aborted")).build(k).hand(idle).key("op-abort"));
     if op == git::Operation::Rebase {
         r = r.child(Button::new("Skip Commit").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(!idle)
-            .help("Leave out the commit the rebase stopped at").on_press(step("skip", "Skipped a commit of")).build(k).key("op-skip"));
+            .help("Leave out the commit the rebase stopped at").on_press(step("skip", "Skipped a commit of")).build(k).hand(idle).key("op-skip"));
     }
     Some(r.child(Button::new("Continue").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!idle || conflicts > 0)
-        .help(if conflicts > 0 { format!("Settle the {conflicts} conflicted file{} first", if conflicts == 1 { "" } else { "s" }) } else { "Commit the settled files and go on".to_owned() }).on_press(step("continue", "Continued")).build(k).key("op-continue")))
+        .help(if conflicts > 0 { format!("Settle the {conflicts} conflicted file{} first", if conflicts == 1 { "" } else { "s" }) } else { "Commit the settled files and go on".to_owned() }).on_press(step("continue", "Continued")).build(k).hand(idle && conflicts == 0).key("op-continue")))
 }
 
 fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
@@ -4816,18 +4831,18 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
             Undo::Backup(_) => "Put the discarded file back from its backup".to_owned(),
             Undo::Head(m) => format!("Take back {} (⌘Z)", m.what),
         };
-        r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help(help).on_press(|s: &mut Collate| s.undo_notice()).build(k).key("undo"));
+        r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help(help).on_press(|s: &mut Collate| s.undo_notice()).build(k).hand(true).key("undo"));
     }
     if note.offer_pr {
         r = r.child(Button::new("Create Pull Request").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Open a pull request from this branch").on_press(|s: &mut Collate| {
             s.notice = None;
             s.branch_do("pull-request");
-        }).build(k).key("notice-pr"));
+        }).build(k).hand(true).key("notice-pr"));
     }
     if note.end.is_some() {
         r = r
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Keep the terminal running").on_press(|s: &mut Collate| s.notice = None).build(k).key("end-cancel"))
-            .child(Button::new("End Terminal").variant(ButtonVariant::Danger).control_size(ControlSize::Small).help("End the shell and what runs in it").shortcut("⌘W").on_press(|s: &mut Collate| s.confirm_end_terminal()).build(k).key("end-terminal"));
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Keep the terminal running").on_press(|s: &mut Collate| s.notice = None).build(k).hand(true).key("end-cancel"))
+            .child(Button::new("End Terminal").variant(ButtonVariant::Danger).control_size(ControlSize::Small).help("End the shell and what runs in it").shortcut("⌘W").on_press(|s: &mut Collate| s.confirm_end_terminal()).build(k).hand(true).key("end-terminal"));
     }
     Some(r)
 }
@@ -4835,7 +4850,7 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
 /// A note in the summary row with the action that undoes it: the note as text, the action
 /// the same small button as Stage All.
 fn chip(k: &Kit, key: &str, note: &str, label: &str, help: &str, f: impl Fn(&mut Collate, &mut Tx) + 'static) -> El {
-    let button = Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help(help.to_owned()).on_press_tx(f).build(k).key("act");
+    let button = Button::new(label.to_owned()).variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help(help.to_owned()).on_press_tx(f).build(k).hand(true).key("act");
     let r = row().key(key.to_owned()).items_center();
     if note.is_empty() {
         // Alone, its label (not its padding) starts where a note would.
