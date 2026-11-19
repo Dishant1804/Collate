@@ -49,14 +49,40 @@ pub struct Detail {
     pub body: String,
     /// The comments, oldest first.
     pub comments: Vec<Post>,
+    /// What else happened to it, oldest first.
+    pub events: Vec<Event>,
+}
+
+/// A change in an issue's timeline, said as GitHub says it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Event {
+    /// GitHub's name for it, as `ClosedEvent`.
+    pub kind: String,
+    pub who: String,
+    /// What they did, after their name: "closed this as completed".
+    pub what: String,
+    pub time: String,
+    /// The label it added or took off, and its colour.
+    pub label: Option<(String, String)>,
+    /// Where it points: the issue or pull request that mentioned this one.
+    pub url: String,
 }
 
 /// A comment: who, what and when, and what the reader may do with it.
 const COMMENT: &str = "id body url createdAt viewerDidAuthor author{login} reactionGroups{content users{totalCount}}";
 
-/// GitHub's timeline holds the last 100 comments; older ones are on GitHub.
+/// The events the timeline shows, each with who and when.
+const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name color}} ... on UnlabeledEvent{createdAt actor{login} label{name color}} \
+... on AssignedEvent{createdAt actor{login} assignee{... on User{login}}} ... on UnassignedEvent{createdAt actor{login} assignee{... on User{login}}} \
+... on ClosedEvent{createdAt actor{login} stateReason} ... on ReopenedEvent{createdAt actor{login}} \
+... on RenamedTitleEvent{createdAt actor{login} previousTitle currentTitle} \
+... on CrossReferencedEvent{createdAt actor{login} source{... on Issue{number title url} ... on PullRequest{number title url}}} \
+... on MilestonedEvent{createdAt actor{login} milestoneTitle} ... on DemilestonedEvent{createdAt actor{login} milestoneTitle}";
+
+/// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("body timelineItems(last:100,itemTypes:[ISSUE_COMMENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}}}}}}")
+    format!("body timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
 fn detail_query() -> String {
@@ -122,8 +148,44 @@ fn issue(v: &Value) -> Issue {
 
 fn detail(v: &Value) -> Detail {
     let items = v["timelineItems"]["nodes"].as_array().into_iter().flatten();
-    let comments = items.filter(|e| e["__typename"] == "IssueComment").map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
-    Detail { issue: issue(v), body: s(v, "body"), comments }
+    let (comments, events): (Vec<&Value>, Vec<&Value>) = items.partition(|e| e["__typename"] == "IssueComment");
+    let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
+    Detail { issue: issue(v), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect() }
+}
+
+/// An event as GitHub words it; `None` for a kind the timeline doesn't show.
+fn event(e: &Value) -> Option<Event> {
+    let kind = s(e, "__typename");
+    let who = login(&e["actor"]);
+    let whom = login(&e["assignee"]);
+    let mut url = String::new();
+    let mut label = None;
+    let what = match kind.as_str() {
+        "LabeledEvent" | "UnlabeledEvent" => {
+            label = Some((s(&e["label"], "name"), s(&e["label"], "color")));
+            if kind == "LabeledEvent" { "added the label" } else { "removed the label" }.to_owned()
+        }
+        "AssignedEvent" if whom == who => "self-assigned this".to_owned(),
+        "AssignedEvent" => format!("assigned {whom}"),
+        "UnassignedEvent" if whom == who => "removed their assignment".to_owned(),
+        "UnassignedEvent" => format!("unassigned {whom}"),
+        "ClosedEvent" => match e["stateReason"].as_str() {
+            Some("COMPLETED") => "closed this as completed",
+            Some("NOT_PLANNED") => "closed this as not planned",
+            Some("DUPLICATE") => "closed this as a duplicate",
+            _ => "closed this",
+        }.to_owned(),
+        "ReopenedEvent" => "reopened this".to_owned(),
+        "RenamedTitleEvent" => format!("changed the title from \u{201c}{}\u{201d} to \u{201c}{}\u{201d}", s(e, "previousTitle"), s(e, "currentTitle")),
+        "CrossReferencedEvent" => {
+            url = s(&e["source"], "url");
+            format!("mentioned this in #{} {}", e["source"]["number"].as_u64().unwrap_or(0), s(&e["source"], "title"))
+        }
+        "MilestonedEvent" => format!("added this to the {} milestone", s(e, "milestoneTitle")),
+        "DemilestonedEvent" => format!("removed this from the {} milestone", s(e, "milestoneTitle")),
+        _ => return None,
+    };
+    Some(Event { kind, who, what, time: s(e, "createdAt"), label, url })
 }
 
 /// The issues on the reader, assigned to them, then the ones they opened, then those that
@@ -172,6 +234,20 @@ mod tests {
         let c = &d.comments[0];
         assert_eq!((c.id.as_str(), c.body.as_str(), c.time.as_str(), c.mine), ("IC_1", "Agreed", "2026-11-02T10:00:00Z", true));
         assert_eq!(c.reactions, [("HEART".to_owned(), 2)], "only the reactions someone gave");
+    }
+
+    #[test]
+    fn timeline_events_read_as_github_words_them() {
+        let e = |v: serde_json::Value| event(&v).map(|e| (e.who, e.what, e.label, e.url));
+        let me = serde_json::json!({"login": "me"});
+        assert_eq!(e(serde_json::json!({"__typename": "ClosedEvent", "actor": me, "stateReason": "NOT_PLANNED"})), Some(("me".into(), "closed this as not planned".into(), None, String::new())));
+        assert_eq!(e(serde_json::json!({"__typename": "AssignedEvent", "actor": me, "assignee": me})).map(|e| e.1), Some("self-assigned this".into()));
+        assert_eq!(e(serde_json::json!({"__typename": "AssignedEvent", "actor": me, "assignee": {"login": "ana"}})).map(|e| e.1), Some("assigned ana".into()));
+        assert_eq!(e(serde_json::json!({"__typename": "LabeledEvent", "actor": me, "label": {"name": "bug", "color": "d73a4a"}})).map(|e| (e.1, e.2)),
+            Some(("added the label".into(), Some(("bug".into(), "d73a4a".into())))));
+        assert_eq!(e(serde_json::json!({"__typename": "CrossReferencedEvent", "actor": me, "source": {"number": 9, "title": "Fix it", "url": "https://github.com/o/r/pull/9"}})).map(|e| (e.1, e.3)),
+            Some(("mentioned this in #9 Fix it".into(), "https://github.com/o/r/pull/9".into())));
+        assert_eq!(e(serde_json::json!({"__typename": "SubscribedEvent"})), None, "a kind the timeline doesn't show");
     }
 
     #[test]

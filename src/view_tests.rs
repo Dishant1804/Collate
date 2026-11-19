@@ -2973,10 +2973,13 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert_eq!(rt.state.issues.number, Some(3));
     assert!(rt.find("issue-title").is_some() && rt.find("issue-state").is_some() && rt.find("issue-list").is_none(), "it shows in place of the list, at once from it");
     let said = crate::github::Post { author: "bo".into(), body: "Same here".into(), time: "2026-11-02T10:00:00Z".into(), reactions: vec![("THUMBS_UP".into(), 2)], ..Default::default() };
-    rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![said] })));
+    rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![said],
+        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }] })));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-body").is_some(), "its description shows once read");
     assert!(rt.find("issue-comment-0").is_some() && rt.find("issue-comment-0-reactions").is_some(), "and its comments, with their reactions");
+    let y = |rt: &Runtime<Collate>, key: &str| rt.find(key).unwrap_or_else(|| panic!("{key}")).1;
+    assert!(y(&rt, "issue-event-0") > y(&rt, "issue-comment-0"), "and what happened, in order");
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
     rt.frame(1.0 / 60.0);
     assert!(rt.state.issues.number.is_none() && rt.find("issue-3").is_some(), "Esc goes back to the list");

@@ -501,14 +501,43 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
         if d.comments.is_empty() {
             activity = activity.child(text("No comments yet.".to_owned()).font(k.ty.text_small).color(k.c.text_faint));
         }
-        for (at, c) in d.comments.iter().enumerate() {
-            activity = activity.child(comment_card(s, k, at, c));
-        }
+        // Comments and events as they happened.
+        let mut items: Vec<(&str, El)> = d.comments.iter().enumerate().map(|(at, c)| (c.time.as_str(), comment_card(s, k, at, c)))
+            .chain(d.events.iter().enumerate().map(|(at, e)| (e.time.as_str(), event_row(s, k, at, e)))).collect();
+        items.sort_by_key(|(time, _)| *time);
+        activity = activity.children(items.into_iter().map(|(_, el)| el));
         main = main.child(activity);
     }
     col().key("issues").w_full().grow(1.0).min_h(0.0).child(head)
         .child(col().key("issue-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false })
             .child(row().key("issue-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(16.0).pb(48.0).gap(40.0).items_start().child(main)))
+}
+
+/// An event in the activity, set between the comments as GitHub sets it: a mark in the faces'
+/// column, then who did what and when.
+fn event_row(s: &Collate, k: &Kit, at: usize, e: &github_issues::Event) -> El {
+    let (glyph, tint): (&'static Icon, rune::Color) = match (e.kind.as_str(), e.what.as_str()) {
+        ("ClosedEvent", w) if w.ends_with("completed") => (&DONE_ICON, SyntaxTheme::from_kit(k).color(Syntax::Keyword)),
+        ("ClosedEvent", _) => (&SKIPPED_ICON, k.c.text_faint),
+        ("ReopenedEvent", _) => (&ISSUES_ICON, k.c.success.icon),
+        ("RenamedTitleEvent", _) => (&crate::pulls::PENCIL_ICON, k.c.icon_muted),
+        ("CrossReferencedEvent", _) => (&crate::pulls::LINK_ICON, k.c.icon_muted),
+        _ => (&crate::pulls::CLOCK_ICON, k.c.icon_faint),
+    };
+    let mut line = row().key(format!("issue-event-{at}")).w_full().gap(12.0).items_center().min_h(28.0)
+        .child(row().w(32.0).center().child(icon(glyph, 14.0).color(tint).a11y_hidden()))
+        .child(crate::history_view::face(k, s, &e.who, 16.0))
+        .child(text(e.who.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
+        .child(text(e.what.clone()).font(k.ty.text_small).color(k.c.text_muted).truncate().min_w(0.0).shrink());
+    if let Some((name, color)) = &e.label {
+        line = line.child(crate::pulls::label_pill(k, name, crate::pulls::label_color(k, color)));
+    }
+    line = line.child(text(e.time.get(..10).unwrap_or("").to_owned()).font(k.ty.text_small).color(k.c.text_faint));
+    if !e.url.is_empty() {
+        let url = e.url.clone();
+        line = line.cursor(Cursor::Pointer).role("link").help("Open it on GitHub").on_press(move |_: &mut Collate| crate::open_url(&url));
+    }
+    line
 }
 
 /// A comment in the activity: who wrote it beside it, as GitHub's timeline sets it, then when,
