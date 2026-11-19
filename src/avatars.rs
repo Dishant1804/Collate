@@ -29,6 +29,8 @@ struct Job {
     sha: String,
     /// `owner/repo` on github.com, when the project is there.
     repo: Option<String>,
+    /// Where the picture is, when that's known without asking GitHub.
+    url: Option<String>,
 }
 
 /// The pictures known so far, by email. Without `start` (headless tests) it stays empty.
@@ -65,8 +67,28 @@ impl Avatars {
                 continue;
             }
             self.images.insert(c.email.clone(), None);
-            let _ = jobs.send(Job { email: c.email.clone(), sha: c.id.clone(), repo: repo.clone() });
+            let _ = jobs.send(Job { email: c.email.clone(), sha: c.id.clone(), repo: repo.clone(), url: None });
         }
+    }
+
+    /// Asks for the pictures of GitHub accounts by login, for the people of a pull request.
+    pub fn request_logins<'a>(&mut self, logins: impl IntoIterator<Item = &'a str>) {
+        let Some(jobs) = &self.jobs else { return };
+        for login in logins {
+            let key = login_key(login);
+            if login.is_empty() || self.images.contains_key(&key) {
+                continue;
+            }
+            self.images.insert(key.clone(), None);
+            // An app's account (`name[bot]`) shows its owner's picture under the bare name.
+            let name = login.trim_end_matches("[bot]");
+            let _ = jobs.send(Job { email: key, sha: String::new(), repo: None, url: Some(format!("https://github.com/{name}.png?size={PIXELS}")) });
+        }
+    }
+
+    /// The picture of the GitHub account `login`, once it's decoded.
+    pub fn of_login(&self, login: &str) -> Option<&Image> {
+        self.get(&login_key(login))
     }
 
     pub fn landed(&mut self, email: String, bytes: Option<Vec<u8>>) {
@@ -86,6 +108,12 @@ impl Avatars {
     }
 }
 
+/// Pictures are kept by email; an account named by login keeps its picture under `@login`,
+/// which no email is.
+fn login_key(login: &str) -> String {
+    format!("@{}", login.to_lowercase())
+}
+
 /// Each job's picture: from the disk cache, else looked up and saved. A failed lookup (no
 /// network, rate limited) saves nothing, so a later session asks again.
 fn resolve(jobs: Vec<Job>, deliver: &(impl Fn(String, Option<Vec<u8>>) + Sync)) {
@@ -101,7 +129,7 @@ fn resolve(jobs: Vec<Job>, deliver: &(impl Fn(String, Option<Vec<u8>>) + Sync)) 
     }
     // Where each picture is: a no-reply address names its account, else GitHub names the one
     // behind the author's commit, a query per repository.
-    let mut found: Vec<Option<Option<String>>> = ask.iter().map(|(j, _)| noreply_url(&j.email).map(Some)).collect();
+    let mut found: Vec<Option<Option<String>>> = ask.iter().map(|(j, _)| j.url.clone().or_else(|| noreply_url(&j.email)).map(Some)).collect();
     let mut repos: Vec<&str> = ask.iter().zip(&found).filter(|(_, f)| f.is_none()).filter_map(|((j, _), _)| j.repo.as_deref()).collect();
     repos.sort_unstable();
     repos.dedup();

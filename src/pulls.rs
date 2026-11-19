@@ -237,6 +237,22 @@ fn gh() -> Option<Gh> {
 }
 
 impl Collate {
+    /// Asks for the pictures of everyone the pull requests show: the reader, the authors, and
+    /// the open one's reviewers, assignees and commenters.
+    fn request_faces(&mut self) {
+        let mut logins: Vec<&str> = self.pulls.me().into_iter().collect();
+        if let Some(Ok((_, pulls))) = &self.pulls.list {
+            logins.extend(pulls.iter().map(|p| p.author.as_str()));
+        }
+        if let Some(pr) = &self.pulls.pr {
+            logins.push(&pr.pull.author);
+            logins.extend(pr.reviewers.iter().map(|(w, _)| w.as_str()));
+            logins.extend(pr.assignees.iter().map(String::as_str));
+            logins.extend(pr.conversation.iter().chain(pr.threads.iter().flat_map(|t| &t.comments)).map(|p| p.author.as_str()));
+        }
+        self.avatars.request_logins(logins);
+    }
+
     /// Sign in to GitHub through the GitHub CLI, in a terminal under the diff, installing the
     /// CLI with Homebrew first if it's missing; without Homebrew, its download page opens.
     /// Then wait for the sign-in and read the pull requests.
@@ -319,6 +335,7 @@ impl Collate {
                 }
                 s.pulls.loading = false;
                 s.pulls.list = Some(got);
+                s.request_faces();
                 s.note_review_requests();
             });
         });
@@ -358,6 +375,7 @@ impl Collate {
                         s.open_commit(&range);
                         s.compared = Some((d.pull.base.clone(), d.pull.head.clone()));
                         s.pulls.pr = Some(d);
+                        s.request_faces();
                         s.pulls.tab = PrTab::Overview;
                         s.place_comments();
                     }
@@ -916,7 +934,8 @@ pub fn pulls_view(s: &Collate, k: &Kit) -> El {
                         .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("#{n} {}", p.title)).description(state).help("Review this pull request")
                         .on_press(move |s: &mut Collate| s.open_pull(n))
                         .child(icon(mark, 16.0).color(hue).a11y_hidden())
-                        .child(words);
+                        .child(words)
+                        .child(crate::history_view::face(k, s, &p.author, 20.0));
                     if p.ci.is_some() {
                         line = line.child(dot(k, p.ci));
                     }
@@ -1066,7 +1085,10 @@ fn activity_post(s: &Collate, k: &Kit, i: usize, p: &github::Post) -> El {
                 .child(text(n.to_string()).font(k.ty.text_small).color(k.c.text_muted)))
         })));
     }
-    c
+    // Who wrote it beside it, as GitHub's timeline sets it.
+    row().key(format!("{key}-row")).w_full().gap(12.0).items_start()
+        .child(crate::history_view::face(k, s, &p.author, 32.0).mt(2.0))
+        .child(c.grow(1.0).min_w(0.0))
 }
 
 /// The open pull request's overview, as GitHub and DiffKit lay it out: its title and what it
@@ -1102,6 +1124,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     let muted = |t: &str| text(t.to_owned()).font(k.ty.text_small).color(k.c.text_muted);
     let byline = row().key("pr-byline").w_full().gap(6.0).items_center().flex_wrap()
         .child(pill)
+        .child(crate::history_view::face(k, s, &p.author, 20.0).ml(2.0))
         .child(text(p.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
         .child(muted(merges)).child(branch_chip(k, &p.base))
         .child(muted("from")).child(branch_chip(k, &p.head))
@@ -1325,7 +1348,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
             _ => (icon(&MESSAGE_ICON, 14.0).color(k.c.icon_muted), "Commented"),
         };
         let mut r = row().key(format!("reviewer-{who}")).w_full().h(28.0).gap(8.0).items_center().label(format!("{who} - {said}")).help(said.to_owned())
-            .child(crate::history_view::initials(k, who, 20.0).a11y_hidden())
+            .child(crate::history_view::face(k, s, who, 20.0))
             .child(text(who.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0));
         // Reviewed already: ask again, as GitHub's re-request does.
         if open && state != "REQUESTED" && Some(who.as_str()) != me {
@@ -1358,7 +1381,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     }
     for a in &pr.assignees {
         assignees = assignees.child(row().key(format!("assignee-{a}")).w_full().h(28.0).gap(8.0).items_center()
-            .child(crate::history_view::initials(k, a, 20.0).a11y_hidden())
+            .child(crate::history_view::face(k, s, a, 20.0))
             .child(text(a.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0)));
     }
     let mut side = col().key("pr-side").w(220.0).gap(24.0).child(props).child(reviewers).child(assignees).child(labels);
@@ -1435,7 +1458,8 @@ fn post_view(s: &Collate, k: &Kit, key: &str, p: &github::Post) -> El {
         _ => "",
     };
     let mut c = col().key(key.to_owned()).w_full().gap(2.0)
-        .child(row().w_full().gap(6.0)
+        .child(row().w_full().gap(6.0).items_center()
+            .child(crate::history_view::face(k, s, &p.author, 16.0))
             .child(text(format!("{}{verdict}", p.author)).font(k.ty.text_xsmall_medium).color(k.c.text_base))
             .child(text(p.time.get(..10).unwrap_or("").to_owned()).font(k.ty.text_small).color(k.c.text_faint)));
     if !p.body.trim().is_empty() {

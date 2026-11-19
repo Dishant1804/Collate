@@ -77,6 +77,14 @@ fn avatar(k: &Kit, s: &Collate, c: &graph::Commit, size: f32) -> El {
     initials(k, &c.author, size)
 }
 
+/// A GitHub account's picture, by login, else its initials.
+pub fn face(k: &Kit, s: &Collate, login: &str, size: f32) -> El {
+    if let Some(img) = s.avatars.of_login(login) {
+        return row().size(size, size).radius(size / 2.0).border(1.0, k.c.border_weak).pixels_fit(img.pixels(), rune::SurfaceFit::Fill).a11y_hidden();
+    }
+    initials(k, login, size).a11y_hidden()
+}
+
 /// A round badge with someone's initials, tinted by their name so each keeps a colour: an
 /// author without a picture, or a pull request's reviewer.
 pub fn initials(k: &Kit, name: &str, size: f32) -> El {
