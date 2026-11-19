@@ -50,6 +50,8 @@ pub struct Detail {
     pub id: String,
     /// The reader hears of everything on it.
     pub subscribed: bool,
+    /// Reactions to the description and how many of each, by GitHub's names.
+    pub reactions: Vec<(String, u32)>,
     /// Only those with write access may comment.
     pub locked: bool,
     pub body: String,
@@ -94,7 +96,7 @@ const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name colo
 
 /// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("id body viewerCanUpdate viewerSubscription locked milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+    format!("id body reactionGroups{{content users{{totalCount}}}} viewerCanUpdate viewerSubscription locked milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
 RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
@@ -239,7 +241,7 @@ fn detail(v: &Value) -> Detail {
     let items = v["timelineItems"]["nodes"].as_array().into_iter().flatten();
     let (comments, events): (Vec<&Value>, Vec<&Value>) = items.partition(|e| e["__typename"] == "IssueComment");
     let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
-    Detail { issue: issue(v), id: s(v, "id"), subscribed: v["viewerSubscription"] == "SUBSCRIBED", locked: v["locked"].as_bool().unwrap_or(false), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
+    Detail { issue: issue(v), id: s(v, "id"), subscribed: v["viewerSubscription"] == "SUBSCRIBED", locked: v["locked"].as_bool().unwrap_or(false), reactions: post(v).reactions, body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
         milestone: v["milestone"]["title"].as_str().map(str::to_owned),
         pulls: v["closedByPullRequestsReferences"]["nodes"].as_array().into_iter().flatten()
             .map(|p| (p["number"].as_u64().unwrap_or(0) as u32, s(p, "title"), s(p, "state"))).collect() }

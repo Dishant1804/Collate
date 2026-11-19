@@ -119,6 +119,9 @@ impl Default for IssuesState {
     }
 }
 
+// Lucide's smile-plus (ISC licence): adding a reaction, as GitHub's button draws it.
+crate::lucide!(SMILE_PLUS_ICON, "collate-smile-plus", r#"<path d="M22 11v1a10 10 0 1 1-9-10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" x2="9.01" y1="9" y2="9"/><line x1="15" x2="15.01" y1="9" y2="9"/><path d="M16 5h6"/><path d="M19 2v6"/>"#);
+
 // Lucide's circle-check and circle-slash (ISC licence): an issue closed as done, and one closed
 // as not planned or a duplicate, as GitHub marks them.
 crate::lucide!(DONE_ICON, "collate-issue-done", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
@@ -768,6 +771,10 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
         Some(Ok(d)) if d.body.trim().is_empty() => text("No description provided.".to_owned()).key("issue-body").font(k.ty.ui).color(k.c.text_faint),
         Some(Ok(d)) => crate::pulls::rich(s, k, "issue-body", &d.body, k.ty.ui),
     };
+    let body = match detail.filter(|d| !d.id.is_empty()) {
+        Some(d) => col().w_full().gap(12.0).child(body).child(reactions(k, "issue", &d.id, &d.reactions)),
+        None => body,
+    };
     let mut main = col().key("issue-main").grow(1.0).min_w(0.0).max_w(780.0).gap(28.0)
         .child(col().key("issue-title").w_full().gap(10.0)
             .child(title)
@@ -944,6 +951,35 @@ fn event_row(s: &Collate, k: &Kit, at: usize, e: &github_issues::Event) -> El {
     line
 }
 
+/// A comment's or the description's reactions, each with its count, and a button to add one.
+/// A press on one adds the reader's own, as on GitHub.
+fn reactions(k: &Kit, key: &str, id: &str, had: &[(String, u32)]) -> El {
+    let chips = had.iter().filter_map(|(name, n)| {
+        let (content, emoji) = github::REACTIONS.iter().find(|(c, _)| c == name)?;
+        let id = id.to_owned();
+        Some(row().key(format!("{key}-react-{content}")).h(24.0).px(8.0).gap(4.0).items_center().radius(12.0).border(1.0, k.c.border_weak)
+            .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("{n} {content}, add yours"))
+            .on_press(move |s: &mut Collate| s.react_to_issue_post(id.clone(), content))
+            .child(text((*emoji).to_owned()).font(k.ty.text_small).a11y_hidden())
+            .child(text(n.to_string()).font(k.ty.text_small).color(k.c.text_muted).a11y_hidden()))
+    });
+    let (id, anchor) = (id.to_owned(), format!("{key}-react-add"));
+    let add = IconButton::new(&SMILE_PLUS_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label("Add a reaction")
+        .on_press_tx({
+            let anchor = anchor.clone();
+            move |_: &mut Collate, tx: &mut Tx| {
+                let id = id.clone();
+                let menu = PopupMenu::new().items(github::REACTIONS.iter().map(|(name, emoji)| PopupItem::new(*name, *emoji)));
+                tx.popup_menu(menu, anchor.clone(), move |s: &mut Collate, picked: Option<&str>, _| {
+                    if let Some((content, _)) = picked.and_then(|p| github::REACTIONS.iter().find(|(n, _)| *n == p)) {
+                        s.react_to_issue_post(id.clone(), content);
+                    }
+                });
+            }
+        }).build(k).hand(true).key(anchor);
+    row().key(format!("{key}-reactions")).w_full().gap(6.0).items_center().flex_wrap().children(chips).child(add)
+}
+
 /// A comment in the activity: who wrote it beside it, as GitHub's timeline sets it, then when,
 /// what they wrote, and its reactions.
 fn comment_card(s: &Collate, k: &Kit, at: usize, c: &github::Post) -> El {
@@ -956,17 +992,8 @@ fn comment_card(s: &Collate, k: &Kit, at: usize, c: &github::Post) -> El {
     let mut card = col().key(key.clone()).w_full().radius(k.radius.md).border(1.0, k.c.border_weak).child(head)
         .child(col().w_full().h(1.0).fill(k.c.border_weak))
         .child(col().w_full().px(12.0).py(10.0).child(crate::pulls::rich(s, k, &format!("{key}-body"), &c.body, k.ty.text_small)));
-    if !c.reactions.is_empty() {
-        card = card.child(row().key(format!("{key}-reactions")).w_full().px(12.0).pb(10.0).gap(6.0).flex_wrap().children(c.reactions.iter().filter_map(|(name, n)| {
-            let (content, emoji) = github::REACTIONS.iter().find(|(c, _)| c == name)?;
-            let id = c.id.clone();
-            // A press adds the reader's own, as on GitHub.
-            Some(row().key(format!("{key}-react-{content}")).h(24.0).px(8.0).gap(4.0).items_center().radius(12.0).border(1.0, k.c.border_weak)
-                .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label(format!("{n} {content}, add yours"))
-                .on_press(move |s: &mut Collate| s.react_to_issue_post(id.clone(), content))
-                .child(text((*emoji).to_owned()).font(k.ty.text_small).a11y_hidden())
-                .child(text(n.to_string()).font(k.ty.text_small).color(k.c.text_muted).a11y_hidden()))
-        })));
+    if !c.id.is_empty() {
+        card = card.child(reactions(k, &key, &c.id, &c.reactions).px(12.0).pb(10.0));
     }
     row().w_full().gap(12.0).items_start()
         .child(crate::history_view::face(k, s, &c.author, 32.0).mt(2.0))
