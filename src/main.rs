@@ -980,7 +980,11 @@ impl Collate {
     /// Back from a commit's diff to the commit list, showing the commit it was on.
     fn close_commit_diff(&mut self, tx: &mut Tx) {
         self.history_diff = false;
-        self.close_pull();
+        // A pull request was opened from the list of them, so that's where back goes.
+        if self.pulls.pr.is_some() {
+            self.close_pull();
+            self.open_pulls();
+        }
         if let Some(c) = &self.commit {
             tx.scroll_into_view(format!("graph-{c}"));
         }

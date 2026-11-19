@@ -2144,6 +2144,12 @@ fn pull_requests_list_by_what_they_want_and_one_opens_on_its_overview() {
     assert!(rt.find("rewrite-3").is_some(), "the dialog lists the range-diff");
     click(&mut rt, "rewrite-done");
     assert!(rt.state.pulls.rewrite.is_none());
+    // Back leaves the pull request for the list it came from, not the commits.
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "history-back");
+    assert!(rt.state.pulls.pr.is_none() && rt.state.pulls.open, "back goes to the pull requests");
     rt.update(|s, _| s.set_scope(Scope::Staged));
     assert!(rt.state.pulls.pr.is_none(), "another view leaves the pull request");
 }

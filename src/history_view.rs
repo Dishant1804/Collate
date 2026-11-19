@@ -4,7 +4,7 @@ use rune::{Cursor, El, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit};
 use crate::Hand;
 
-use crate::diff::{EDGE, GHOST_PAD};
+use crate::diff::EDGE;
 use crate::git::Scope;
 use crate::{Collate, EXTERNAL_ICON, MORE_ICON, PANEL_INSET, REFRESH_ICON, abbrev, graph, open_url, pulls, refresh};
 
@@ -177,13 +177,23 @@ pub fn commit_card(s: &Collate, k: &Kit) -> Option<El> {
     Some(card)
 }
 
+/// A chevron pointing left: back to the list a commit or pull request was opened from.
+static CHEVRON_LEFT: rune::Icon = rune::Icon {
+    name: "collate-chevron-left",
+    view: 16.0,
+    body: r#"<path d="M9.5 4.5L6 8L9.5 11.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
 /// Above a commit's diff: the way back to the list, who made it and when, its subject, and
 /// the hash to copy.
 pub fn commit_header(s: &Collate, k: &Kit) -> El {
-    let back = Button::new("‹ All Commits").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-        .help("Back to the commit list").shortcut("Esc")
+    let to = if s.pulls.pr.is_some() { "Back to the pull requests" } else { "Back to the commit list" };
+    let back = IconButton::new(&CHEVRON_LEFT)
+        .variant(IconButtonVariant::GhostMuted)
+        .label(to).help(to).shortcut("Esc")
         .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.close_commit_diff(tx)).build(k).hand(true).key("history-back");
-    let mut r = row().key("commit-header").w_full().px(EDGE).py(10.0).gap(12.0).items_center().child(back.ml(-GHOST_PAD));
+    // The glyph, not the button's padding, sits on the edge.
+    let mut r = row().key("commit-header").w_full().px(EDGE).py(10.0).gap(12.0).items_center().child(back.ml(-4.0));
     if let Some(tabs) = crate::pulls::pr_tabs(s, k) {
         r = r.child(tabs);
     } else if let Some(range) = s.commit.as_deref().filter(|c| c.contains("..")) {
