@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "collate"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "alacritty_terminal",
  "libc",
