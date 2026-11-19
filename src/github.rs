@@ -835,7 +835,7 @@ fn detail(v: &Value, threads: &Value) -> Detail {
 }
 
 /// What every comment and review has: who, what, where, and its reactions.
-fn post(c: &Value) -> Post {
+pub(crate) fn post(c: &Value) -> Post {
     let reactions = c["reactionGroups"].as_array().into_iter().flatten()
         .map(|g| (s(g, "content"), g["users"]["totalCount"].as_u64().unwrap_or(0) as u32))
         .filter(|(_, n)| *n > 0)

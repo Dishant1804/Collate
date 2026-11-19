@@ -489,14 +489,49 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
         Some(Ok(d)) if d.body.trim().is_empty() => text("No description provided.".to_owned()).key("issue-body").font(k.ty.ui).color(k.c.text_faint),
         Some(Ok(d)) => crate::pulls::rich(s, k, "issue-body", &d.body, k.ty.ui),
     };
-    let main = col().key("issue-main").grow(1.0).min_w(0.0).max_w(780.0).gap(28.0)
+    let mut main = col().key("issue-main").grow(1.0).min_w(0.0).max_w(780.0).gap(28.0)
         .child(col().key("issue-title").w_full().gap(10.0)
             .child(text(i.title.clone()).font(title_font).color(k.c.text_base).wrap().w_full())
             .child(byline))
         .child(body);
+    if let Some(d) = detail {
+        let n = d.comments.len();
+        let mut activity = col().key("issue-activity").w_full().gap(10.0)
+            .child(text(format!("Activity - {n} comment{}", if n == 1 { "" } else { "s" })).font(k.ty.text_small_medium).color(k.c.text_muted));
+        if d.comments.is_empty() {
+            activity = activity.child(text("No comments yet.".to_owned()).font(k.ty.text_small).color(k.c.text_faint));
+        }
+        for (at, c) in d.comments.iter().enumerate() {
+            activity = activity.child(comment_card(s, k, at, c));
+        }
+        main = main.child(activity);
+    }
     col().key("issues").w_full().grow(1.0).min_h(0.0).child(head)
         .child(col().key("issue-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false })
             .child(row().key("issue-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(16.0).pb(48.0).gap(40.0).items_start().child(main)))
+}
+
+/// A comment in the activity: who wrote it beside it, as GitHub's timeline sets it, then when,
+/// what they wrote, and its reactions.
+fn comment_card(s: &Collate, k: &Kit, at: usize, c: &github::Post) -> El {
+    let key = format!("issue-comment-{at}");
+    let head = row().w_full().px(12.0).py(8.0).gap(6.0).items_center().fill(k.alpha(k.c.text_base, 0.03))
+        .child(text(c.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
+        .child(text(format!("commented on {}", c.time.get(..10).unwrap_or(""))).font(k.ty.text_small).color(k.c.text_muted).grow(1.0));
+    let mut card = col().key(key.clone()).w_full().radius(k.radius.md).border(1.0, k.c.border_weak).child(head)
+        .child(col().w_full().h(1.0).fill(k.c.border_weak))
+        .child(col().w_full().px(12.0).py(10.0).child(crate::pulls::rich(s, k, &format!("{key}-body"), &c.body, k.ty.text_small)));
+    if !c.reactions.is_empty() {
+        card = card.child(row().key(format!("{key}-reactions")).w_full().px(12.0).pb(10.0).gap(6.0).flex_wrap().children(c.reactions.iter().filter_map(|(name, n)| {
+            let (_, emoji) = github::REACTIONS.iter().find(|(c, _)| c == name)?;
+            Some(row().h(24.0).px(8.0).gap(4.0).items_center().radius(12.0).border(1.0, k.c.border_weak).label(format!("{n} {name}"))
+                .child(text((*emoji).to_owned()).font(k.ty.text_small).a11y_hidden())
+                .child(text(n.to_string()).font(k.ty.text_small).color(k.c.text_muted).a11y_hidden()))
+        })));
+    }
+    row().w_full().gap(12.0).items_start()
+        .child(crate::history_view::face(k, s, &c.author, 32.0).mt(2.0))
+        .child(card.grow(1.0).min_w(0.0))
 }
 
 #[cfg(test)]

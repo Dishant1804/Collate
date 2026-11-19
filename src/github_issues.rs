@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::github::{Gh, login, s};
+use crate::github::{Gh, Post, login, post, s};
 
 /// One issue in the list.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -47,12 +47,20 @@ const MENTIONS: &str = "query($owner:String!,$name:String!,$me:String!){reposito
 pub struct Detail {
     pub issue: Issue,
     pub body: String,
+    /// The comments, oldest first.
+    pub comments: Vec<Post>,
 }
 
-const DETAIL: &str = "body";
+/// A comment: who, what and when, and what the reader may do with it.
+const COMMENT: &str = "id body url createdAt viewerDidAuthor author{login} reactionGroups{content users{totalCount}}";
+
+/// GitHub's timeline holds the last 100 comments; older ones are on GitHub.
+fn detail_fields() -> String {
+    format!("body timelineItems(last:100,itemTypes:[ISSUE_COMMENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}}}}}}")
+}
 
 fn detail_query() -> String {
-    format!("query($owner:String!,$name:String!,$n:Int!){{repository(owner:$owner,name:$name){{issue(number:$n){{{FIELDS} {DETAIL}}}}}}}")
+    format!("query($owner:String!,$name:String!,$n:Int!){{repository(owner:$owner,name:$name){{issue(number:$n){{{FIELDS} {}}}}}}}", detail_fields())
 }
 
 impl Gh {
@@ -113,7 +121,9 @@ fn issue(v: &Value) -> Issue {
 }
 
 fn detail(v: &Value) -> Detail {
-    Detail { issue: issue(v), body: s(v, "body") }
+    let items = v["timelineItems"]["nodes"].as_array().into_iter().flatten();
+    let comments = items.filter(|e| e["__typename"] == "IssueComment").map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
+    Detail { issue: issue(v), body: s(v, "body"), comments }
 }
 
 /// The issues on the reader, assigned to them, then the ones they opened, then those that
@@ -149,6 +159,19 @@ mod tests {
         assert_eq!((a.assignees.as_slice(), a.labels.as_slice(), a.comments), (&["me".to_owned()][..], &[("bug".to_owned(), "d73a4a".to_owned())][..], 3));
         let b = &issues[1];
         assert_eq!((b.open, b.reason.as_str(), b.author.as_str(), b.comments), (false, "NOT_PLANNED", "ghost", 0), "a deleted account reads as GitHub's ghost");
+    }
+
+    #[test]
+    fn an_opened_issue_reads_its_comments() {
+        let v = serde_json::json!({"number": 7, "title": "Add sync", "state": "OPEN", "author": {"login": "me"}, "body": "It should sync.", "timelineItems": {"nodes": [
+            {"__typename": "IssueComment", "id": "IC_1", "body": "Agreed", "createdAt": "2026-11-02T10:00:00Z", "viewerDidAuthor": true, "author": {"login": "me"},
+             "reactionGroups": [{"content": "HEART", "users": {"totalCount": 2}}, {"content": "LAUGH", "users": {"totalCount": 0}}]}
+        ]}});
+        let d = detail(&v);
+        assert_eq!((d.issue.number, d.body.as_str(), d.comments.len()), (7, "It should sync.", 1));
+        let c = &d.comments[0];
+        assert_eq!((c.id.as_str(), c.body.as_str(), c.time.as_str(), c.mine), ("IC_1", "Agreed", "2026-11-02T10:00:00Z", true));
+        assert_eq!(c.reactions, [("HEART".to_owned(), 2)], "only the reactions someone gave");
     }
 
     #[test]
