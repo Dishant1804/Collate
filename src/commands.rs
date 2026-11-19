@@ -173,7 +173,7 @@ pub const COMMANDS: &[Command] = &[
         s.load_issues();
     }),
     sep("Issues"),
-    cmd("issue-comment", "Comment on Issue", "Issues", "", |s| issue_shown(s).is_some(), |s, tx| {
+    cmd("issue-comment", "Comment on Issue", "Issues", "", |s| issue_shown(s).is_some_and(|d| d.can_comment()), |s, tx| {
         s.issues.reply.focused = true;
         tx.scroll_into_view("issue-composer");
     }),

@@ -2961,6 +2961,23 @@ fn issues_open_from_the_view_menu_and_for_an_agent() {
 }
 
 #[test]
+fn a_locked_issue_says_why_it_takes_no_comment() {
+    let mut rt = loaded();
+    rt.on_key = Some(on_key);
+    rt.update(|s, _| {
+        s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &[])])));
+        s.open_issues();
+        s.open_issue(3);
+        s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), locked: true, ..Default::default() }));
+    });
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
+    assert!(rt.find("issue-locked").is_some() && rt.find("issue-message").is_none(), "the box gives way to why");
+    rt.update(|s, _| s.issues.detail.as_mut().unwrap().as_mut().unwrap().can_edit = true);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-locked").is_none() && rt.find("issue-message").is_some(), "a collaborator still writes");
+}
+
+#[test]
 fn an_issue_opens_from_its_row_and_esc_goes_back() {
     let mut rt = loaded();
     rt.on_key = Some(on_key);

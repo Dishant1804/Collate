@@ -135,6 +135,7 @@ crate::lucide!(SMILE_PLUS_ICON, "collate-smile-plus", r#"<path d="M22 11v1a10 10
 // as not planned or a duplicate, as GitHub marks them.
 crate::lucide!(DONE_ICON, "collate-issue-done", r#"<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>"#);
 crate::lucide!(SKIPPED_ICON, "collate-issue-skipped", r#"<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/>"#);
+crate::lucide!(LOCK_ICON, "collate-lock", r#"<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>"#);
 
 /// The issue's state as GitHub marks it: its icon, colour and name.
 pub fn state_mark(k: &Kit, i: &Issue) -> (&'static Icon, rune::Color, &'static str) {
@@ -263,7 +264,7 @@ impl Collate {
     /// Send the comment written at the foot of the open issue.
     pub fn send_issue_comment(&mut self) {
         let (Some(n), body) = (self.issues.number, self.issues.reply.text.trim().to_owned()) else { return };
-        if body.is_empty() {
+        if body.is_empty() || self.issues.detail.as_ref().and_then(|d| d.as_ref().ok()).is_some_and(|d| !d.can_comment()) {
             return;
         }
         // Kept until it's sent, so a failure doesn't lose it.
@@ -960,6 +961,12 @@ pub fn write_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
 
 /// The box at the foot of the activity for the reader's comment, beside their face.
 fn composer(s: &Collate, k: &Kit) -> El {
+    if s.issues.detail.as_ref().and_then(|d| d.as_ref().ok()).is_some_and(|d| !d.can_comment()) {
+        // Said in place of the box, so the reader isn't left to find out from a failed send.
+        return row().key("issue-composer").w_full().gap(8.0).items_center().px(12.0).py(10.0).radius(k.radius.md).border(1.0, k.c.border_weak)
+            .child(icon(&LOCK_ICON, 14.0).color(k.c.icon_muted))
+            .child(text("This conversation is locked - only collaborators can comment.".to_owned()).key("issue-locked").font(k.ty.text_small).color(k.c.text_muted));
+    }
     let me = s.issues.list.as_ref().and_then(|l| l.as_ref().ok()).map_or("", |(me, _)| me.as_str());
     let empty = s.issues.reply.text.trim().is_empty();
     let blocked = empty || s.busy.is_some();

@@ -68,6 +68,13 @@ pub struct Detail {
     pub pulls: Vec<(u32, String, String)>,
 }
 
+impl Detail {
+    /// A locked issue takes comments only from those who can change it.
+    pub fn can_comment(&self) -> bool {
+        !self.locked || self.can_edit
+    }
+}
+
 /// A change in an issue's timeline, said as GitHub says it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Event {
