@@ -977,7 +977,8 @@ pub fn write_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     }
     let buttons = row().key("issue-write-buttons").w_full().gap(8.0).items_center().child(row().grow(1.0))
         .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.issues.write = None).build(k).hand(true).key("issue-write-cancel"))
-        .child(Button::new(button).variant(if delete { ButtonVariant::Danger } else { ButtonVariant::Contrast }).disabled(blocked)
+        // While it's sent, the button says so rather than only greying.
+        .child(Button::new(s.busy.as_deref().filter(|b| ["Opening the issue…", "Saving…", "Deleting…"].contains(b)).unwrap_or(button)).variant(if delete { ButtonVariant::Danger } else { ButtonVariant::Contrast }).disabled(blocked)
             .on_press(|s: &mut Collate| s.send_issue_write()).build(k).hand(!blocked).key("issue-write-ok"));
     crate::described_dialog(k, "issue-write", title, what, body.child(buttons)).width(560.0).on_close(|s: &mut Collate| s.issues.write = None).build(k, layer);
 }
@@ -996,7 +997,8 @@ fn composer(s: &Collate, k: &Kit) -> El {
     // Keyed as a message so typing in it isn't taken for the list's keys.
     let area = TextArea::new(&s.issues.reply).placeholder("Add a comment").label("Add a comment").rows(4).max_height(240.0)
         .on_edit(|s: &mut Collate| &mut s.issues.reply).width(None).build(k).key("issue-message").w_full();
-    let send = Button::new("Comment").variant(ButtonVariant::Contrast).disabled(blocked).help("Add it to the issue (⌘↩)")
+    let doing = |idle: String, running: &str| if s.busy.as_deref() == Some(running) { running.to_owned() } else { idle };
+    let send = Button::new(doing("Comment".into(), "Commenting…")).variant(ButtonVariant::Contrast).disabled(blocked).help("Add it to the issue (⌘↩)")
         .on_press(|s: &mut Collate| s.send_issue_comment()).build(k).hand(!blocked).key("issue-comment-send");
     // As GitHub words it: what's written goes with the closing or reopening.
     let detail = s.issues.detail.as_ref().and_then(|d| d.as_ref().ok());
@@ -1007,12 +1009,12 @@ fn composer(s: &Collate, k: &Kit) -> El {
         row()
     } else if open {
         row().gap(2.0).items_center()
-            .child(Button::new(format!("Close{with}")).icon(&DONE_ICON).variant(ButtonVariant::Outline).disabled(busy).help("Close it as completed")
+            .child(Button::new(doing(format!("Close{with}"), "Closing…")).icon(&DONE_ICON).variant(ButtonVariant::Outline).disabled(busy).help("Close it as completed")
                 .on_press(|s: &mut Collate| s.set_issue_open(Some("completed"))).build(k).hand(!busy).key("issue-close"))
             .child(IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::GhostMuted).label("Close as…").disabled(busy)
                 .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pick_close_reason(tx)).build(k).hand(!busy).key("issue-close-reason"))
     } else {
-        row().child(Button::new(format!("Reopen{with}")).icon(&ISSUES_ICON).variant(ButtonVariant::Outline).disabled(busy).help("Open it again")
+        row().child(Button::new(doing(format!("Reopen{with}"), "Reopening…")).icon(&ISSUES_ICON).variant(ButtonVariant::Outline).disabled(busy).help("Open it again")
             .on_press(|s: &mut Collate| s.set_issue_open(None)).build(k).hand(!busy).key("issue-reopen"))
     };
     row().key("issue-composer").w_full().gap(12.0).items_start()
