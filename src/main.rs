@@ -62,7 +62,7 @@ use rune_kit::{
 use search::fuzzy;
 use history_view::{AUTHOR_W, DATE_W, GRAPH_ROW, HASH_W, commit_card, commit_header, history_graph};
 use keys::on_key;
-use settings::Settings;
+use settings::{FONT_SIZES, Settings};
 use settings_view::{SETTINGS_TABS, settings_panel};
 use watcher::{Cmd, DiffOpts, OPTS, Prepared, REFRESH_EVERY, WATCHER, refresh, watch, watch_project_files};
 
@@ -310,6 +310,8 @@ struct Collate {
     error: Option<String>,
     settings: Settings,
     save_error: Option<String>,
+    /// Scroll-zoom movement short of a whole code-size step, kept for the next event.
+    zoom_carry: f32,
     screen: Screen,
     diff: DiffState,
     tree: TreeModel<FileNode<Stat>>,
@@ -507,6 +509,7 @@ fn init() -> Collate {
         error: None,
         settings,
         save_error: None,
+        zoom_carry: 0.0,
         screen: Screen::Review,
         diff: DiffState::new(Vec::new()),
         tree: TreeModel::new(),
@@ -2441,6 +2444,27 @@ impl Collate {
         self.save_error = self.settings.save().err();
     }
 
+    /// Steps the code size by `steps` (signed, in sizes) for ⌘-scroll or a pinch over the diff,
+    /// carrying fractions so slow gestures still step. False when scroll zoom is off, so the
+    /// scroll goes on as usual.
+    fn zoom(&mut self, steps: f32) -> bool {
+        if !self.settings.scroll_zoom {
+            return false;
+        }
+        if steps * self.zoom_carry < 0.0 {
+            self.zoom_carry = 0.0;
+        }
+        self.zoom_carry += steps;
+        let whole = self.zoom_carry.trunc();
+        if whole != 0.0 {
+            self.zoom_carry -= whole;
+            let at = FONT_SIZES.iter().position(|&f| f == self.settings.font_size).unwrap_or(1) as i32;
+            let to = (at + whole as i32).clamp(0, FONT_SIZES.len() as i32 - 1) as usize;
+            self.configure(|c| c.font_size = FONT_SIZES[to]);
+        }
+        true
+    }
+
     fn is_viewed(&self, i: usize) -> bool {
         let (Some(f), Some(info)) = (self.diff.files().get(i), self.info.get(i)) else { return false };
         self.viewed.get(f.path()) == Some(&info.new_hash)
@@ -3026,7 +3050,7 @@ fn loose_view(s: &Collate, k: &Kit, name: &str) -> El {
     let body = if files.is_empty() {
         message(k, "No differences", "The two sides are the same.")
     } else {
-        DiffView::new(|s: &Collate| &s.diff, |s: &mut Collate| &mut s.diff).build(s, k)
+        DiffView::new(|s: &Collate| &s.diff, |s: &mut Collate| &mut s.diff).on_zoom(|s: &mut Collate, steps| s.zoom(steps)).build(s, k)
     };
     col().key("loose").w_full().grow(1.0).min_h(0.0).child(head).child(body)
 }
@@ -3454,6 +3478,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .hunk_actions(move |s: &Collate, f, h| hunk_actions(s, &hk, f, h))
             .dim(|s: &Collate, f| s.is_viewed(f))
             .copy_path(|s: &mut Collate, f, tx| s.copy_path(f, tx), |s: &Collate, f| s.copied_path(f))
+            .on_zoom(|s: &mut Collate, steps| s.zoom(steps))
             .on_visible_file(|s: &mut Collate, f| {
                 if let Some(p) = s.diff.files().get(f).map(|f| f.path().to_owned()) {
                     s.select_in_lists(&p);

@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 
-use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, Phase, ScrollSpec, Span, TextStyle, Tx, col, icon, memo, rich, row, text};
+use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, MagnifyEvent, Phase, ScrollSpec, Span, TextStyle, Tx, WheelEvent, col, icon, memo, rich, row, text};
 
 use super::model::{FileStatus, LineKind, Side};
 use super::state::{DiffMode, DiffState, EXPAND_STEP, Expand, GAP_H, HEADER_H, LineRef, NOTE_H, Row, Style};
@@ -46,6 +46,9 @@ const BAR: f32 = 2.0;
 const CODE_PAD: (f32, f32) = (12.0, 24.0);
 /// The inline blame column, before the numbers in unified mode.
 const BLAME_W: f32 = 200.0;
+/// Trackpad points of ⌘-scroll, and pinch magnification, that make one code-size step.
+const ZOOM_WHEEL: f32 = 40.0;
+const ZOOM_PINCH: f32 = 0.15;
 
 type Get<S> = Rc<dyn Fn(&S) -> &DiffState>;
 type GetMut<S> = Rc<dyn Fn(&mut S) -> &mut DiffState>;
@@ -71,6 +74,7 @@ pub struct DiffView<S> {
     copy_path: Option<(Rc<dyn Fn(&mut S, usize, &mut Tx)>, Rc<dyn Fn(&S, usize) -> bool>)>,
     images: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
     comments: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
+    on_zoom: Option<Rc<dyn Fn(&mut S, f32) -> bool>>,
 }
 
 impl<S: 'static> DiffView<S> {
@@ -86,6 +90,7 @@ impl<S: 'static> DiffView<S> {
             copy_path: None,
             images: None,
             comments: None,
+            on_zoom: None,
         }
     }
 
@@ -127,6 +132,13 @@ impl<S: 'static> DiffView<S> {
     /// whenever what any comment draws does.
     pub fn comments(mut self, version: u64, f: impl Fn(&S, usize) -> El + 'static) -> Self {
         self.comments = Some((version, Rc::new(f)));
+        self
+    }
+
+    /// Hears ⌘-scroll and pinches over the diff as signed steps of code size, positive larger;
+    /// returns whether it took them, or the scroll goes on as usual.
+    pub fn on_zoom(mut self, f: impl Fn(&mut S, f32) -> bool + 'static) -> Self {
+        self.on_zoom = Some(Rc::new(f));
         self
     }
 
@@ -184,7 +196,16 @@ impl<S: 'static> DiffView<S> {
                 }
             });
         let scroll = col().key("scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false });
-        let scroll = if wrap { scroll } else { scroll.scroll_xy() };
+        let mut scroll = if wrap { scroll } else { scroll.scroll_xy() };
+        if let Some(zoom) = v.d.on_zoom.clone() {
+            let pinch = zoom.clone();
+            // A notched wheel steps once per notch; a trackpad's points add up to a step.
+            scroll = scroll
+                .on_wheel(move |s: &mut S, e: WheelEvent, _: &mut Tx| {
+                    e.mods.cmd && zoom(s, if e.momentum { 0.0 } else if e.precise { e.dy / ZOOM_WHEEL } else { e.dy.signum() })
+                })
+                .on_magnify(move |s: &mut S, e: MagnifyEvent, _: &mut Tx| pinch(s, e.delta / ZOOM_PINCH));
+        }
         let scroll = scroll.child(list).child(col().key(super::state::TAIL_KEY).w_full().h(tail).a11y_hidden());
         let mut root = col().key(key).w_full().grow(1.0).min_h(0.0).fill(v.look.bg).child(scroll);
         if let Some(f) = st.sticky() {

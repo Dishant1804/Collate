@@ -2826,3 +2826,19 @@ fn the_shortcuts_sheet_is_sectioned_and_searchable() {
     assert!(!rt.state.show_help);
 }
 
+
+#[test]
+fn scroll_zoom_steps_the_code_size_and_can_be_turned_off() {
+    let mut s = init();
+    s.settings.font_size = 12.0;
+    assert!(s.zoom(0.6) && s.settings.font_size == 12.0, "part of a step waits");
+    assert!(s.zoom(0.6) && s.settings.font_size == 13.0, "the parts add up to a step");
+    s.zoom(-0.2);
+    s.zoom(-1.0);
+    assert_eq!(s.settings.font_size, 12.0, "turning back starts afresh");
+    s.zoom(-9.0);
+    assert_eq!(s.settings.font_size, crate::settings::FONT_SIZES[0], "stops at the smallest");
+    s.settings.scroll_zoom = false;
+    assert!(!s.zoom(5.0), "off, the scroll goes on as usual");
+    assert_eq!(s.settings.font_size, crate::settings::FONT_SIZES[0]);
+}

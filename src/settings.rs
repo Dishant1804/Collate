@@ -192,6 +192,8 @@ pub struct Settings {
     pub update_from: Channel,
     /// The staging panel leads and the views sidebar trails, for readers who stage on the left.
     pub swap_panes: bool,
+    /// ⌘-scroll and pinch over the diff change the code size.
+    pub scroll_zoom: bool,
 }
 
 impl Default for Settings {
@@ -225,6 +227,7 @@ impl Default for Settings {
             auto_update: true,
             update_from: Channel::Release,
             swap_panes: false,
+            scroll_zoom: true,
         }
     }
 }
@@ -343,6 +346,7 @@ impl Settings {
                         "check_updates" => s.check_updates = b,
                         "auto_update" => s.auto_update = b,
                         "swap_panes" => s.swap_panes = b,
+                        "scroll_zoom" => s.scroll_zoom = b,
                         _ => {}
                     }
                 }
@@ -369,7 +373,7 @@ impl Settings {
             Scope::History => "history",
         };
         format!(
-            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nagent = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\nswap_panes = {}\n",
+            "theme = {theme}\nfont_size = {}\ndensity = {density}\nmotion = {motion}\nlayout = {layout}\nwrap = {}\none_number = {}\nmarkers = {}\nword_diff = {}\nsyntax = {}\ndownload_languages = {}\ncontext = {}\ndefault_scope = {scope}\ncollapse_viewed = {}\nhide_low_signal = {}\nsource_first = {}\nnotify_reviews = {}\nauto_refresh = {}\nrefresh_ms = {}\neditor = {}\nagent = {}\nignore_whitespace = {}\nshow_moved = {}\nfold_large = {}\ncheck_updates = {}\nauto_update = {}\nupdate_from = {update_from}\nswap_panes = {}\nscroll_zoom = {}\n",
             self.font_size,
             self.wrap,
             self.one_number,
@@ -392,6 +396,7 @@ impl Settings {
             self.check_updates,
             self.auto_update,
             self.swap_panes,
+            self.scroll_zoom,
         )
     }
 }
@@ -466,6 +471,7 @@ mod tests {
             auto_update: false,
             update_from: Channel::Source,
             swap_panes: true,
+            scroll_zoom: false,
         };
         assert_eq!(Settings::parse(&s.serialize()), s);
     }

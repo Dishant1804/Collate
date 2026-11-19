@@ -270,6 +270,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         0 => vec![
             theme_picker(s, k, menus),
             setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(s, k, menus, "font", "Code size", &FONT_LABELS, &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
+            setting(k, "scroll-zoom", "Scroll to zoom", &[], "⌘-scroll or pinch over the diff to change the code size", switch(k, "Scroll to zoom", st.scroll_zoom, |c, v| c.scroll_zoom = v)),
             setting(k, "density", "Line spacing", &[], "", pick(s, k, menus, "density", "Line spacing", &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
             setting(k, "swap", "Swap sidebars", &[], "The staging panel on the left, the views on the right", switch(k, "Swap sidebars", st.swap_panes, |c, v| c.swap_panes = v)),
             setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(s, k, menus, "motion", "Animations", &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),
