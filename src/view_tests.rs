@@ -3096,6 +3096,9 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.frame(1.0 / 60.0);
     click(&mut rt, "issue-write-ok");
     assert!(rt.state.issues.write.is_some(), "it can't be saved without a title");
+    rt.update(|s, _| s.issues.failed = Some("HTTP 422: title is too long".into()));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-write-failed").is_some_and(|(_, y)| y < rt.find("issue-write-ok").unwrap().1), "a failure is said in the dialog, above its buttons");
     click(&mut rt, "issue-write-cancel");
     rt.update(|s, _| s.issues.reply.focused = false);
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });

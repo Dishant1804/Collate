@@ -42,6 +42,8 @@ pub struct IssuesState {
     pub drafts: HashMap<u32, String>,
     /// The dialog up over the open issue, and its text.
     pub write: Option<Write>,
+    /// Why the dialog's change didn't reach GitHub, said in the dialog.
+    pub failed: Option<String>,
     pub text: TextEdit,
     /// The title, while the issue is edited.
     pub title: TextEdit,
@@ -124,7 +126,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), drafts: HashMap::new(), write: None, text: TextEdit::new(""), title: TextEdit::new(""), template: None, new_labels: Vec::new(), new_assignees: Vec::new(), options: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), drafts: HashMap::new(), write: None, failed: None, text: TextEdit::new(""), title: TextEdit::new(""), template: None, new_labels: Vec::new(), new_assignees: Vec::new(), options: None }
     }
 }
 
@@ -238,6 +240,12 @@ impl Collate {
     /// Run a change to an issue off the UI thread, report it, and reread the issue and the
     /// list. One at a time, with the app's other slow changes.
     fn issue_act(&mut self, doing: &str, f: impl FnOnce(&Gh) -> Result<String, String> + Send + 'static, then: impl FnOnce(&mut Collate) + Send + 'static) {
+        self.issue_act_or(doing, f, then, |_, _| {});
+    }
+
+    /// `issue_act`, with `failed` told what went wrong as well.
+    fn issue_act_or(&mut self, doing: &str, f: impl FnOnce(&Gh) -> Result<String, String> + Send + 'static, then: impl FnOnce(&mut Collate) + Send + 'static,
+        failed: impl FnOnce(&mut Collate, &str) + Send + 'static) {
         let (Some(root), Some(app)) = (current_repo().map(|r| r.root.clone()), HANDLE.get().cloned()) else { return };
         if self.busy.is_some() {
             self.say(format!("Wait for {} to finish", self.busy.as_deref().unwrap_or_default().trim_end_matches('…').to_lowercase()), true);
@@ -253,7 +261,10 @@ impl Collate {
                         s.say(done, false);
                         then(s);
                     }
-                    Err(e) => s.say(e, true),
+                    Err(e) => {
+                        failed(s, &e);
+                        s.say(e, true);
+                    }
                 }
                 s.load_issue();
                 s.load_issues();
@@ -331,6 +342,7 @@ impl Collate {
         if d.is_none() && w != Write::New {
             return;
         }
+        self.issues.failed = None;
         self.issues.text = TextEdit::new(match (w, d) {
             (Write::EditComment(at), Some(d)) => d.comments.get(at).map_or("", |c| c.body.as_str()),
             (Write::Edit, Some(d)) => &d.body,
@@ -352,39 +364,44 @@ impl Collate {
     }
 
     fn send_issue_write(&mut self) {
+        let Some(w) = self.issues.write else { return };
         let body = self.issues.text.text.trim().to_owned();
-        if self.issues.write == Some(Write::New) {
-            // The dialog stays up until the issue is made, so a failure loses nothing.
-            let title = self.issues.title.text.trim().to_owned();
-            let (labels, assignees) = (self.issues.new_labels.clone(), self.issues.new_assignees.clone());
-            let made = std::sync::Arc::new(std::sync::Mutex::new(None));
-            let got = made.clone();
-            self.issue_act("Opening the issue…", move |gh| {
-                let n = gh.create_issue(&title, &body, &labels, &assignees)?;
-                *made.lock().map_err(|e| e.to_string())? = Some(n);
-                Ok(format!("Opened #{n}"))
-            }, move |s| {
-                s.issues.write = None;
-                if let Some(n) = got.lock().ok().and_then(|n| *n) {
-                    s.open_issue(n);
-                }
-            });
-            return;
-        }
-        let (Some(w), Some(Ok(d))) = (self.issues.write.take(), &self.issues.detail) else { return };
+        let title = self.issues.title.text.trim().to_owned();
+        let detail = self.issues.detail.as_ref().and_then(|d| d.as_ref().ok());
+        let id = |at: usize| detail.and_then(|d| d.comments.get(at)).map(|c| c.id.clone());
+        self.issues.failed = None;
+        // The dialog stays up until GitHub has the change, so a failure loses nothing written.
+        let done = move |s: &mut Collate| if s.issues.write == Some(w) {
+            s.issues.write = None;
+        };
+        let failed = |s: &mut Collate, e: &str| s.issues.failed = Some(e.to_owned());
         match w {
-            Write::New => {}
+            Write::New => {
+                let (labels, assignees) = (self.issues.new_labels.clone(), self.issues.new_assignees.clone());
+                let made = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let got = made.clone();
+                self.issue_act_or("Opening the issue…", move |gh| {
+                    let n = gh.create_issue(&title, &body, &labels, &assignees)?;
+                    *made.lock().map_err(|e| e.to_string())? = Some(n);
+                    Ok(format!("Opened #{n}"))
+                }, move |s| {
+                    done(s);
+                    if let Some(n) = got.lock().ok().and_then(|n| *n) {
+                        s.open_issue(n);
+                    }
+                }, failed);
+            }
             Write::EditComment(at) => {
-                let Some(id) = d.comments.get(at).map(|c| c.id.clone()) else { return };
-                self.issue_act("Saving…", move |gh| gh.edit_post(&id, false, &body).map(|_| "Saved the comment".to_owned()), |_| {});
+                let Some(id) = id(at) else { return };
+                self.issue_act_or("Saving…", move |gh| gh.edit_post(&id, false, &body).map(|_| "Saved the comment".to_owned()), done, failed);
             }
             Write::DeleteComment(at) => {
-                let Some(id) = d.comments.get(at).map(|c| c.id.clone()) else { return };
-                self.issue_act("Deleting…", move |gh| gh.delete_post(&id).map(|_| "Deleted the comment".to_owned()), |_| {});
+                let Some(id) = id(at) else { return };
+                self.issue_act_or("Deleting…", move |gh| gh.delete_post(&id).map(|_| "Deleted the comment".to_owned()), done, failed);
             }
             Write::Edit => {
-                let (n, title) = (d.issue.number, self.issues.title.text.trim().to_owned());
-                self.issue_act("Saving…", move |gh| gh.edit_issue(n, &title, &body).map(|_| format!("Saved #{n}")), |_| {});
+                let Some(n) = detail.map(|d| d.issue.number) else { return };
+                self.issue_act_or("Saving…", move |gh| gh.edit_issue(n, &title, &body).map(|_| format!("Saved #{n}")), done, failed);
             }
         }
     }
@@ -954,6 +971,9 @@ pub fn write_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     if !delete {
         body = body.child(TextArea::new(&s.issues.text).placeholder(hint).label(label).rows(8).max_height(320.0)
             .on_edit(|s: &mut Collate| &mut s.issues.text).width(None).build(k).key("issue-write-message").w_full());
+    }
+    if let Some(e) = &s.issues.failed {
+        body = body.child(text(e.clone()).key("issue-write-failed").font(k.ty.text_small).color(k.c.danger.fg).wrap().w_full());
     }
     let buttons = row().key("issue-write-buttons").w_full().gap(8.0).items_center().child(row().grow(1.0))
         .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.issues.write = None).build(k).hand(true).key("issue-write-cancel"))
