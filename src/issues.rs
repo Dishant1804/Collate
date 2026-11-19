@@ -647,7 +647,10 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
                 list = list.child(group_head(k, title, group.len(), folded));
                 if !folded {
                     for i in group {
-                        list = list.child(issue_row(s, k, i));
+                        // Built again only when the row's issue, pick, faces or theme change, so
+                        // typing in the filter or stepping with j rebuilds a row or two, not all.
+                        let version = (s.settings.theme, i, s.issues.pick == Some(i.number), faces_known(s, i.assignees.iter().take(3)));
+                        list = list.child(rune::memo::memo(format!("issue-{}", i.number), version, || issue_row(s, k, i)));
                     }
                 }
             }
@@ -920,8 +923,18 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
             activity = activity.child(text("No comments yet.".to_owned()).font(k.ty.text_small).color(k.c.text_faint));
         }
         // Comments and events as they happened.
-        let mut items: Vec<(&str, El)> = d.comments.iter().enumerate().map(|(at, c)| (c.time.as_str(), comment_card(s, k, at, c)))
-            .chain(d.events.iter().enumerate().map(|(at, e)| (e.time.as_str(), event_row(s, k, at, e)))).collect();
+        // Each built again only when what it shows changes, so typing a reply under a long
+        // thread doesn't rebuild every comment.
+        let theme = s.settings.theme;
+        let mut items: Vec<(&str, El)> = d.comments.iter().enumerate().map(|(at, c)| {
+            let folds = format!("issue-comment-{at}-body-");
+            let open: Vec<&String> = s.pulls.expanded.iter().filter(|e| e.starts_with(&folds)).collect();
+            let version = (theme, at, c, open, faces_known(s, std::iter::once(&c.author)));
+            (c.time.as_str(), rune::memo::memo(format!("issue-post-{at}"), version, || comment_card(s, k, at, c)))
+        }).chain(d.events.iter().enumerate().map(|(at, e)| {
+            let version = (theme, at, e, faces_known(s, std::iter::once(&e.who)));
+            (e.time.as_str(), rune::memo::memo(format!("issue-event-{at}"), version, || event_row(s, k, at, e)))
+        })).collect();
         items.sort_by_key(|(time, _)| *time);
         activity = activity.children(items.into_iter().map(|(_, el)| el));
         main = main.child(activity).child(composer(s, k));
@@ -1110,6 +1123,12 @@ fn event_row(s: &Collate, k: &Kit, at: usize, e: &github_issues::Event) -> El {
         line = line.cursor(Cursor::Pointer).role("link").help("Open it on GitHub").on_press(move |_: &mut Collate| crate::open_url(&url));
     }
     line
+}
+
+/// Which of `logins` have a picture yet, one bit each, for a memo's version: a face shows
+/// initials until its picture arrives.
+fn faces_known<'a>(s: &Collate, logins: impl Iterator<Item = &'a String>) -> u32 {
+    logins.take(32).enumerate().fold(0, |bits, (at, l)| bits | (u32::from(s.avatars.of_login(l).is_some()) << at))
 }
 
 /// A comment's or the description's reactions, each with its count, and a button to add one.

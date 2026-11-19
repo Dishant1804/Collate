@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::github::{Gh, Post, login, post, s};
 
 /// One issue in the list.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct Issue {
     pub number: u32,
     pub title: String,
@@ -84,7 +84,7 @@ impl Detail {
 }
 
 /// A change in an issue's timeline, said as GitHub says it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct Event {
     /// GitHub's name for it, as `ClosedEvent`.
     pub kind: String,

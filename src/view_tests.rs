@@ -3212,3 +3212,86 @@ fn the_issues_menu_acts_on_the_issue_open() {
     assert_eq!(rt.state.issues.write, Some(crate::issues::Write::New), "New Issue opens its dialog");
     assert!(rt.state.issues.number.is_none(), "over the list");
 }
+
+/// Frame times on the Issues page at GitHub's limits: a full list (130 issues) while the filter
+/// is typed in, and an issue with 100 long comments while a reply is typed and the page scrolls.
+/// `BENCH_REPS=300 cargo test --release bench_issues -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_issues() {
+    use std::time::Instant;
+    let stats = |name: &str, mut t: Vec<f64>| {
+        t.sort_by(f64::total_cmp);
+        let at = |q: f64| t[((t.len() - 1) as f64 * q) as usize];
+        println!("{name:<28} median {:>6.2} ms   p90 {:>6.2}   max {:>6.2}   ({} frames)", at(0.5), at(0.9), at(1.0), t.len());
+    };
+    let mut rt = loaded();
+    let many: Vec<_> = (1..=130).map(|n| crate::github_issues::Issue { labels: vec![("bug".into(), "d73a4a".into()), ("ui".into(), "0e8a16".into())], comments: n % 7,
+        ..issue(n, if n % 3 == 0 { "me" } else { "ana" }, if n % 2 == 0 { &["me", "bo"] } else { &[] }) }).collect();
+    rt.update(move |s, _| {
+        s.issues.list = Some(Ok(("me".into(), many)));
+        s.open_issues();
+        s.issues.loading = false;
+    });
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
+    let mut typing = Vec::new();
+    for round in 0..20 {
+        rt.update(|s, _| s.issues.filter = TextEdit::new(""));
+        rt.frame(1.0 / 60.0);
+        for c in ["p", "r", "o", "b"] {
+            rt.update(move |s, _| { let t = format!("{}{c}", s.issues.filter.text); s.issues.filter = TextEdit::new(t); });
+            let at = Instant::now();
+            rt.frame(1.0 / 60.0);
+            if round > 2 { typing.push(at.elapsed().as_secs_f64() * 1000.0); }
+        }
+    }
+    stats("list: typing in the filter", typing);
+    let mut stepping = Vec::new();
+    rt.on_key = Some(on_key);
+    rt.update(|s, _| s.issues.filter = TextEdit::new(""));
+    rt.frame(1.0 / 60.0);
+    for _ in 0..100 {
+        rt.key(KeyEvent { key: Key::Text("j".into()), mods: Default::default() });
+        let at = Instant::now();
+        rt.frame(1.0 / 60.0);
+        stepping.push(at.elapsed().as_secs_f64() * 1000.0);
+    }
+    stats("list: j through it", stepping);
+
+    let body = "It **crashes** when the window opens on a second display.\n\n```rust\nfn main() {\n    let x = open();\n    x.show();\n}\n```\n\n- one\n- two with `code` and a [link](https://example.com)\n\n> quoted from before\n\nMore words follow here to fill a long paragraph that wraps over several lines in the column.";
+    let comments: Vec<_> = (0..100).map(|i| crate::github::Post { author: format!("u{}", i % 9), body: body.into(), time: format!("2026-11-02T10:{:02}:00Z", i % 60),
+        reactions: vec![("THUMBS_UP".into(), 2)], id: format!("IC_{i}"), mine: i % 5 == 0, ..Default::default() }).collect();
+    rt.update(move |s, _| {
+        s.open_issue(4);
+        s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(4, "ana", &["me"]), id: "I_4".into(), body: body.into(), comments, can_edit: true, can_close: true,
+            can_assign: true, can_label: true, can_milestone: true, ..Default::default() }));
+    });
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
+    rt.update(|s, _| s.issues.reply.focused = true);
+    rt.frame(1.0 / 60.0);
+    let mut replying = Vec::new();
+    let reps: usize = std::env::var("BENCH_REPS").ok().and_then(|r| r.parse().ok()).unwrap_or(60);
+    for i in 0..reps {
+        rt.key(KeyEvent { key: Key::Text("a".into()), mods: Default::default() });
+        let at = Instant::now();
+        rt.frame(1.0 / 60.0);
+        if i > 3 { replying.push(at.elapsed().as_secs_f64() * 1000.0); }
+    }
+    stats("issue: typing a reply", replying);
+    let (x, y) = rt.find("issue-main").unwrap();
+    let mut scrolling = Vec::new();
+    for i in 0..120 {
+        rt.wheel(x, y, if i < 60 { -120.0 } else { 120.0 });
+        let at = Instant::now();
+        rt.frame(1.0 / 60.0);
+        scrolling.push(at.elapsed().as_secs_f64() * 1000.0);
+    }
+    stats("issue: scrolling", scrolling);
+    let mut idle = Vec::new();
+    for _ in 0..60 {
+        let at = Instant::now();
+        rt.frame(1.0 / 60.0);
+        idle.push(at.elapsed().as_secs_f64() * 1000.0);
+    }
+    stats("issue: idle", idle);
+}

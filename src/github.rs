@@ -104,7 +104,7 @@ pub enum Level {
 }
 
 /// A comment in the conversation, a review's summary, or one comment of a thread.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct Post {
     pub author: String,
     pub body: String,
