@@ -3058,6 +3058,18 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
         rt.frame(1.0 / 60.0);
     }
     assert_eq!(rt.state.issues.number, Some(3), "Enter opens the issue picked");
+    rt.update(|s, tx| s.close_issue(tx));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "issues-new");
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.state.issues.title.focused && rt.state.issues.title.text.is_empty(), "New Issue opens empty, at its title");
+    click(&mut rt, "issue-write-ok");
+    assert!(rt.state.issues.write == Some(crate::issues::Write::New), "and waits for one");
+    click(&mut rt, "issue-write-cancel");
+    rt.update(|s, _| s.open_issue(3));
+    rt.frame(1.0 / 60.0);
     click(&mut rt, "issue-back");
     assert!(rt.state.issues.number.is_none(), "so does the back button");
     rt.update(|s, _| s.open_issue(3));

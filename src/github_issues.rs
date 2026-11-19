@@ -159,6 +159,12 @@ impl Gh {
         self.run(&["issue", "edit", &n, set.as_deref().unwrap_or("--remove-milestone")], None)
     }
 
+    /// Open a new issue; its number, from the link `gh` answers with.
+    pub fn create_issue(&self, title: &str, body: &str) -> Result<u32, String> {
+        let url = self.run(&["issue", "create", &format!("--title={title}"), "--body-file", "-"], Some(body))?;
+        url.trim().rsplit('/').next().and_then(|n| n.parse().ok()).ok_or_else(|| format!("Unexpected reply from gh: {}", url.trim()))
+    }
+
     /// Lock issue `n`'s conversation to collaborators, or unlock it.
     pub fn lock_issue(&self, n: u32, lock: bool) -> Result<String, String> {
         self.run(&["issue", if lock { "lock" } else { "unlock" }, &n.to_string()], None)
