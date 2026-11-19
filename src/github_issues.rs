@@ -96,6 +96,10 @@ impl Gh {
         Ok(detail(&v["data"]["repository"]["issue"]))
     }
 
+    pub fn issue_comment(&self, n: u32, body: &str) -> Result<String, String> {
+        self.run(&["issue", "comment", &n.to_string(), "--body-file", "-"], Some(body))
+    }
+
     fn query(&self, q: &str) -> Result<Value, String> {
         self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", &format!("query={q}")], None)
     }

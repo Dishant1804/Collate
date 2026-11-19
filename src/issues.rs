@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::syntax::{Syntax, SyntaxTheme};
-use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, TextInput};
+use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit, SegmentedControl, TextArea, TextInput};
 
 use crate::Hand;
 use crate::github_issues::{self, Detail, Issue};
@@ -36,6 +36,8 @@ pub struct IssuesState {
     /// The issue open in place of the list, by number, and what's read of it.
     pub number: Option<u32>,
     pub detail: Option<Result<Detail, String>>,
+    /// The comment being written at the foot of the open issue.
+    pub reply: TextEdit,
 }
 
 impl IssuesState {
@@ -96,7 +98,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new("") }
     }
 }
 
@@ -166,6 +168,42 @@ impl Collate {
                 }
             });
         });
+    }
+
+    /// Run a change to an issue off the UI thread, report it, and reread the issue and the
+    /// list. One at a time, with the app's other slow changes.
+    fn issue_act(&mut self, doing: &str, f: impl FnOnce(&Gh) -> Result<String, String> + Send + 'static, then: impl FnOnce(&mut Collate) + Send + 'static) {
+        let (Some(root), Some(app)) = (current_repo().map(|r| r.root.clone()), HANDLE.get().cloned()) else { return };
+        if self.busy.is_some() {
+            self.say(format!("Wait for {} to finish", self.busy.as_deref().unwrap_or_default().trim_end_matches('…').to_lowercase()), true);
+            return;
+        }
+        self.busy = Some(doing.to_owned());
+        std::thread::spawn(move || {
+            let result = f(&Gh::new(&root));
+            app.update(move |s, _| {
+                s.busy = None;
+                match result {
+                    Ok(done) => {
+                        s.say(done, false);
+                        then(s);
+                    }
+                    Err(e) => s.say(e, true),
+                }
+                s.load_issue();
+                s.load_issues();
+            });
+        });
+    }
+
+    /// Send the comment written at the foot of the open issue.
+    pub fn send_issue_comment(&mut self) {
+        let (Some(n), body) = (self.issues.number, self.issues.reply.text.trim().to_owned()) else { return };
+        if body.is_empty() {
+            return;
+        }
+        // Kept until it's sent, so a failure doesn't lose it.
+        self.issue_act("Commenting…", move |gh| gh.issue_comment(n, &body).map(|_| format!("Commented on #{n}")), |s| s.issues.reply = TextEdit::new(""));
     }
 
     /// Asks for the pictures of everyone the issues show: the reader, the authors and the assignees.
@@ -506,11 +544,26 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
             .chain(d.events.iter().enumerate().map(|(at, e)| (e.time.as_str(), event_row(s, k, at, e)))).collect();
         items.sort_by_key(|(time, _)| *time);
         activity = activity.children(items.into_iter().map(|(_, el)| el));
-        main = main.child(activity);
+        main = main.child(activity).child(composer(s, k));
     }
     col().key("issues").w_full().grow(1.0).min_h(0.0).child(head)
         .child(col().key("issue-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false })
             .child(row().key("issue-page").w_full().max_w(1100.0).px(EDGE * 2.0).pt(16.0).pb(48.0).gap(40.0).items_start().child(main)))
+}
+
+/// The box at the foot of the activity for the reader's comment, beside their face.
+fn composer(s: &Collate, k: &Kit) -> El {
+    let me = s.issues.list.as_ref().and_then(|l| l.as_ref().ok()).map_or("", |(me, _)| me.as_str());
+    let empty = s.issues.reply.text.trim().is_empty();
+    let blocked = empty || s.busy.is_some();
+    // Keyed as a message so typing in it isn't taken for the list's keys.
+    let area = TextArea::new(&s.issues.reply).placeholder("Add a comment").label("Add a comment").rows(4).max_height(240.0)
+        .on_edit(|s: &mut Collate| &mut s.issues.reply).width(None).build(k).key("issue-message").w_full();
+    let send = Button::new("Comment").variant(ButtonVariant::Contrast).disabled(blocked).help("Add it to the issue (⌘↩)")
+        .on_press(|s: &mut Collate| s.send_issue_comment()).build(k).hand(!blocked).key("issue-comment-send");
+    row().key("issue-composer").w_full().gap(12.0).items_start()
+        .child(crate::history_view::face(k, s, me, 32.0).mt(2.0))
+        .child(col().grow(1.0).min_w(0.0).gap(8.0).child(area).child(row().w_full().child(row().grow(1.0)).child(send)))
 }
 
 /// An event in the activity, set between the comments as GitHub sets it: a mark in the faces'

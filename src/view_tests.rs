@@ -2980,6 +2980,14 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert!(rt.find("issue-comment-0").is_some() && rt.find("issue-comment-0-reactions").is_some(), "and its comments, with their reactions");
     let y = |rt: &Runtime<Collate>, key: &str| rt.find(key).unwrap_or_else(|| panic!("{key}")).1;
     assert!(y(&rt, "issue-event-0") > y(&rt, "issue-comment-0"), "and what happened, in order");
+    assert!(y(&rt, "issue-composer") > y(&rt, "issue-event-0"), "a comment is written at the foot");
+    rt.update(|s, _| s.issues.reply.focused = true);
+    for c in "me too, j".chars() {
+        rt.key(KeyEvent { key: Key::Text(c.to_string()), mods: Default::default() });
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.issues.reply.text, "me too, j", "letters typed there are words, not keys");
+    rt.update(|s, _| s.issues.reply.focused = false);
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
     rt.frame(1.0 / 60.0);
     assert!(rt.state.issues.number.is_none() && rt.find("issue-3").is_some(), "Esc goes back to the list");

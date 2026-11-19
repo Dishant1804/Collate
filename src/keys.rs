@@ -136,6 +136,10 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if ev.is_command('r') {
         return refresh();
     }
+    if ev.key == Key::Enter && ev.mods.cmd && tx.focused().is_some_and(|f| f.contains("issue-message")) {
+        s.send_issue_comment();
+        return true;
+    }
     if ev.key == Key::Enter && ev.mods.cmd {
         s.commit();
         return true;
