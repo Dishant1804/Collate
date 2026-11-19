@@ -3045,7 +3045,8 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     let menu = rt.popup_menu().expect("a comment's menu");
     assert!(menu.find("copy").is_some() && menu.find("THUMBS_UP").is_some(), "its link and reactions");
     rt.resolve_popup(Some("quote")).unwrap();
-    assert!(rt.state.issues.reply.text.starts_with("> Same here") && rt.state.issues.reply.focused, "a quoted reply is started below");
+    assert_eq!(rt.state.issues.reply.text, "me too, j\n\n> Same here\n\n", "the quote goes under what's written, not over it");
+    assert!(rt.state.issues.reply.focused);
     rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.comments[0].mine = true; d.comments[0].id = "IC_1".into() });
     rt.frame(1.0 / 60.0);
     click(&mut rt, "issue-comment-0-more");

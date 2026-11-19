@@ -308,7 +308,10 @@ impl Collate {
             }
             Some("quote") => {
                 let quoted: String = c.body.trim().lines().map(|l| format!("> {l}\n")).collect();
-                s.issues.reply = TextEdit::new(format!("{quoted}\n"));
+                // Added to what's being written rather than over it, as several quotes may go in one reply.
+                let before = s.issues.reply.text.trim_end();
+                let gap = if before.is_empty() { "" } else { "\n\n" };
+                s.issues.reply = TextEdit::new(format!("{before}{gap}{quoted}\n"));
                 s.issues.reply.focused = true;
                 tx.scroll_into_view("issue-composer");
             }
