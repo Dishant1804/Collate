@@ -38,6 +38,8 @@ pub struct IssuesState {
     pub detail: Option<Result<Detail, String>>,
     /// The comment being written at the foot of the open issue.
     pub reply: TextEdit,
+    /// Comments begun on other issues, by number, back in the box when their issue opens again.
+    pub drafts: HashMap<u32, String>,
     /// The dialog up over the open issue, and its text.
     pub write: Option<Write>,
     pub text: TextEdit,
@@ -122,7 +124,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new(""), template: None, new_labels: Vec::new(), new_assignees: Vec::new(), options: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), drafts: HashMap::new(), write: None, text: TextEdit::new(""), title: TextEdit::new(""), template: None, new_labels: Vec::new(), new_assignees: Vec::new(), options: None }
     }
 }
 
@@ -169,6 +171,8 @@ impl Collate {
 
     /// Open issue `n` in place of the list, shown at once from the list while the rest is read.
     pub fn open_issue(&mut self, n: u32) {
+        self.put_issue_draft_away();
+        self.issues.reply = TextEdit::new(self.issues.drafts.remove(&n).unwrap_or_default());
         self.issues.number = Some(n);
         self.issues.pick = Some(n);
         self.issues.detail = None;
@@ -193,10 +197,27 @@ impl Collate {
 
     /// Back from an issue to the list, where it was.
     pub fn close_issue(&mut self, tx: &mut Tx) {
+        self.put_issue_draft_away();
         if let Some(n) = self.issues.number.take() {
             self.issues.detail = None;
             tx.scroll_into_view(format!("issue-{n}"));
         }
+    }
+
+    /// Keep the comment half written on the open issue for when it opens again.
+    fn put_issue_draft_away(&mut self) {
+        let reply = std::mem::replace(&mut self.issues.reply, TextEdit::new(""));
+        if let Some(n) = self.issues.number && !reply.text.trim().is_empty() {
+            self.issues.drafts.insert(n, reply.text.clone());
+        }
+    }
+
+    /// Clear issue `n`'s comment once it's sent, wherever the reader has gone since.
+    fn sent_issue_draft(&mut self, n: u32) {
+        if self.issues.number == Some(n) {
+            self.issues.reply = TextEdit::new("");
+        }
+        self.issues.drafts.remove(&n);
     }
 
     /// Read the open issue again, off the UI thread.
@@ -246,7 +267,7 @@ impl Collate {
             return;
         }
         // Kept until it's sent, so a failure doesn't lose it.
-        self.issue_act("Commenting…", move |gh| gh.issue_comment(n, &body).map(|_| format!("Commented on #{n}")), |s| s.issues.reply = TextEdit::new(""));
+        self.issue_act("Commenting…", move |gh| gh.issue_comment(n, &body).map(|_| format!("Commented on #{n}")), move |s| s.sent_issue_draft(n));
     }
 
     /// Close the open issue for `reason` (`completed` or `not planned`), or reopen it with
@@ -258,7 +279,7 @@ impl Collate {
             Some(_) => ("Closing…", format!("Closed #{n}")),
             None => ("Reopening…", format!("Reopened #{n}")),
         };
-        self.issue_act(doing, move |gh| gh.set_issue_open(n, reason, &body).map(|_| done), |s| s.issues.reply = TextEdit::new(""));
+        self.issue_act(doing, move |gh| gh.set_issue_open(n, reason, &body).map(|_| done), move |s| s.sent_issue_draft(n));
     }
 
     fn react_to_issue_post(&mut self, id: String, content: &'static str) {

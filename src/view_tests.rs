@@ -2973,7 +2973,8 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert_eq!(rt.state.issues.number, Some(3));
     assert!(rt.find("issue-title").is_some() && rt.find("issue-state").is_some() && rt.find("issue-list").is_none(), "it shows in place of the list, at once from it");
     let said = crate::github::Post { author: "bo".into(), body: "Same here".into(), time: "2026-11-02T10:00:00Z".into(), reactions: vec![("THUMBS_UP".into(), 2)], id: "IC_1".into(), ..Default::default() };
-    rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![said],
+    let first = said.clone();
+    rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![first],
         events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false, milestone: None, pulls: vec![(7, "Fix the crash".into(), "OPEN".into())], ..Default::default() })));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-body").is_some(), "its description shows once read");
@@ -2987,6 +2988,13 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
         rt.frame(1.0 / 60.0);
     }
     assert_eq!(rt.state.issues.reply.text, "me too, j", "letters typed there are words, not keys");
+    rt.update(|s, _| s.open_issue(4));
+    assert_eq!(rt.state.issues.reply.text, "", "a comment begun on one issue doesn't follow to the next");
+    rt.update(|s, _| s.open_issue(3));
+    assert_eq!(rt.state.issues.reply.text, "me too, j", "and is there again when its issue opens");
+    rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![said],
+        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false, milestone: None, pulls: vec![(7, "Fix the crash".into(), "OPEN".into())], ..Default::default() })));
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
     assert!(rt.find("issue-close").is_some() && rt.find("issue-reopen").is_none(), "an open issue can be closed from there");
     click(&mut rt, "issue-close-reason");
     let menu = rt.popup_menu().expect("the reasons to close it");
