@@ -43,6 +43,9 @@ pub struct IssuesState {
     pub text: TextEdit,
     /// The title, while the issue is edited.
     pub title: TextEdit,
+    /// The labels and assignees a new issue opens with.
+    pub new_labels: Vec<String>,
+    pub new_assignees: Vec<String>,
     /// Who can be assigned and the labels there are, read once an issue opens.
     pub options: Option<Result<Options, String>>,
 }
@@ -117,7 +120,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new(""), options: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new(""), new_labels: Vec::new(), new_assignees: Vec::new(), options: None }
     }
 }
 
@@ -307,6 +310,13 @@ impl Collate {
             _ => "",
         });
         self.issues.title = TextEdit::new(d.filter(|_| w == Write::Edit).map_or("", |d| d.issue.title.as_str()));
+        if w == Write::New {
+            self.issues.new_labels.clear();
+            self.issues.new_assignees.clear();
+            if self.issues.options.is_none() {
+                self.load_issue_options();
+            }
+        }
         let titled = matches!(w, Write::Edit | Write::New);
         self.issues.text.focused = !titled;
         self.issues.title.focused = titled;
@@ -318,10 +328,11 @@ impl Collate {
         if self.issues.write == Some(Write::New) {
             // The dialog stays up until the issue is made, so a failure loses nothing.
             let title = self.issues.title.text.trim().to_owned();
+            let (labels, assignees) = (self.issues.new_labels.clone(), self.issues.new_assignees.clone());
             let made = std::sync::Arc::new(std::sync::Mutex::new(None));
             let got = made.clone();
             self.issue_act("Opening the issue…", move |gh| {
-                let n = gh.create_issue(&title, &body)?;
+                let n = gh.create_issue(&title, &body, &labels, &assignees)?;
                 *made.lock().map_err(|e| e.to_string())? = Some(n);
                 Ok(format!("Opened #{n}"))
             }, move |s| {
@@ -448,6 +459,33 @@ impl Collate {
                 s.issue_act(if locked { "Unlocking…" } else { "Locking…" }, move |gh| gh.lock_issue(n, !locked).map(|_| done), |_| {});
             }
             _ => {}
+        });
+    }
+
+    /// The new issue's labels or assignees: everything there is, those picked ticked; a pick
+    /// adds or takes one off.
+    fn pick_new_issue(&mut self, labels: bool, tx: &mut Tx) {
+        let picked = if labels { &self.issues.new_labels } else { &self.issues.new_assignees };
+        let menu = match &self.issues.options {
+            Some(Ok(o)) => {
+                let all: Vec<&String> = if labels { o.labels.iter().map(|(name, _)| name).collect() } else { o.people.iter().collect() };
+                if all.is_empty() {
+                    PopupMenu::new().item(PopupItem::new("", if labels { "This repository has no labels" } else { "No one can be assigned" }).enabled(false))
+                } else {
+                    PopupMenu::new().items(all.into_iter().map(|x| PopupItem::new(x.clone(), x.clone()).checked(picked.contains(x))))
+                }
+            }
+            Some(Err(e)) => PopupMenu::new().item(PopupItem::new("", format!("Couldn't read them: {e}")).enabled(false)),
+            None => PopupMenu::new().item(PopupItem::new("", "Reading…").enabled(false)),
+        };
+        let anchor = if labels { "issue-new-labels" } else { "issue-new-assignees" };
+        tx.popup_menu(menu, anchor, move |s: &mut Collate, picked: Option<&str>, _| {
+            let Some(x) = picked.filter(|p| !p.is_empty()).map(str::to_owned) else { return };
+            let list = if labels { &mut s.issues.new_labels } else { &mut s.issues.new_assignees };
+            match list.iter().position(|y| *y == x) {
+                Some(at) => _ = list.remove(at),
+                None => list.push(x),
+            }
         });
     }
 
@@ -852,6 +890,12 @@ pub fn write_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let titled = matches!(w, Write::Edit | Write::New);
     if titled {
         body = body.child(TextInput::new(&s.issues.title).placeholder("Title").on_edit(|s: &mut Collate| &mut s.issues.title).width(None).build(k).key("issue-write-title").w_full());
+    }
+    if w == Write::New {
+        let named = |all: &[String], none: &str| if all.is_empty() { none.to_owned() } else { all.join(", ") };
+        body = body.child(row().key("issue-new-lists").w_full().gap(4.0).items_center().ml(-crate::pulls::REGULAR_PAD)
+            .child(menu_button(k, "issue-new-labels", named(&s.issues.new_labels, "Labels"), !s.issues.new_labels.is_empty(), "Label it", |s, tx| s.pick_new_issue(true, tx)))
+            .child(menu_button(k, "issue-new-assignees", named(&s.issues.new_assignees, "Assignees"), !s.issues.new_assignees.is_empty(), "Assign it", |s, tx| s.pick_new_issue(false, tx))));
     }
     let (hint, label) = if titled { ("Description", "Description") } else { ("Write a comment", "Comment") };
     if !delete {

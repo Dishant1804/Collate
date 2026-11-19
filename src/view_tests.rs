@@ -3067,6 +3067,13 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert!(rt.state.issues.title.focused && rt.state.issues.title.text.is_empty(), "New Issue opens empty, at its title");
     click(&mut rt, "issue-write-ok");
     assert!(rt.state.issues.write == Some(crate::issues::Write::New), "and waits for one");
+    click(&mut rt, "issue-new-labels");
+    rt.resolve_popup(Some("bug")).unwrap();
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.issues.new_labels, ["bug"], "labels are picked as it's written");
+    click(&mut rt, "issue-new-assignees");
+    assert!(rt.popup_menu().is_some_and(|m| m.find("me").is_some()), "and assignees");
+    rt.resolve_popup(None).unwrap();
     click(&mut rt, "issue-write-cancel");
     rt.update(|s, _| s.open_issue(3));
     rt.frame(1.0 / 60.0);

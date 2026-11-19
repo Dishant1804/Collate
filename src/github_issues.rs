@@ -160,8 +160,11 @@ impl Gh {
     }
 
     /// Open a new issue; its number, from the link `gh` answers with.
-    pub fn create_issue(&self, title: &str, body: &str) -> Result<u32, String> {
-        let url = self.run(&["issue", "create", &format!("--title={title}"), "--body-file", "-"], Some(body))?;
+    pub fn create_issue(&self, title: &str, body: &str, labels: &[String], assignees: &[String]) -> Result<u32, String> {
+        let mut args = vec!["issue".to_owned(), "create".to_owned(), format!("--title={title}"), "--body-file".to_owned(), "-".to_owned()];
+        args.extend(labels.iter().map(|l| format!("--label={l}")));
+        args.extend(assignees.iter().map(|a| format!("--assignee={a}")));
+        let url = self.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), Some(body))?;
         url.trim().rsplit('/').next().and_then(|n| n.parse().ok()).ok_or_else(|| format!("Unexpected reply from gh: {}", url.trim()))
     }
 
