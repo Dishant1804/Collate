@@ -2992,7 +2992,7 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     let said = crate::github::Post { author: "bo".into(), body: "Same here".into(), time: "2026-11-02T10:00:00Z".into(), reactions: vec![("THUMBS_UP".into(), 2)], id: "IC_1".into(), ..Default::default() };
     let first = said.clone();
     rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![first],
-        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false, milestone: None, pulls: vec![(7, "Fix the crash".into(), "OPEN".into())], ..Default::default() })));
+        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false, can_close: true, milestone: None, pulls: vec![(7, "Fix the crash".into(), "OPEN".into())], ..Default::default() })));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-body").is_some(), "its description shows once read");
     assert!(rt.find("issue-comment-0").is_some() && rt.find("issue-comment-0-react-THUMBS_UP").is_some(), "and its comments, with their reactions");
@@ -3010,9 +3010,14 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.update(|s, _| s.open_issue(3));
     assert_eq!(rt.state.issues.reply.text, "me too, j", "and is there again when its issue opens");
     rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![said],
-        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false, milestone: None, pulls: vec![(7, "Fix the crash".into(), "OPEN".into())], ..Default::default() })));
+        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false, can_close: true, milestone: None, pulls: vec![(7, "Fix the crash".into(), "OPEN".into())], ..Default::default() })));
     for _ in 0..30 { rt.frame(1.0 / 60.0); }
     assert!(rt.find("issue-close").is_some() && rt.find("issue-reopen").is_none(), "an open issue can be closed from there");
+    rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.can_close = false });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-close").is_none() && rt.find("issue-comment-send").is_some(), "by those who may, while anyone comments");
+    rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.can_close = true });
+    for _ in 0..30 { rt.frame(1.0 / 60.0); }
     click(&mut rt, "issue-close-reason");
     let menu = rt.popup_menu().expect("the reasons to close it");
     assert!(menu.find("completed").is_some() && menu.find("not planned").is_some());
@@ -3143,7 +3148,7 @@ fn the_issues_menu_acts_on_the_issue_open() {
         s.issues.list = Some(Ok(("me".into(), vec![issue(3, "ana", &[])])));
         s.open_issues();
         s.open_issue(3);
-        s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), can_edit: true, ..Default::default() }));
+        s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), can_edit: true, can_close: true, ..Default::default() }));
     });
     rt.frame(1.0 / 60.0);
     assert!(enabled(&rt, "issue-close") && enabled(&rt, "issue-close-not-planned") && !enabled(&rt, "issue-reopen"), "an open issue closes");

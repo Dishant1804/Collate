@@ -976,10 +976,13 @@ fn composer(s: &Collate, k: &Kit) -> El {
     let send = Button::new("Comment").variant(ButtonVariant::Contrast).disabled(blocked).help("Add it to the issue (⌘↩)")
         .on_press(|s: &mut Collate| s.send_issue_comment()).build(k).hand(!blocked).key("issue-comment-send");
     // As GitHub words it: what's written goes with the closing or reopening.
-    let open = s.issues.detail.as_ref().and_then(|d| d.as_ref().ok()).is_none_or(|d| d.issue.open);
+    let detail = s.issues.detail.as_ref().and_then(|d| d.as_ref().ok());
+    let open = detail.is_none_or(|d| d.issue.open);
     let busy = s.busy.is_some();
     let with = if empty { "" } else { " with Comment" };
-    let state = if open {
+    let state = if !detail.is_some_and(|d| d.can_close) {
+        row()
+    } else if open {
         row().gap(2.0).items_center()
             .child(Button::new(format!("Close{with}")).icon(&DONE_ICON).variant(ButtonVariant::Outline).disabled(busy).help("Close it as completed")
                 .on_press(|s: &mut Collate| s.set_issue_open(Some("completed"))).build(k).hand(!busy).key("issue-close"))

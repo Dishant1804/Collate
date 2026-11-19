@@ -61,6 +61,9 @@ pub struct Detail {
     pub events: Vec<Event>,
     /// The reader may change its title, description, labels and the rest.
     pub can_edit: bool,
+    /// The reader may close it, or reopen it once closed; an issue's author may though they
+    /// can't edit the rest.
+    pub can_close: bool,
     /// The milestone it's in, by title.
     pub milestone: Option<String>,
     /// The pull requests that close it when they merge: number, title and state (`OPEN`,
@@ -103,7 +106,7 @@ const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name colo
 
 /// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("id body reactionGroups{{content users{{totalCount}}}} viewerCanUpdate viewerSubscription locked milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+    format!("id body reactionGroups{{content users{{totalCount}}}} viewerCanUpdate viewerCanClose viewerCanReopen viewerSubscription locked milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
 RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
@@ -278,6 +281,7 @@ fn detail(v: &Value) -> Detail {
     let (comments, events): (Vec<&Value>, Vec<&Value>) = items.partition(|e| e["__typename"] == "IssueComment");
     let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
     Detail { issue: issue(v), id: s(v, "id"), subscribed: v["viewerSubscription"] == "SUBSCRIBED", locked: v["locked"].as_bool().unwrap_or(false), reactions: post(v).reactions, body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
+        can_close: v[if v["state"] != "CLOSED" { "viewerCanClose" } else { "viewerCanReopen" }].as_bool().unwrap_or(false),
         milestone: v["milestone"]["title"].as_str().map(str::to_owned),
         pulls: v["closedByPullRequestsReferences"]["nodes"].as_array().into_iter().flatten()
             .map(|p| (p["number"].as_u64().unwrap_or(0) as u32, s(p, "title"), s(p, "state"))).collect() }
@@ -364,6 +368,8 @@ mod tests {
         let c = &d.comments[0];
         assert_eq!((c.id.as_str(), c.body.as_str(), c.time.as_str(), c.mine), ("IC_1", "Agreed", "2026-11-02T10:00:00Z", true));
         assert_eq!(c.reactions, [("HEART".to_owned(), 2)], "only the reactions someone gave");
+        let can = |state: &str| detail(&serde_json::json!({"state": state, "viewerCanClose": true, "viewerCanReopen": false})).can_close;
+        assert!(can("OPEN") && !can("CLOSED"), "closing asks one right, reopening another");
     }
 
     #[test]

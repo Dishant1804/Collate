@@ -67,7 +67,7 @@ fn issue_shown(s: &Collate) -> Option<&crate::github_issues::Detail> {
     s.issues.detail.as_ref()?.as_ref().ok()
 }
 fn issue_can(s: &Collate, open: bool) -> bool {
-    s.busy.is_none() && issue_shown(s).is_some_and(|d| d.can_edit && d.issue.open == open)
+    s.busy.is_none() && issue_shown(s).is_some_and(|d| d.can_close && d.issue.open == open)
 }
 
 fn letter(s: &mut Collate, key: &str, tx: &mut Tx) {
