@@ -732,9 +732,8 @@ impl Collate {
         self.load_pulls();
         let folded = std::mem::take(&mut self.issues.folded);
         self.issues = issues::IssuesState { open: self.issues.open, folded, ..Default::default() };
-        if self.issues.open {
-            self.load_issues();
-        }
+        self.issues.list = current_repo().and_then(|r| issues::cached(&r.root)).map(Ok);
+        self.load_issues();
         self.place_comments();
         self.stale.clear();
         self.seen.clear();

@@ -176,13 +176,14 @@ fn fresh_requests<'a>(seen: Option<&HashSet<u32>>, pulls: &'a [Pull], me: &str) 
 /// How often the review requests are read again.
 const REVIEWS_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Read the pull requests at launch, so the list is there when it's opened, then again every
+/// Read the pull requests and issues at launch, so the lists are there when they're opened, then the pull requests again every
 /// few minutes, so a new review request notifies and the sidebar's count stays true.
 pub fn watch_reviews() {
     let Some(app) = HANDLE.get().cloned() else { return };
     app.update(|s, _| {
         if s.has_project {
             s.load_pulls();
+            s.load_issues();
         }
     });
     std::thread::spawn(move || loop {

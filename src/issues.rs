@@ -1,7 +1,8 @@
 //! The Issues place: the repository's issues, grouped by what they want of the reader, and one
 //! issue's overview, in place of the diff, as the pull requests are.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use rune::{Cursor, El, col, icon, row, text};
 use rune_kit::{IconButton, IconButtonVariant, Kit};
@@ -28,6 +29,17 @@ impl Default for IssuesState {
     }
 }
 
+/// The signed-in login and the issues.
+type List = (String, Vec<Issue>);
+
+/// Each project's last list, shown at once when it's opened again while a new one is read.
+static LISTS: std::sync::Mutex<Option<HashMap<PathBuf, List>>> = std::sync::Mutex::new(None);
+
+/// The last list read for the project at `root`.
+pub fn cached(root: &Path) -> Option<List> {
+    LISTS.lock().ok()?.as_ref()?.get(root).cloned()
+}
+
 impl Collate {
     /// Show the issues as last read, and read them again.
     pub fn open_issues(&mut self) {
@@ -46,6 +58,9 @@ impl Collate {
         }
         std::thread::spawn(move || {
             let got = Gh::new(&root).issues();
+            if let (Ok(list), Ok(mut lists)) = (&got, LISTS.lock()) {
+                lists.get_or_insert_default().insert(root.clone(), list.clone());
+            }
             app.update(move |s, _| {
                 // The reader switched projects meanwhile: this list was the last one's.
                 if current_repo().is_none_or(|r| r.root != root) {
