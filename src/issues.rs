@@ -4,9 +4,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rune::{Cursor, El, Icon, TextEdit, col, icon, row, text};
+use rune::{Cursor, El, Icon, TextEdit, Tx, col, icon, row, text};
 use rune_kit::syntax::{Syntax, SyntaxTheme};
-use rune_kit::{IconButton, IconButtonVariant, Kit, TextInput};
+use rune_kit::{IconButton, IconButtonVariant, Kit, SegmentedControl, TextInput};
 
 use crate::Hand;
 use crate::github_issues::{self, Issue};
@@ -23,12 +23,32 @@ pub struct IssuesState {
     pub folded: HashSet<&'static str>,
     /// Words the list is narrowed to.
     pub filter: TextEdit,
+    /// Which issues the list shows by state.
+    pub shown: Shown,
+}
+
+/// The issues the list shows: open ones to act on, closed ones to look back on, or both.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Shown {
+    #[default]
+    Open,
+    Closed,
+    All,
+}
+
+impl Shown {
+    fn wants(self, i: &Issue) -> bool {
+        match self {
+            Shown::Open => i.open,
+            Shown::Closed => !i.open,
+            Shown::All => true,
+        }
+    }
 }
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        // Closed issues are there to look back on, not to act on.
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::from(["Closed"]), filter: TextEdit::new("") }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open }
     }
 }
 
@@ -125,9 +145,14 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
         Some(Ok((me, issues))) => {
             let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
-            let shown: Vec<Issue> = issues.iter().filter(|i| matches(i, &words)).cloned().collect();
+            let shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && matches(i, &words)).cloned().collect();
             if shown.is_empty() {
-                return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(message(k, "No issues match", "Try fewer or other words."));
+                let (title, hint) = match (s.issues.shown, words.is_empty()) {
+                    (Shown::Open, true) => ("No open issues", "Closed shows the ones done with."),
+                    (Shown::Closed, true) => ("No closed issues", "None were closed lately."),
+                    _ => ("No issues match", "Try fewer or other words."),
+                };
+                return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(filters(s, k)).child(message(k, title, hint));
             }
             let mut list = col().key("issues-list").w_full().pb(16.0);
             for (title, group) in github_issues::group(&shown, me) {
@@ -142,10 +167,23 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
                     }
                 }
             }
-            col().key("issues-scroll").w_full().grow(1.0).min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(list)
+            return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(filters(s, k))
+                .child(col().key("issues-scroll").w_full().grow(1.0).min_h(0.0).scroll(rune::ScrollSpec { stick_bottom: false }).child(list));
         }
     };
     col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(body)
+}
+
+/// The row under the head that narrows the list: by state, then the menus.
+fn filters(s: &Collate, k: &Kit) -> El {
+    let at = [Shown::Open, Shown::Closed, Shown::All];
+    let state = SegmentedControl::new(&["Open", "Closed", "All"], at.iter().position(|w| *w == s.issues.shown))
+        .label("Issues to show")
+        .fit()
+        .on_pick(move |s: &mut Collate, i, _: &mut Tx| s.issues.shown = at[i])
+        .build(k).hand(true)
+        .key("issues-state");
+    row().key("issues-filters").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state)
 }
 
 /// Whether every word is in the issue's title, number, author, assignees or labels.
