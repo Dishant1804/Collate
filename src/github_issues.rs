@@ -128,10 +128,19 @@ impl Gh {
 
     /// Add `add` to issue `n`'s assignees and take `remove` off, by login (`@me` for the reader).
     pub fn issue_assignees(&self, n: u32, add: &[&str], remove: &[&str]) -> Result<String, String> {
-        let n = n.to_string();
-        let mut args = vec!["issue".to_owned(), "edit".to_owned(), n];
-        args.extend(add.iter().map(|a| format!("--add-assignee={a}")));
-        args.extend(remove.iter().map(|a| format!("--remove-assignee={a}")));
+        self.issue_edit_list(n, "assignee", add, remove)
+    }
+
+    /// Add label `add` to issue `n`, or take `remove` off, by name.
+    pub fn issue_labels(&self, n: u32, add: &[&str], remove: &[&str]) -> Result<String, String> {
+        self.issue_edit_list(n, "label", add, remove)
+    }
+
+    /// `gh issue edit`'s `--add-<what>` and `--remove-<what>`.
+    fn issue_edit_list(&self, n: u32, what: &str, add: &[&str], remove: &[&str]) -> Result<String, String> {
+        let mut args = vec!["issue".to_owned(), "edit".to_owned(), n.to_string()];
+        args.extend(add.iter().map(|a| format!("--add-{what}={a}")));
+        args.extend(remove.iter().map(|a| format!("--remove-{what}={a}")));
         self.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), None)
     }
 

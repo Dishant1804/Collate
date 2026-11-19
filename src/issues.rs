@@ -346,6 +346,26 @@ impl Collate {
         });
     }
 
+    /// The labels' menu: every label there is, those on it ticked; a pick adds or takes it off.
+    fn pick_issue_labels(&mut self, tx: &mut Tx) {
+        let (Some(n), Some(Ok(d))) = (self.issues.number, &self.issues.detail) else { return };
+        let on: Vec<String> = d.issue.labels.iter().map(|(name, _)| name.clone()).collect();
+        let menu = match &self.issues.options {
+            Some(Ok(o)) if o.labels.is_empty() => PopupMenu::new().item(PopupItem::new("", "This repository has no labels").enabled(false)),
+            Some(Ok(o)) => PopupMenu::new().items(o.labels.iter().map(|(name, _)| PopupItem::new(name.clone(), name.clone()).checked(on.contains(name)))),
+            Some(Err(e)) => PopupMenu::new().item(PopupItem::new("", format!("Couldn't read the labels: {e}")).enabled(false)),
+            None => PopupMenu::new().item(PopupItem::new("", "Reading the labels…").enabled(false)),
+        };
+        tx.popup_menu(menu, "issue-edit-labels", move |s: &mut Collate, picked: Option<&str>, _| {
+            let Some(name) = picked.filter(|p| !p.is_empty()).map(str::to_owned) else { return };
+            if on.contains(&name) {
+                s.issue_act("Removing the label…", move |gh| gh.issue_labels(n, &[], &[&name]).map(|_| format!("Took {name} off #{n}")), |_| {});
+            } else {
+                s.issue_act("Labelling…", move |gh| gh.issue_labels(n, &[&name], &[]).map(|_| format!("Labelled #{n} {name}")), |_| {});
+            }
+        });
+    }
+
     fn assign_me_to_issue(&mut self) {
         let Some(n) = self.issues.number else { return };
         self.issue_act("Assigning…", move |gh| gh.issue_assignees(n, &["@me"], &[]).map(|_| format!("Assigned you to #{n}")), |_| {});
@@ -798,7 +818,7 @@ fn side(s: &Collate, k: &Kit, d: &Detail) -> El {
             .child(crate::history_view::face(k, s, a, 20.0))
             .child(text(a.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0)));
     }
-    let mut labels = col().key("issue-labels").w_full().gap(4.0).child(heading(k, "issue-labels-title", "Labels", None));
+    let mut labels = col().key("issue-labels").w_full().gap(4.0).child(heading(k, "issue-labels-title", "Labels", gear("issue-edit-labels", "Change the labels", Collate::pick_issue_labels)));
     labels = if i.labels.is_empty() {
         labels.child(text("None yet".to_owned()).font(k.ty.text_small).color(k.c.text_faint))
     } else {

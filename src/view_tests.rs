@@ -3033,6 +3033,10 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     let menu = rt.popup_menu().expect("the assignees' menu");
     assert!(menu.find("me").is_some_and(|i| i.is_checked()) && menu.find("bo").is_some_and(|i| !i.is_checked()), "those on it ticked");
     rt.resolve_popup(None).unwrap();
+    click(&mut rt, "issue-edit-labels");
+    let menu = rt.popup_menu().expect("the labels' menu");
+    assert!(menu.find("bug").is_some_and(|i| !i.is_checked()), "every label there is");
+    rt.resolve_popup(None).unwrap();
     click(&mut rt, "issue-edit");
     assert!(rt.find("issue-write-title").is_some() && rt.state.issues.text.text == "It **crashes**.", "Edit opens its title and description");
     rt.update(|s, _| s.issues.title = TextEdit::new(""));
