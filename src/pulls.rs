@@ -1006,6 +1006,9 @@ pub fn pr_tabs(s: &Collate, k: &Kit) -> Option<El> {
 }
 
 /// A section's small title on the overview, with an optional action at its end.
+/// A regular-size button's padding: pulled out by it, its glyph or label sits on the edge.
+const REGULAR_PAD: f32 = 12.0;
+
 fn heading(k: &Kit, key: &str, title: &str, action: Option<El>) -> El {
     let mut r = row().key(key.to_owned()).w_full().h(24.0).items_center()
         .child(text(title.to_owned()).font(k.ty.text_small_medium).color(k.c.text_muted).grow(1.0));
@@ -1276,30 +1279,36 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         }
         merge_box = merge_box.child(line()).child(merge_row.child(delete));
     }
-    main = main.child(merge_box);
+    // In the timeline's column, after the comments, marked as GitHub marks it.
+    let badge = row().size(32.0, 32.0).mt(2.0).center().radius(16.0).fill(k.alpha(state_color, 0.16)).child(icon(&MERGE_ICON, 16.0).color(state_color)).a11y_hidden();
+    main = main.child(row().key("pr-merge-line").w_full().gap(12.0).items_start().child(badge).child(merge_box.grow(1.0).min_w(0.0)));
 
     // The reader's review, and a comment on the whole of it.
     if open {
         let pending = s.pending().len();
         let verdict = |key: &str, label: &str, v: Verdict| Button::new(label.to_owned()).variant(ButtonVariant::Outline).control_size(ControlSize::Small)
             .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.start_compose(Compose::Review(v))).build(k).key(key.to_owned());
-        let comment = Button::new("Add a Comment").variant(ButtonVariant::Ghost).control_size(ControlSize::Small)
-            .on_press(|s: &mut Collate| s.start_compose(Compose::Comment)).build(k).key("pr-add-comment");
+        // A comment on the whole of it, where GitHub keeps its box: at the foot of the timeline.
+        let comment = row().key("pr-add-comment").w_full().h(36.0).px(12.0).items_center().radius(k.radius.md).border(1.0, k.c.border_weak)
+            .hover(k.c.hover).cursor(Cursor::Pointer).role("button").label("Add a comment").help("Comment on the pull request")
+            .on_press(|s: &mut Collate| s.start_compose(Compose::Comment))
+            .child(text("Add a comment…").font(k.ty.text_small).color(k.c.text_faint));
         let mut review = col().key("pr-your-review").w_full().gap(8.0)
-            .child(heading(k, "pr-review-title", "Your Review", None))
-            .child(row().key("pr-review").w_full().gap(6.0).items_center().flex_wrap()
+            .child(row().key("pr-comment-row").w_full().gap(12.0).items_center()
+                .child(match me { Some(me) => crate::history_view::face(k, s, me, 32.0), None => col().size(32.0, 32.0) })
+                .child(comment.grow(1.0).min_w(0.0)))
+            .child(heading(k, "pr-review-title", "Your Review", None).mt(12.0).pl(44.0))
+            .child(row().key("pr-review").w_full().pl(44.0).gap(6.0).items_center().flex_wrap()
                 .child(verdict("pr-approve", "Approve", Verdict::Approve))
                 .child(verdict("pr-changes", "Request Changes", Verdict::RequestChanges))
-                .child(verdict("pr-comment-review", if pending > 0 { "Send Comments" } else { "Comment" }, Verdict::Comment))
-                .child(row().grow(1.0))
-                .child(comment.mr(-GHOST_PAD)));
+                .child(verdict("pr-comment-review", if pending > 0 { "Send Comments" } else { "Comment" }, Verdict::Comment)));
         if pending > 0 {
-            review = review.child(text(format!("{pending} line comment{} go with your review", if pending == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.text_muted));
+            review = review.child(text(format!("{pending} line comment{} go with your review", if pending == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.text_muted).pl(44.0));
         }
         let held = s.held();
         if held > 0 {
             let why = if s.pr_whole() { "outside GitHub's diff" } else { "on part of the pull request" };
-            review = review.child(text(format!("{held} comment{} {why} stay on this Mac", if held == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.warning.icon).wrap().w_full());
+            review = review.child(text(format!("{held} comment{} {why} stay on this Mac", if held == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.warning.icon).wrap().w_full().pl(44.0));
         }
         main = main.child(review);
     }
@@ -1318,9 +1327,9 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     }
     // Under what it is, what changes that: a draft or not, open or closed. A merged one stays.
     if pr.state != "MERGED" {
-        let act = |key: &str, glyph: &'static Icon, label: &str, help: &str, f: fn(&mut Collate)| Button::new(label.to_owned()).icon(glyph).variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small)
-            .help(help.to_owned()).disabled(s.busy.is_some()).on_press(f).build(k).key(key.to_owned()).ml(-GHOST_PAD);
-        let mut acts = col().key("pr-state-actions").w_full().pt(6.0).gap(2.0).items_start();
+        let act = |key: &str, glyph: &'static Icon, label: &str, help: &str, f: fn(&mut Collate)| Button::new(label.to_owned()).icon(glyph).variant(ButtonVariant::GhostMuted)
+            .help(help.to_owned()).disabled(s.busy.is_some()).on_press(f).build(k).key(key.to_owned()).ml(-REGULAR_PAD);
+        let mut acts = col().key("pr-state-actions").w_full().pt(4.0).gap(2.0).items_start();
         if open {
             acts = acts.child(if p.draft {
                 act("pr-draft", &PULLS_ICON, "Ready for Review", "Mark it ready, which asks its reviewers", Collate::toggle_draft)
@@ -1372,10 +1381,10 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
     }
     let mut assignees = col().key("pr-assignees").w_full().gap(2.0).child(heading(k, "pr-assignees-title", "Assignees", Some(gear("pr-edit-assignees", Compose::Assignees, "Change the assignees"))));
     if pr.assignees.is_empty() {
-        let mut none = row().w_full().gap(4.0).items_center().child(text("No one -").font(k.ty.text_small).color(k.c.text_faint));
+        let mut none = row().w_full().h(24.0).gap(4.0).items_center().child(text("No one -").font(k.ty.text_small).color(k.c.text_faint));
         if open {
-            none = none.child(Button::new("Assign yourself").variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small).disabled(s.busy.is_some())
-                .on_press(|s: &mut Collate| s.assign_me()).build(k).key("pr-assign-me").ml(-4.0));
+            none = none.child(Button::new("Assign yourself").variant(ButtonVariant::GhostMuted).disabled(s.busy.is_some())
+                .on_press(|s: &mut Collate| s.assign_me()).build(k).key("pr-assign-me").ml(-REGULAR_PAD));
         }
         assignees = assignees.child(none);
     }
