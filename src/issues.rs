@@ -366,6 +366,35 @@ impl Collate {
         });
     }
 
+    /// The milestone's menu: the open milestones, the issue's ticked, and taking it out of one.
+    fn pick_issue_milestone(&mut self, tx: &mut Tx) {
+        let (Some(n), Some(Ok(d))) = (self.issues.number, &self.issues.detail) else { return };
+        let now = d.milestone.clone();
+        let menu = match &self.issues.options {
+            Some(Ok(o)) => {
+                let none = PopupItem::new("", "No Milestone").checked(now.is_none());
+                PopupMenu::new().item(none).separator().items(o.milestones.iter().map(|m| PopupItem::new(format!("m:{m}"), m.clone()).checked(now.as_ref() == Some(m))))
+            }
+            Some(Err(e)) => PopupMenu::new().item(PopupItem::new("-", format!("Couldn't read the milestones: {e}")).enabled(false)),
+            None => PopupMenu::new().item(PopupItem::new("-", "Reading the milestones…").enabled(false)),
+        };
+        tx.popup_menu(menu, "issue-edit-milestone", move |s: &mut Collate, picked: Option<&str>, _| {
+            let to = match picked {
+                Some("") => None,
+                Some(m) => Some(m.strip_prefix("m:").unwrap_or(m).to_owned()),
+                None => return,
+            };
+            if to == now {
+                return;
+            }
+            let done = match &to {
+                Some(m) => format!("Put #{n} in {m}"),
+                None => format!("Took #{n} out of its milestone"),
+            };
+            s.issue_act("Saving…", move |gh| gh.issue_milestone(n, to.as_deref()).map(|_| done), |_| {});
+        });
+    }
+
     fn assign_me_to_issue(&mut self) {
         let Some(n) = self.issues.number else { return };
         self.issue_act("Assigning…", move |gh| gh.issue_assignees(n, &["@me"], &[]).map(|_| format!("Assigned you to #{n}")), |_| {});
@@ -824,7 +853,13 @@ fn side(s: &Collate, k: &Kit, d: &Detail) -> El {
     } else {
         labels.child(row().w_full().gap(4.0).flex_wrap().children(i.labels.iter().map(|(name, color)| crate::pulls::label_pill(k, name, crate::pulls::label_color(k, color)))))
     };
-    col().key("issue-side").w(220.0).gap(24.0).child(assignees).child(labels)
+    let milestone = col().key("issue-milestone").w_full().gap(2.0)
+        .child(heading(k, "issue-milestone-title", "Milestone", gear("issue-edit-milestone", "Change the milestone", Collate::pick_issue_milestone)))
+        .child(match &d.milestone {
+            Some(m) => text(m.clone()).font(k.ty.text_small).color(k.c.text_base),
+            None => text("No milestone".to_owned()).font(k.ty.text_small).color(k.c.text_faint),
+        });
+    col().key("issue-side").w(220.0).gap(24.0).child(assignees).child(labels).child(milestone)
 }
 
 /// An event in the activity, set between the comments as GitHub sets it: a mark in the faces'

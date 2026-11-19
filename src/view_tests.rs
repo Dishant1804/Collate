@@ -2974,7 +2974,7 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert!(rt.find("issue-title").is_some() && rt.find("issue-state").is_some() && rt.find("issue-list").is_none(), "it shows in place of the list, at once from it");
     let said = crate::github::Post { author: "bo".into(), body: "Same here".into(), time: "2026-11-02T10:00:00Z".into(), reactions: vec![("THUMBS_UP".into(), 2)], ..Default::default() };
     rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![said],
-        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false })));
+        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false, milestone: None })));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-body").is_some(), "its description shows once read");
     assert!(rt.find("issue-comment-0").is_some() && rt.find("issue-comment-0-reactions").is_some(), "and its comments, with their reactions");
@@ -3025,7 +3025,7 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-assign-me").is_some(), "one that can be changed offers to assign you");
     rt.update(|s, _| {
-        s.issues.options = Some(Ok(crate::github_issues::Options { people: vec!["bo".into(), "me".into()], labels: vec![("bug".into(), "d73a4a".into())] }));
+        s.issues.options = Some(Ok(crate::github_issues::Options { people: vec!["bo".into(), "me".into()], labels: vec![("bug".into(), "d73a4a".into())], milestones: vec!["v1".into()] }));
         if let Some(Ok(d)) = &mut s.issues.detail { d.issue.assignees = vec!["me".into()] }
     });
     rt.frame(1.0 / 60.0);
@@ -3037,6 +3037,11 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     let menu = rt.popup_menu().expect("the labels' menu");
     assert!(menu.find("bug").is_some_and(|i| !i.is_checked()), "every label there is");
     rt.resolve_popup(None).unwrap();
+    click(&mut rt, "issue-edit-milestone");
+    let menu = rt.popup_menu().expect("the milestones' menu");
+    assert!(menu.find("").is_some_and(|i| i.is_checked()) && menu.find("m:v1").is_some(), "none yet, and the open ones");
+    rt.resolve_popup(Some("")).unwrap();
+    assert!(rt.state.busy.is_none(), "picking where it is already changes nothing");
     click(&mut rt, "issue-edit");
     assert!(rt.find("issue-write-title").is_some() && rt.state.issues.text.text == "It **crashes**.", "Edit opens its title and description");
     rt.update(|s, _| s.issues.title = TextEdit::new(""));

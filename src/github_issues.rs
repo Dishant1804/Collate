@@ -53,6 +53,8 @@ pub struct Detail {
     pub events: Vec<Event>,
     /// The reader may change its title, description, labels and the rest.
     pub can_edit: bool,
+    /// The milestone it's in, by title.
+    pub milestone: Option<String>,
 }
 
 /// A change in an issue's timeline, said as GitHub says it.
@@ -83,7 +85,7 @@ const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name colo
 
 /// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("body viewerCanUpdate timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+    format!("body viewerCanUpdate milestone{{title}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
 RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
@@ -98,9 +100,11 @@ pub struct Options {
     pub people: Vec<String>,
     /// Each label's name and colour, by name.
     pub labels: Vec<(String, String)>,
+    /// The open milestones, by title.
+    pub milestones: Vec<String>,
 }
 
-const OPTIONS: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){assignableUsers(first:100){nodes{login}} labels(first:100,orderBy:{field:NAME,direction:ASC}){nodes{name color}}}}";
+const OPTIONS: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){assignableUsers(first:100){nodes{login}} labels(first:100,orderBy:{field:NAME,direction:ASC}){nodes{name color}} milestones(states:OPEN,first:50,orderBy:{field:DUE_DATE,direction:ASC}){nodes{title}}}}";
 
 impl Gh {
     pub fn issue_options(&self) -> Result<Options, String> {
@@ -109,6 +113,7 @@ impl Gh {
         Ok(Options {
             people: r["assignableUsers"]["nodes"].as_array().into_iter().flatten().map(login).collect(),
             labels: r["labels"]["nodes"].as_array().into_iter().flatten().map(|l| (s(l, "name"), s(l, "color"))).collect(),
+            milestones: r["milestones"]["nodes"].as_array().into_iter().flatten().map(|m| s(m, "title")).collect(),
         })
     }
 
@@ -134,6 +139,13 @@ impl Gh {
     /// Add label `add` to issue `n`, or take `remove` off, by name.
     pub fn issue_labels(&self, n: u32, add: &[&str], remove: &[&str]) -> Result<String, String> {
         self.issue_edit_list(n, "label", add, remove)
+    }
+
+    /// Put issue `n` in milestone `title`, or take it out of its own with `None`.
+    pub fn issue_milestone(&self, n: u32, title: Option<&str>) -> Result<String, String> {
+        let n = n.to_string();
+        let set = title.map(|t| format!("--milestone={t}"));
+        self.run(&["issue", "edit", &n, set.as_deref().unwrap_or("--remove-milestone")], None)
     }
 
     /// `gh issue edit`'s `--add-<what>` and `--remove-<what>`.
@@ -213,7 +225,8 @@ fn detail(v: &Value) -> Detail {
     let items = v["timelineItems"]["nodes"].as_array().into_iter().flatten();
     let (comments, events): (Vec<&Value>, Vec<&Value>) = items.partition(|e| e["__typename"] == "IssueComment");
     let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
-    Detail { issue: issue(v), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false) }
+    Detail { issue: issue(v), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
+        milestone: v["milestone"]["title"].as_str().map(str::to_owned) }
 }
 
 /// An event as GitHub words it; `None` for a kind the timeline doesn't show.
