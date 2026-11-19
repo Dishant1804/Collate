@@ -2974,7 +2974,7 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     assert!(rt.find("issue-title").is_some() && rt.find("issue-state").is_some() && rt.find("issue-list").is_none(), "it shows in place of the list, at once from it");
     let said = crate::github::Post { author: "bo".into(), body: "Same here".into(), time: "2026-11-02T10:00:00Z".into(), reactions: vec![("THUMBS_UP".into(), 2)], ..Default::default() };
     rt.update(move |s, _| s.issues.detail = Some(Ok(crate::github_issues::Detail { issue: issue(3, "ana", &[]), body: "It **crashes**.".into(), comments: vec![said],
-        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }] })));
+        events: vec![crate::github_issues::Event { kind: "ClosedEvent".into(), who: "ana".into(), what: "closed this as completed".into(), time: "2026-11-03T10:00:00Z".into(), ..Default::default() }], can_edit: false })));
     rt.frame(1.0 / 60.0);
     assert!(rt.find("issue-body").is_some(), "its description shows once read");
     assert!(rt.find("issue-comment-0").is_some() && rt.find("issue-comment-0-reactions").is_some(), "and its comments, with their reactions");
@@ -3019,6 +3019,16 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
     rt.frame(1.0 / 60.0);
     assert!(rt.state.issues.write.is_none() && rt.state.issues.number == Some(3), "Esc closes the question, not the issue");
+    assert!(rt.find("issue-edit").is_none(), "an issue the reader can't change offers no Edit");
+    rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.can_edit = true });
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "issue-edit");
+    assert!(rt.find("issue-write-title").is_some() && rt.state.issues.text.text == "It **crashes**.", "Edit opens its title and description");
+    rt.update(|s, _| s.issues.title = TextEdit::new(""));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "issue-write-ok");
+    assert!(rt.state.issues.write.is_some(), "it can't be saved without a title");
+    click(&mut rt, "issue-write-cancel");
     rt.update(|s, _| s.issues.reply.focused = false);
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
     rt.frame(1.0 / 60.0);

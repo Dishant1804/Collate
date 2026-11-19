@@ -51,6 +51,8 @@ pub struct Detail {
     pub comments: Vec<Post>,
     /// What else happened to it, oldest first.
     pub events: Vec<Event>,
+    /// The reader may change its title, description, labels and the rest.
+    pub can_edit: bool,
 }
 
 /// A change in an issue's timeline, said as GitHub says it.
@@ -81,7 +83,7 @@ const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name colo
 
 /// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("body timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+    format!("body viewerCanUpdate timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
 RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
@@ -98,6 +100,10 @@ impl Gh {
 
     pub fn issue_comment(&self, n: u32, body: &str) -> Result<String, String> {
         self.run(&["issue", "comment", &n.to_string(), "--body-file", "-"], Some(body))
+    }
+
+    pub fn edit_issue(&self, n: u32, title: &str, body: &str) -> Result<String, String> {
+        self.run(&["issue", "edit", &n.to_string(), &format!("--title={title}"), "--body-file", "-"], Some(body))
     }
 
     /// Close issue `n` for `reason` (`completed` or `not planned`), or reopen it with `None`,
@@ -169,7 +175,7 @@ fn detail(v: &Value) -> Detail {
     let items = v["timelineItems"]["nodes"].as_array().into_iter().flatten();
     let (comments, events): (Vec<&Value>, Vec<&Value>) = items.partition(|e| e["__typename"] == "IssueComment");
     let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
-    Detail { issue: issue(v), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect() }
+    Detail { issue: issue(v), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false) }
 }
 
 /// An event as GitHub words it; `None` for a kind the timeline doesn't show.

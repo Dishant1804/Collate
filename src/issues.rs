@@ -41,6 +41,8 @@ pub struct IssuesState {
     /// The dialog up over the open issue, and its text.
     pub write: Option<Write>,
     pub text: TextEdit,
+    /// The title, while the issue is edited.
+    pub title: TextEdit,
 }
 
 /// What the issue dialog does.
@@ -49,6 +51,8 @@ pub enum Write {
     /// The reader's comment, by its place among the comments.
     EditComment(usize),
     DeleteComment(usize),
+    /// The issue's title and description.
+    Edit,
 }
 
 impl IssuesState {
@@ -109,7 +113,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new("") }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated, pick: None, number: None, detail: None, reply: TextEdit::new(""), write: None, text: TextEdit::new(""), title: TextEdit::new("") }
     }
 }
 
@@ -274,8 +278,11 @@ impl Collate {
         self.issues.text = TextEdit::new(match w {
             Write::EditComment(at) => d.comments.get(at).map_or("", |c| c.body.as_str()),
             Write::DeleteComment(_) => "",
+            Write::Edit => &d.body,
         });
-        self.issues.text.focused = true;
+        self.issues.title = TextEdit::new(&d.issue.title);
+        self.issues.text.focused = w != Write::Edit;
+        self.issues.title.focused = w == Write::Edit;
         self.issues.write = Some(w);
     }
 
@@ -290,6 +297,10 @@ impl Collate {
             Write::DeleteComment(at) => {
                 let Some(id) = d.comments.get(at).map(|c| c.id.clone()) else { return };
                 self.issue_act("Deleting…", move |gh| gh.delete_post(&id).map(|_| "Deleted the comment".to_owned()), |_| {});
+            }
+            Write::Edit => {
+                let (n, title) = (d.issue.number, self.issues.title.text.trim().to_owned());
+                self.issue_act("Saving…", move |gh| gh.edit_issue(n, &title, &body).map(|_| format!("Saved #{n}")), |_| {});
             }
         }
     }
@@ -618,6 +629,11 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
         .child(text(i.author.clone()).font(k.ty.text_small_medium).color(k.c.text_base))
         .child(muted(format!("opened this issue on {}", i.created.get(..10).unwrap_or(""))))
         .child(text(format!("#{n}")).font(k.ty.text_small).color(k.c.text_faint));
+    let mut title = row().w_full().gap(12.0).items_start().child(text(i.title.clone()).font(title_font).color(k.c.text_base).wrap().grow(1.0).min_w(0.0));
+    if detail.is_some_and(|d| d.can_edit) {
+        title = title.child(Button::new("Edit").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help("Change its title and description")
+            .on_press(|s: &mut Collate| s.start_issue_write(Write::Edit)).build(k).hand(true).key("issue-edit").mt(4.0));
+    }
     let body = match &s.issues.detail {
         None => text("Reading…".to_owned()).key("issue-body").font(k.ty.ui).color(k.c.text_faint),
         Some(Err(e)) => message(k, "Can't read the issue", e),
@@ -626,7 +642,7 @@ fn overview(s: &Collate, k: &Kit, n: u32) -> El {
     };
     let mut main = col().key("issue-main").grow(1.0).min_w(0.0).max_w(780.0).gap(28.0)
         .child(col().key("issue-title").w_full().gap(10.0)
-            .child(text(i.title.clone()).font(title_font).color(k.c.text_base).wrap().w_full())
+            .child(title)
             .child(byline))
         .child(body);
     if let Some(d) = detail {
@@ -654,12 +670,23 @@ pub fn write_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     let (title, what, button) = match w {
         Write::EditComment(_) => ("Edit comment", "Saved to GitHub.", "Save"),
         Write::DeleteComment(_) => ("Delete this comment?", "It's removed from the issue for everyone, and can't be brought back.", "Delete"),
+        Write::Edit => ("Edit issue", "Saved to GitHub.", "Save"),
     };
     let delete = matches!(w, Write::DeleteComment(_));
-    let blocked = s.busy.is_some() || (!delete && s.issues.text.text.trim().is_empty());
+    // An issue needs a title; its description may be empty, a comment may not.
+    let blocked = s.busy.is_some()
+        || match w {
+            Write::Edit => s.issues.title.text.trim().is_empty(),
+            Write::EditComment(_) => s.issues.text.text.trim().is_empty(),
+            Write::DeleteComment(_) => false,
+        };
     let mut body = col().key("issue-write-body").w_full().gap(12.0);
+    if w == Write::Edit {
+        body = body.child(TextInput::new(&s.issues.title).placeholder("Title").on_edit(|s: &mut Collate| &mut s.issues.title).width(None).build(k).key("issue-write-title").w_full());
+    }
+    let (hint, label) = if w == Write::Edit { ("Description", "Description") } else { ("Write a comment", "Comment") };
     if !delete {
-        body = body.child(TextArea::new(&s.issues.text).placeholder("Write a comment").label("Comment").rows(8).max_height(320.0)
+        body = body.child(TextArea::new(&s.issues.text).placeholder(hint).label(label).rows(8).max_height(320.0)
             .on_edit(|s: &mut Collate| &mut s.issues.text).width(None).build(k).key("issue-write-message").w_full());
     }
     let buttons = row().key("issue-write-buttons").w_full().gap(8.0).items_center().child(row().grow(1.0))
