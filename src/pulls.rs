@@ -30,6 +30,11 @@ pub enum Compose {
     /// Who's asked to review, as a list.
     Reviewers,
     Labels,
+    Assignees,
+    /// Comment or review summary `n` of the conversation, rewritten.
+    EditPost(usize),
+    /// Comment `n` of the conversation, deleted once the reader confirms.
+    DeletePost(usize),
 }
 
 /// The names in a comma- or space-separated list, without an `@`.
@@ -85,6 +90,8 @@ pub struct PullsState {
     pub folded: HashSet<&'static str>,
     /// What a force-push changed since the reader's review, as `git range-diff` tells it.
     pub rewrite: Option<String>,
+    /// Who can be asked to review, read when the reviewers editor opens.
+    pub people: Option<Result<Vec<String>, String>>,
 }
 
 impl Default for PullsState {
@@ -110,6 +117,7 @@ impl Default for PullsState {
             // Finished pull requests are there to look back on, not to act on.
             folded: HashSet::from(["Merged", "Closed"]),
             rewrite: None,
+            people: None,
         }
     }
 }
@@ -510,8 +518,16 @@ impl Collate {
                 self.pulls.text = TextEdit::new(pr.map_or("", |p| p.body.as_str()));
             }
             // A list to edit in place: the names as they are now.
-            Compose::Reviewers => self.pulls.title = TextEdit::new(pr.map(|p| p.reviewers.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default()),
+            Compose::Reviewers => {
+                self.pulls.title = TextEdit::new(pr.map(|p| p.reviewers.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default());
+                self.load_people();
+            }
             Compose::Labels => self.pulls.title = TextEdit::new(pr.map(|p| p.pull.labels.join(", ")).unwrap_or_default()),
+            Compose::Assignees => {
+                self.pulls.title = TextEdit::new(pr.map(|p| p.assignees.join(", ")).unwrap_or_default());
+                self.load_people();
+            }
+            Compose::EditPost(i) => self.pulls.text = TextEdit::new(pr.and_then(|p| p.conversation.get(i)).map_or("", |p| p.body.as_str())),
             _ => {}
         }
         if c == Compose::Create {
@@ -520,6 +536,28 @@ impl Collate {
             self.pulls.title = TextEdit::new(&subject);
             self.pulls.draft = false;
         }
+    }
+
+    /// Reads who can review, for the reviewers editor to offer.
+    fn load_people(&mut self) {
+        self.pulls.people = None;
+        let (Some(gh), Some(app)) = (gh(), HANDLE.get().cloned()) else { return };
+        std::thread::spawn(move || {
+            let people = gh.assignable();
+            app.update(move |s, _| s.pulls.people = Some(people));
+        });
+    }
+
+    /// Ticks or unticks `who` in the reviewers or assignees editor's list.
+    fn toggle_person(&mut self, who: &str) {
+        let mut list = names(&self.pulls.title.text);
+        match list.iter().position(|n| n == who) {
+            Some(i) => {
+                list.remove(i);
+            }
+            None => list.push(who.to_owned()),
+        }
+        self.pulls.title = TextEdit::new(list.join(", "));
     }
 
     fn send_compose(&mut self) {
@@ -557,16 +595,24 @@ impl Collate {
                 let title = self.pulls.title.text.trim().to_owned();
                 self.pr_act("Saving…", move |gh| gh.retitle(n, &title, &body).map(|_| format!("Saved #{n}")), |_| {});
             }
-            Compose::Reviewers | Compose::Labels => {
+            Compose::Reviewers | Compose::Labels | Compose::Assignees => {
                 let Some(pr) = &self.pulls.pr else { return };
-                let (what, was) = if c == Compose::Reviewers {
-                    ("reviewer", pr.reviewers.iter().map(|(w, _)| w.clone()).collect::<Vec<_>>())
-                } else {
-                    ("label", pr.pull.labels.clone())
+                let (what, was, done) = match c {
+                    Compose::Reviewers => ("reviewer", pr.reviewers.iter().map(|(w, _)| w.clone()).collect::<Vec<_>>(), "Updated the reviewers"),
+                    Compose::Labels => ("label", pr.pull.labels.clone(), "Updated the labels"),
+                    _ => ("assignee", pr.assignees.clone(), "Updated the assignees"),
                 };
                 let (add, remove) = changes(&was, &names(&self.pulls.title.text));
-                let done = if c == Compose::Reviewers { "Updated the reviewers" } else { "Updated the labels" };
                 self.pr_act("Saving…", move |gh| gh.people(n, what, &add, &remove).map(|_| done.to_owned()), |_| {});
+            }
+            Compose::EditPost(i) => {
+                let Some(p) = self.pulls.pr.as_ref().and_then(|p| p.conversation.get(i)) else { return };
+                let (id, review) = (p.id.clone(), !p.state.is_empty());
+                self.pr_act("Saving…", move |gh| gh.edit_post(&id, review, &body).map(|_| "Saved the comment".to_owned()), |_| {});
+            }
+            Compose::DeletePost(i) => {
+                let Some(id) = self.pulls.pr.as_ref().and_then(|p| p.conversation.get(i)).map(|p| p.id.clone()) else { return };
+                self.pr_act("Deleting…", move |gh| gh.delete_post(&id).map(|_| "Deleted the comment".to_owned()), |_| {});
             }
             Compose::Create => {
                 let (title, draft) = (self.pulls.title.text.trim().to_owned(), self.pulls.draft);
@@ -622,6 +668,74 @@ impl Collate {
         });
     }
 
+    /// Turns on auto-merge by a method picked from a menu.
+    fn auto_merge_menu(&mut self, tx: &mut Tx) {
+        let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
+        let menu = PopupMenu::new().items(Method::ALL.into_iter().map(|m| PopupItem::new(m.title(), m.title())));
+        tx.popup_menu(menu, "pr-auto-merge", move |s: &mut Collate, picked, _| {
+            let Some(m) = Method::ALL.into_iter().find(|m| Some(m.title()) == picked) else { return };
+            s.pr_act("Turning on auto-merge…", move |gh| gh.auto_merge(n, Some(m)).map(|_| format!("#{n} merges once its requirements pass")), |_| {});
+        });
+    }
+
+    fn disable_auto_merge(&mut self) {
+        let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
+        self.pr_act("Turning off auto-merge…", move |gh| gh.auto_merge(n, None).map(|_| format!("Auto-merge is off for #{n}")), |_| {});
+    }
+
+    /// Asks `who`, who has reviewed already, to review again.
+    fn rerequest(&mut self, who: String) {
+        let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
+        self.pr_act("Asking…", move |gh| gh.people(n, "reviewer", std::slice::from_ref(&who), &[]).map(|_| format!("Asked {who} to review again")), |_| {});
+    }
+
+    fn assign_me(&mut self) {
+        let Some(n) = self.pulls.pr.as_ref().map(|p| p.pull.number) else { return };
+        self.pr_act("Assigning…", move |gh| gh.people(n, "assignee", &["@me".to_owned()], &[]).map(|_| format!("Assigned you to #{n}")), |_| {});
+    }
+
+    fn react(&mut self, id: String, content: &'static str) {
+        self.pr_act("Reacting…", move |gh| gh.react(&id, content).map(|_| "Reacted".to_owned()), |_| {});
+    }
+
+    /// Conversation post `i`'s menu: its link, a quoted reply, a reaction, and for the
+    /// reader's own, editing and deleting it. A review's summary can be edited, not deleted.
+    fn post_menu(&mut self, i: usize, tx: &mut Tx) {
+        let me = self.pulls.me().map(str::to_owned);
+        let Some(pr) = &self.pulls.pr else { return };
+        let Some(p) = pr.conversation.get(i).cloned() else { return };
+        let mine = p.mine || me.as_deref() == Some(p.author.as_str());
+        let review = !p.state.is_empty();
+        let link = if p.url.is_empty() { pr.pull.url.clone() } else { p.url.clone() };
+        let react = PopupMenu::new().items(github::REACTIONS.iter().map(|(name, emoji)| PopupItem::new(*name, *emoji)));
+        let menu = PopupMenu::new()
+            .item(PopupItem::new("copy", "Copy Link"))
+            .item(PopupItem::new("quote", "Quote Reply"))
+            .submenu_enabled("React", react, !p.id.is_empty())
+            .separator()
+            .item(PopupItem::new("edit", "Edit").enabled(mine && !p.id.is_empty()))
+            .item(PopupItem::new("delete", "Delete").enabled(mine && !review && !p.id.is_empty()));
+        tx.popup_menu(menu, "pr-post", move |s: &mut Collate, picked, tx| match picked {
+            Some("copy") => {
+                tx.copy(link.clone());
+                s.say("Copied the comment's link", false);
+            }
+            Some("quote") => {
+                s.start_compose(Compose::Comment);
+                let quoted: String = p.body.trim().lines().map(|l| format!("> {l}\n")).collect();
+                s.pulls.text = TextEdit::new(format!("{quoted}\n"));
+            }
+            Some("edit") => s.start_compose(Compose::EditPost(i)),
+            Some("delete") => s.start_compose(Compose::DeletePost(i)),
+            Some(name) => {
+                if let Some((content, _)) = github::REACTIONS.iter().find(|(n, _)| *n == name) {
+                    s.react(p.id.clone(), content);
+                }
+            }
+            None => {}
+        });
+    }
+
     /// Marks the open pull request ready for review, or turns it back into a draft.
     fn toggle_draft(&mut self) {
         let Some((n, draft)) = self.pulls.pr.as_ref().map(|p| (p.pull.number, p.pull.draft)) else { return };
@@ -645,19 +759,42 @@ impl Collate {
     /// What has no button of its own on the overview: the branch, here and on GitHub.
     fn pr_menu(&mut self, tx: &mut Tx) {
         let Some(pr) = &self.pulls.pr else { return };
-        let (n, open) = (pr.pull.number, pr.state == "OPEN");
+        let (n, open, id, locked, subscribed) = (pr.pull.number, pr.state == "OPEN", pr.meta.id.clone(), pr.meta.locked, pr.meta.subscribed);
+        let (head, base) = (pr.pull.head.clone(), pr.pull.base.clone());
+        // The remote's branches it could merge into instead, by their names there.
+        let mut bases: Vec<String> = self.branches.iter().filter_map(|b| b.strip_prefix("origin/")).filter(|b| *b != head).map(str::to_owned).collect();
+        bases.dedup();
+        let base_menu = PopupMenu::new().items(bases.iter().map(|b| PopupItem::new(format!("base:{b}"), b.clone()).checked(*b == base)));
         let menu = PopupMenu::new()
             .item(PopupItem::new("checkout", "Check Out Branch"))
             .item(PopupItem::new("reload", "Reload"))
             .separator()
             .item(PopupItem::new("update", "Update Branch with Base").enabled(open))
-            .item(PopupItem::new("update-rebase", "Update Branch by Rebasing").enabled(open));
+            .item(PopupItem::new("update-rebase", "Update Branch by Rebasing").enabled(open))
+            .submenu_enabled("Change Base Branch", base_menu, open && !bases.is_empty())
+            .separator()
+            .item(PopupItem::new("subscribe", if subscribed { "Unsubscribe" } else { "Subscribe" }).enabled(!id.is_empty()))
+            .item(PopupItem::new("lock", if locked { "Unlock Conversation" } else { "Lock Conversation" }));
         tx.popup_menu(menu, "pr-more", move |s: &mut Collate, picked, _| match picked {
             Some("checkout") => s.pr_act("Checking out…", move |gh| gh.checkout(n).map(|_| format!("Checked out #{n}")), Collate::reread),
             Some("reload") => s.open_pull(n),
             Some("update") => s.update_branch(false),
             Some("update-rebase") => s.update_branch(true),
-            _ => {}
+            Some("subscribe") => {
+                let id = id.clone();
+                let done = if subscribed { "You won't get its notifications" } else { "You'll get its notifications" };
+                s.pr_act("Saving…", move |gh| gh.subscribe(&id, !subscribed).map(|_| done.to_owned()), |_| {});
+            }
+            Some("lock") => {
+                let (verb, done) = if locked { ("unlock", format!("Unlocked #{n}")) } else { ("lock", format!("Locked #{n}: only collaborators can comment")) };
+                s.pr_act("Saving…", move |gh| gh.set(n, &[verb]).map(|_| done), |_| {});
+            }
+            Some(b) => {
+                if let Some(b) = b.strip_prefix("base:").map(str::to_owned) {
+                    s.pr_act("Changing the base…", move |gh| gh.set_base(n, &b).map(|_| format!("#{n} merges into {b} now")), |_| {});
+                }
+            }
+            None => {}
         });
     }
 }
@@ -880,7 +1017,8 @@ fn status_row(k: &Kit, key: &str, mark: El, title: &str, why: &str, actions: Vec
 }
 
 /// A comment or review in the activity: who, what they did and when, over what they wrote.
-fn activity_post(s: &Collate, k: &Kit, key: &str, p: &github::Post) -> El {
+fn activity_post(s: &Collate, k: &Kit, i: usize, p: &github::Post) -> El {
+    let key = &format!("post-{i}");
     let (verdict, tint) = match p.state.as_str() {
         "APPROVED" => ("approved these changes", k.c.success.icon),
         "CHANGES_REQUESTED" => ("requested changes", k.c.danger.icon),
@@ -904,16 +1042,31 @@ fn activity_post(s: &Collate, k: &Kit, key: &str, p: &github::Post) -> El {
             .child(icon(k.glyph.chevron_down, 14.0).color(k.c.icon_muted)
                 .icon_rotation(if shown { std::f32::consts::PI } else { 0.0 }).motion(k.motion.control).a11y_hidden());
     }
+    let more = IconButton::new(&MORE_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label(format!("Actions for {}'s comment", p.author))
+        .on_press_tx(move |s: &mut Collate, tx: &mut Tx| s.post_menu(i, tx)).build(k).key(format!("{key}-more")).mr(-6.0);
+    let head = head.child(more);
     let mut c = col().key(key.to_owned()).w_full().radius(k.radius.md).border(1.0, k.c.border_weak).child(head);
-    if parts.is_empty() {
-        return c;
+    if !parts.is_empty() {
+        c = c.child(col().w_full().h(1.0).fill(k.c.border_weak));
+        c = if shown {
+            c.child(col().w_full().px(12.0).py(10.0).child(parts_view(s, k, &format!("{key}-body"), &parts, k.ty.text_small)))
+        } else {
+            c.child(text(crate::body::gist(&parts)).key(format!("{key}-gist")).font(k.ty.text_small).color(k.c.text_muted).truncate().w_full().px(12.0).py(8.0))
+        };
     }
-    c = c.child(col().w_full().h(1.0).fill(k.c.border_weak));
-    if shown {
-        c.child(col().w_full().px(12.0).py(10.0).child(parts_view(s, k, &format!("{key}-body"), &parts, k.ty.text_small)))
-    } else {
-        c.child(text(crate::body::gist(&parts)).key(format!("{key}-gist")).font(k.ty.text_small).color(k.c.text_muted).truncate().w_full().px(12.0).py(8.0))
+    if !p.reactions.is_empty() {
+        // Each reaction and its count; a press adds the reader's own, as on GitHub.
+        c = c.child(row().key(format!("{key}-reactions")).w_full().px(12.0).pb(10.0).gap(6.0).flex_wrap().children(p.reactions.iter().filter_map(|(name, n)| {
+            let (content, emoji) = github::REACTIONS.iter().find(|(c, _)| c == name)?;
+            let id = p.id.clone();
+            Some(row().key(format!("{key}-react-{content}")).h(24.0).px(8.0).gap(4.0).items_center().radius(12.0).border(1.0, k.c.border_weak)
+                .cursor(Cursor::Pointer).role("button").label(format!("{n} {content}, add yours"))
+                .on_press(move |s: &mut Collate| s.react(id.clone(), content))
+                .child(text((*emoji).to_owned()).font(k.ty.text_small))
+                .child(text(n.to_string()).font(k.ty.text_small).color(k.c.text_muted)))
+        })));
     }
+    c
 }
 
 /// The open pull request's overview, as GitHub and DiffKit lay it out: its title and what it
@@ -987,7 +1140,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         activity = activity.child(text("No comments yet.").font(k.ty.text_small).color(k.c.text_faint));
     }
     for (i, post) in pr.conversation.iter().enumerate() {
-        activity = activity.child(activity_post(s, k, &format!("post-{i}"), post));
+        activity = activity.child(activity_post(s, k, i, post));
     }
     main = main.child(activity);
 
@@ -1081,12 +1234,24 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         dot(k, Some(if can_merge { CheckState::Passed } else if open { CheckState::Pending } else { CheckState::Skipped }))
     };
     merge_box = merge_box.child(status_row(k, "pr-ready", ready_mark, ready, &readiness_why(pr), fixes));
+    if open && let Some(method) = &pr.meta.auto_merge {
+        let off = Button::new("Disable Auto-Merge").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(s.busy.is_some())
+            .on_press(|s: &mut Collate| s.disable_auto_merge()).build(k).key("pr-auto-off").mr(-GHOST_PAD);
+        let how = Method::ALL.into_iter().find(|m| m.name() == method).map_or(method.to_lowercase(), |m| m.title().to_lowercase());
+        merge_box = merge_box.child(line())
+            .child(status_row(k, "pr-auto", dot(k, Some(CheckState::Pending)), "Auto-merge enabled", &format!("It will {how} once its requirements pass"), vec![off]));
+    }
     if open {
         let merge = Button::new("Merge…").variant(ButtonVariant::Contrast).control_size(ControlSize::Small).disabled(!can_merge || s.busy.is_some())
             .help("Squash, merge or rebase into the base").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.merge_menu(tx)).build(k).key("pr-merge");
         let delete = Checkbox::new(s.pulls.delete_branch).label("Delete branch").on_toggle(|s: &mut Collate| s.pulls.delete_branch ^= true).build(k).key("pr-delete-branch");
-        merge_box = merge_box.child(line())
-            .child(row().key("pr-merge-row").w_full().px(14.0).py(10.0).gap(12.0).items_center().fill(k.alpha(k.c.text_base, 0.03)).child(merge).child(delete));
+        let mut merge_row = row().key("pr-merge-row").w_full().px(14.0).py(10.0).gap(12.0).items_center().fill(k.alpha(k.c.text_base, 0.03)).child(merge);
+        // Waiting on checks or reviews: GitHub can merge it by itself once they pass.
+        if !can_merge && pr.meta.auto_merge.is_none() {
+            merge_row = merge_row.child(Button::new("Enable Auto-Merge…").variant(ButtonVariant::Outline).control_size(ControlSize::Small).disabled(s.busy.is_some())
+                .help("Merge it by itself once its checks and reviews pass").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.auto_merge_menu(tx)).build(k).key("pr-auto-merge"));
+        }
+        merge_box = merge_box.child(line()).child(merge_row.child(delete));
     }
     main = main.child(merge_box);
 
@@ -1159,10 +1324,16 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
             "REQUESTED" => (row().size(14.0, 14.0).center().child(dot(k, Some(CheckState::Pending))), "Awaiting review"),
             _ => (icon(&MESSAGE_ICON, 14.0).color(k.c.icon_muted), "Commented"),
         };
-        reviewers = reviewers.child(row().key(format!("reviewer-{who}")).w_full().h(28.0).gap(8.0).items_center().label(format!("{who} - {said}")).help(said.to_owned())
+        let mut r = row().key(format!("reviewer-{who}")).w_full().h(28.0).gap(8.0).items_center().label(format!("{who} - {said}")).help(said.to_owned())
             .child(crate::history_view::initials(k, who, 20.0).a11y_hidden())
-            .child(text(who.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0))
-            .child(mark.a11y_hidden()));
+            .child(text(who.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0));
+        // Reviewed already: ask again, as GitHub's re-request does.
+        if open && state != "REQUESTED" && Some(who.as_str()) != me {
+            let again = who.clone();
+            r = r.child(IconButton::new(&REFRESH_ICON).variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label(format!("Ask {who} to review again"))
+                .disabled(s.busy.is_some()).on_press(move |s: &mut Collate| s.rerequest(again.clone())).build(k).key(format!("rerequest-{who}")));
+        }
+        reviewers = reviewers.child(r.child(mark.a11y_hidden()));
     }
     let mut labels = col().key("pr-labels").w_full().gap(4.0).child(heading(k, "pr-labels-title", "Labels", Some(gear("pr-edit-labels", Compose::Labels, "Change the labels"))));
     if p.labels.is_empty() {
@@ -1176,10 +1347,33 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
                 .child(text(l.clone()).font(k.ty.text_xsmall_medium).color(k.c.text_base))
         })));
     }
-    let mut side = col().key("pr-side").w(220.0).gap(24.0).child(props).child(reviewers).child(labels);
-    if !pr.assignees.is_empty() {
-        side = side.child(col().key("pr-assignees").w_full().gap(2.0).child(heading(k, "pr-assignees-title", "Assignees", None))
-            .children(pr.assignees.iter().map(|a| text(a.clone()).font(k.ty.text_small).color(k.c.text_base).h(24.0))));
+    let mut assignees = col().key("pr-assignees").w_full().gap(2.0).child(heading(k, "pr-assignees-title", "Assignees", Some(gear("pr-edit-assignees", Compose::Assignees, "Change the assignees"))));
+    if pr.assignees.is_empty() {
+        let mut none = row().w_full().gap(4.0).items_center().child(text("No one -").font(k.ty.text_small).color(k.c.text_faint));
+        if open {
+            none = none.child(Button::new("Assign yourself").variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small).disabled(s.busy.is_some())
+                .on_press(|s: &mut Collate| s.assign_me()).build(k).key("pr-assign-me").ml(-4.0));
+        }
+        assignees = assignees.child(none);
+    }
+    for a in &pr.assignees {
+        assignees = assignees.child(row().key(format!("assignee-{a}")).w_full().h(28.0).gap(8.0).items_center()
+            .child(crate::history_view::initials(k, a, 20.0).a11y_hidden())
+            .child(text(a.clone()).font(k.ty.text_small).color(k.c.text_base).grow(1.0).truncate().min_w(0.0)));
+    }
+    let mut side = col().key("pr-side").w(220.0).gap(24.0).child(props).child(reviewers).child(assignees).child(labels);
+    if let Some(m) = &pr.meta.milestone {
+        side = side.child(col().key("pr-milestone").w_full().gap(2.0).child(heading(k, "pr-milestone-title", "Milestone", None))
+            .child(text(m.clone()).font(k.ty.text_small).color(k.c.text_base)));
+    }
+    // Issues it closes when it merges, each opening on GitHub.
+    if !pr.meta.issues.is_empty() {
+        side = side.child(col().key("pr-issues").w_full().gap(2.0).child(heading(k, "pr-issues-title", "Development", None))
+            .children(pr.meta.issues.iter().map(|(n, title, url)| {
+                let url = url.clone();
+                side_row(format!("issue-{n}"), text(format!("#{n}")).font(k.ty.text_small).color(k.c.text_muted), title.clone(), k.c.text_base)
+                    .cursor(Cursor::Pointer).role("link").help("Open the issue on GitHub").on_press(move |_: &mut Collate| open_url(&url))
+            })));
     }
 
     Some(col().key("pr-overview").w_full().grow(1.0).min_h(0.0).items_center().scroll(rune::ScrollSpec { stick_bottom: false })
@@ -1319,11 +1513,14 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             "Describe the change (optional)",
         ),
         Compose::Edit => (format!("Edit #{n}"), "Saved to GitHub.".to_owned(), "Save", "Description"),
-        Compose::Reviewers => (format!("Reviewers of #{n}"), "Logins or teams (org/team), separated by commas. Removing one takes back the request.".to_owned(), "Save", ""),
+        Compose::Reviewers => (format!("Reviewers of #{n}"), "Tick people to ask, or type logins and teams (org/team), separated by commas. Removing one takes back the request.".to_owned(), "Save", ""),
         Compose::Labels => (format!("Labels of #{n}"), "Names of the repository's labels, separated by commas.".to_owned(), "Save", ""),
+        Compose::Assignees => (format!("Assignees of #{n}"), "Tick people, or type logins separated by commas.".to_owned(), "Save", ""),
+        Compose::EditPost(_) => ("Edit comment".to_owned(), "Saved to GitHub.".to_owned(), "Save", "Write a comment"),
+        Compose::DeletePost(_) => ("Delete this comment?".to_owned(), "It's removed from the pull request for everyone, and can't be brought back.".to_owned(), "Delete", ""),
     };
     // A list is one line, edited in the title field.
-    let list = matches!(c, Compose::Reviewers | Compose::Labels);
+    let list = matches!(c, Compose::Reviewers | Compose::Labels | Compose::Assignees);
     let held = s.held();
     let what = match c {
         Compose::Review(_) if pending > 0 => format!("{what} Your {pending} line comment{} go with it.", if pending == 1 { "" } else { "s" }),
@@ -1344,19 +1541,23 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             Compose::Review(Verdict::Approve) => false,
             Compose::Review(Verdict::Comment) => pending == 0 && empty,
             Compose::Create | Compose::Edit => s.pulls.title.text.trim().is_empty(),
-            Compose::Reviewers | Compose::Labels => false,
+            Compose::Reviewers | Compose::Labels | Compose::Assignees | Compose::DeletePost(_) => false,
             _ => empty,
         };
     let mut body = col().key("compose-body").w_full().gap(12.0);
     if matches!(c, Compose::Create | Compose::Edit) || list {
         let hint = match c {
             Compose::Reviewers => "ana, core/web",
+            Compose::Assignees => "ana, bo",
             Compose::Labels => "bug, needs review",
             _ => "Title",
         };
         body = body.child(TextInput::new(&s.pulls.title).placeholder(hint).on_edit(|s: &mut Collate| &mut s.pulls.title).width(None).build(k).key("compose-title").w_full());
     }
-    if !list {
+    if matches!(c, Compose::Reviewers | Compose::Assignees) {
+        body = body.child(people_picker(s, k, c == Compose::Reviewers));
+    }
+    if !list && !matches!(c, Compose::DeletePost(_)) {
         body = body.child(area);
     }
     let mut buttons = row().key("compose-buttons").w_full().gap(8.0).items_center();
@@ -1365,8 +1566,39 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     }
     buttons = buttons.child(row().grow(1.0))
         .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut Collate| s.pulls.compose = None).build(k))
-        .child(Button::new(button).variant(ButtonVariant::Contrast).disabled(blocked).on_press(|s: &mut Collate| s.send_compose()).build(k).key("compose-ok"));
+        .child(Button::new(button).variant(if matches!(c, Compose::DeletePost(_)) { ButtonVariant::Danger } else { ButtonVariant::Contrast }).disabled(blocked).on_press(|s: &mut Collate| s.send_compose()).build(k).key("compose-ok"));
     crate::described_dialog(k, "compose", title, what, body.child(buttons)).width(520.0).on_close(|s: &mut Collate| s.pulls.compose = None).build(k, layer);
+}
+
+/// The reviewers or assignees editor's people to tick: those on it already, then everyone else
+/// in the repository. The author can't review their own pull request, so isn't offered then.
+fn people_picker(s: &Collate, k: &Kit, reviewers: bool) -> El {
+    let author = if reviewers { s.pulls.pr.as_ref().map_or("", |p| p.pull.author.as_str()) } else { "" };
+    let picked = names(&s.pulls.title.text);
+    let mut people: Vec<String> = s.pulls.pr.as_ref().map(|p| if reviewers { p.reviewers.iter().map(|(w, _)| w.clone()).collect() } else { p.assignees.clone() }).unwrap_or_default();
+    let note = match &s.pulls.people {
+        None => Some("Reading who's in the repository…".to_owned()),
+        Some(Err(e)) => Some(format!("Couldn't read who's in the repository: {e}")),
+        Some(Ok(all)) => {
+            people.extend(all.iter().filter(|p| !people.contains(p)).cloned().collect::<Vec<_>>());
+            None
+        }
+    };
+    people.retain(|p| p != author);
+    let note = match note {
+        None if people.is_empty() => Some("No one else can be picked here: GitHub only takes the repository's collaborators, added in its settings on GitHub.".to_owned()),
+        note => note,
+    };
+    let rows = col().key("reviewer-people").w_full().max_h(220.0).scroll(rune::ScrollSpec { stick_bottom: false }).gap(2.0).children(people.into_iter().map(|who| {
+        let on = picked.contains(&who);
+        let key = format!("pick-{who}");
+        Checkbox::new(on).label(who.clone()).on_toggle(move |s: &mut Collate| s.toggle_person(&who)).build(k).key(key)
+    }));
+    let mut out = col().key("reviewer-picker").w_full().gap(8.0).child(rows);
+    if let Some(note) = note {
+        out = out.child(text(note).key("reviewer-note").font(k.ty.text_small).color(k.c.text_muted).wrap());
+    }
+    out
 }
 
 /// A line of `git range-diff`: a pair of commits and whether the second kept the first's
@@ -1445,7 +1677,17 @@ pub fn rewrite_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Rd, range_diff_lines, range_diff_summary};
+    use super::{Rd, names, range_diff_lines, range_diff_summary};
+
+    #[test]
+    fn ticking_a_reviewer_adds_or_removes_their_login() {
+        let mut s = crate::init();
+        s.pulls.title = rune::TextEdit::new("ana, core/web");
+        s.toggle_person("bo");
+        assert_eq!(names(&s.pulls.title.text), ["ana", "core/web", "bo"]);
+        s.toggle_person("ana");
+        assert_eq!(s.pulls.title.text, "core/web, bo");
+    }
 
     #[test]
     fn a_range_diff_reads_as_kept_changed_dropped_and_added_commits() {

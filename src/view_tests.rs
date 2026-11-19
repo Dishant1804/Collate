@@ -2039,7 +2039,7 @@ fn pull_requests_list_by_what_they_want_and_one_opens_on_its_overview() {
         let detail = github::Detail {
             pull: pull(7, "ana", &["me"]), body: "Why".into(), state: "OPEN".into(), mergeable: "MERGEABLE".into(), merge_state: "BLOCKED".into(),
             head_oid: "c3".into(), reviewers: vec![("me".into(), "REQUESTED".into())], assignees: vec![], label_colors: vec![], conversation: vec![], threads: vec![], annotations: Ok(vec![]), commentable: vec![],
-            merge_base: "m0".into(), commits: vec![("a1".into(), "First".into()), ("c3".into(), "Second".into())], reviewed: vec![("me".into(), "a1".into())],
+            merge_base: "m0".into(), commits: vec![("a1".into(), "First".into()), ("c3".into(), "Second".into())], reviewed: vec![("me".into(), "a1".into())], meta: Default::default(),
         };
         s.pulls.open = false;
         s.open_commit("m0..c3");
@@ -2055,7 +2055,7 @@ fn pull_requests_list_by_what_they_want_and_one_opens_on_its_overview() {
     }
     assert!(rt.find("pr-part").is_none(), "the files are the other tab");
     // A short comment reads whole; a long review shuts to its gist until its head is pressed.
-    let post = |author: &str, body: &str| github::Post { author: author.into(), body: body.into(), time: "2026-11-16T00:00:00Z".into(), state: "COMMENTED".into() };
+    let post = |author: &str, body: &str| github::Post { author: author.into(), body: body.into(), time: "2026-11-16T00:00:00Z".into(), state: "COMMENTED".into(), ..Default::default() };
     let review = "Actionable comments posted: 2\n\n<details><summary>Prompt</summary>Fix it</details>\n\nMore words here.";
     rt.update(move |s, _| s.pulls.pr.as_mut().unwrap().conversation = vec![post("ana", "Looks good"), post("bot", review)]);
     rt.frame(1.0 / 60.0);
@@ -2148,7 +2148,7 @@ fn a_checks_annotation_shows_under_its_line_of_the_whole_pull_request() {
         s.open_commit("m0..c3");
         s.pulls.pr = Some(github::Detail {
             pull, body: String::new(), state: "OPEN".into(), mergeable: String::new(), merge_state: String::new(), head_oid: "c3".into(), reviewers: vec![], assignees: vec![], label_colors: vec![],
-            conversation: vec![], threads: vec![], annotations: Ok(annotations), commentable: vec![], merge_base: "m0".into(), commits: vec![], reviewed: vec![],
+            conversation: vec![], threads: vec![], annotations: Ok(annotations), commentable: vec![], merge_base: "m0".into(), commits: vec![], reviewed: vec![], meta: Default::default(),
         });
         s.pulls.tab = crate::pulls::PrTab::Files;
         // The test has no watcher to read the range: the loaded diff stays the one shown.

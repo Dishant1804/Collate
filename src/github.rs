@@ -104,13 +104,47 @@ pub enum Level {
 }
 
 /// A comment in the conversation, a review's summary, or one comment of a thread.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Post {
     pub author: String,
     pub body: String,
     pub time: String,
     /// For a review: `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`; empty otherwise.
     pub state: String,
+    /// The GraphQL node id, to edit, delete or react to it.
+    pub id: String,
+    pub url: String,
+    /// The reader wrote it, so may edit it.
+    pub mine: bool,
+    /// Reactions and how many of each, as GitHub's names (`THUMBS_UP`, `HEART`, …).
+    pub reactions: Vec<(String, u32)>,
+}
+
+/// GitHub's reactions: its name for each, and the emoji it draws.
+pub const REACTIONS: [(&str, &str); 8] = [
+    ("THUMBS_UP", "👍"),
+    ("THUMBS_DOWN", "👎"),
+    ("LAUGH", "😄"),
+    ("HOORAY", "🎉"),
+    ("CONFUSED", "😕"),
+    ("HEART", "❤️"),
+    ("ROCKET", "🚀"),
+    ("EYES", "👀"),
+];
+
+/// What the sidebar and menus show of an open pull request beyond its review.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Meta {
+    /// The pull request's GraphQL node id.
+    pub id: String,
+    /// How auto-merge will land it, once its requirements pass (`SQUASH`, `MERGE`, `REBASE`).
+    pub auto_merge: Option<String>,
+    pub locked: bool,
+    /// The reader gets its notifications.
+    pub subscribed: bool,
+    pub milestone: Option<String>,
+    /// Issues it closes when it merges: number, title and address.
+    pub issues: Vec<(u32, String, String)>,
 }
 
 /// A review thread on a line of the diff.
@@ -169,6 +203,7 @@ pub struct Detail {
     pub commits: Vec<(String, String)>,
     /// Each review's author and the commit it was on, oldest first.
     pub reviewed: Vec<(String, String)>,
+    pub meta: Meta,
 }
 
 /// A hunk of GitHub's diff: path, base side (`true`) or head, first line, last line.
@@ -230,6 +265,15 @@ impl Method {
             Method::Squash => "--squash",
             Method::Merge => "--merge",
             Method::Rebase => "--rebase",
+        }
+    }
+
+    /// Its name in GitHub's `autoMergeRequest`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::Squash => "SQUASH",
+            Method::Merge => "MERGE",
+            Method::Rebase => "REBASE",
         }
     }
 }
@@ -331,7 +375,7 @@ impl Gh {
     /// the range to diff too. Its details, its threads and the fetch run at once: `known`, its
     /// entry in the list, names the repository and base to fetch, so the fetch needn't wait.
     pub fn open(&self, n: u32, known: Option<&Pull>) -> Result<(String, Detail), String> {
-        let fields = format!("{LIST_FIELDS},body,state,mergeable,mergeStateStatus,headRefOid,reviews,comments,assignees,latestReviews,commits");
+        let fields = format!("{LIST_FIELDS},body,state,mergeable,mergeStateStatus,headRefOid,reviews,comments,assignees,latestReviews,commits,id,autoMergeRequest,milestone,closingIssuesReferences");
         let joined = |e: &str| format!("{e} for #{n} stopped");
         std::thread::scope(|t| {
             let query = move |q: &str| self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &format!("n={n}"), "-f", &format!("query={q}")], None);
@@ -487,6 +531,61 @@ impl Gh {
         self.run(&args, None).map(|_| ())
     }
 
+    /// Turn on auto-merge by `method`, or off (`None`): GitHub merges once its requirements pass.
+    pub fn auto_merge(&self, number: u32, method: Option<Method>) -> Result<(), String> {
+        let n = number.to_string();
+        match method {
+            Some(m) => self.run(&["pr", "merge", &n, "--auto", m.flag()], None),
+            None => self.run(&["pr", "merge", &n, "--disable-auto"], None),
+        }
+        .map(|_| ())
+    }
+
+    pub fn set_base(&self, number: u32, base: &str) -> Result<(), String> {
+        self.run(&["pr", "edit", &number.to_string(), "--base", base], None).map(|_| ())
+    }
+
+    fn graphql(&self, q: &str, vars: &[(&str, &str)]) -> Result<(), String> {
+        let mut args = vec!["api".to_owned(), "graphql".to_owned()];
+        for (k, v) in vars {
+            args.extend(["-f".to_owned(), format!("{k}={v}")]);
+        }
+        args.extend(["-f".to_owned(), format!("query={q}")]);
+        self.run(&args.iter().map(String::as_str).collect::<Vec<_>>(), None).map(|_| ())
+    }
+
+    /// Change a comment's text, or a review's summary.
+    pub fn edit_post(&self, id: &str, review: bool, body: &str) -> Result<(), String> {
+        let q = if review {
+            "mutation($id:ID!,$body:String!){updatePullRequestReview(input:{pullRequestReviewId:$id,body:$body}){clientMutationId}}"
+        } else {
+            "mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id,body:$body}){clientMutationId}}"
+        };
+        self.graphql(q, &[("id", id), ("body", body)])
+    }
+
+    pub fn delete_post(&self, id: &str) -> Result<(), String> {
+        self.graphql("mutation($id:ID!){deleteIssueComment(input:{id:$id}){clientMutationId}}", &[("id", id)])
+    }
+
+    /// Add `content` (one of [`REACTIONS`]) to a comment, review or pull request.
+    pub fn react(&self, id: &str, content: &str) -> Result<(), String> {
+        let q = format!("mutation($id:ID!){{addReaction(input:{{subjectId:$id,content:{content}}}){{clientMutationId}}}}");
+        self.graphql(&q, &[("id", id)])
+    }
+
+    pub fn subscribe(&self, id: &str, on: bool) -> Result<(), String> {
+        let state = if on { "SUBSCRIBED" } else { "UNSUBSCRIBED" };
+        let q = format!("mutation($id:ID!){{updateSubscription(input:{{subscribableId:$id,state:{state}}}){{clientMutationId}}}}");
+        self.graphql(&q, &[("id", id)])
+    }
+
+    /// Who can be asked to review: the repository's assignable people, by login.
+    pub fn assignable(&self) -> Result<Vec<String>, String> {
+        let out = self.run(&["api", "--paginate", "repos/{owner}/{repo}/assignees", "--jq", ".[].login"], None)?;
+        Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect())
+    }
+
     /// Switch the working tree to the pull request's branch.
     pub fn checkout(&self, number: u32) -> Result<(), String> {
         self.run(&["pr", "checkout", &number.to_string()], None).map(|_| ())
@@ -560,7 +659,7 @@ const OPEN: &str = "query($owner:String!,$name:String!){viewer{login} repository
 /// The last merged and closed pull requests, without what only an open one needs.
 const DONE: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(states:[MERGED,CLOSED],first:30,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url state isDraft headRefName baseRefName additions deletions updatedAt author{login} labels(first:20){nodes{name}}}}}}";
 
-const THREADS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated path line startLine originalLine diffSide comments(first:50){nodes{databaseId author{login} body createdAt diffHunk}}}}}}}";
+const THREADS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){locked viewerSubscription reviewThreads(first:100){nodes{id isResolved isOutdated path line startLine originalLine diffSide comments(first:50){nodes{databaseId author{login} body createdAt diffHunk}}}}}}}";
 
 /// The annotations of every check run on the pull request's latest commit.
 const ANNOTATIONS: &str = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){commits(last:1){nodes{commit{oid checkSuites(first:50){nodes{checkRuns(first:50){nodes{name annotations(first:50){nodes{path title message annotationLevel location{end{line}}}}}}}}}}}}}}";
@@ -684,18 +783,18 @@ fn check(v: &Value) -> Check {
 }
 
 fn detail(v: &Value, threads: &Value) -> Detail {
+    let pr = &threads["data"]["repository"]["pullRequest"];
     let mut conversation: Vec<Post> = v["comments"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|c| Post { author: login(&c["author"]), body: s(c, "body"), time: s(c, "createdAt"), state: String::new() })
+        .map(|c| Post { time: s(c, "createdAt"), ..post(c) })
         .collect();
     // A review that only left line comments has no summary to show here.
     conversation.extend(v["reviews"].as_array().into_iter().flatten().filter(|r| !s(r, "body").trim().is_empty() || s(r, "state") != "COMMENTED").map(|r| Post {
-        author: login(&r["author"]),
-        body: s(r, "body"),
         time: s(r, "submittedAt"),
         state: s(r, "state"),
+        ..post(r)
     }));
     conversation.sort_by(|a, b| a.time.cmp(&b.time));
     let mut reviews: Vec<&Value> = v["reviews"].as_array().into_iter().flatten().collect();
@@ -718,12 +817,38 @@ fn detail(v: &Value, threads: &Value) -> Detail {
         assignees: v["assignees"].as_array().into_iter().flatten().map(login).collect(),
         label_colors: v["labels"].as_array().into_iter().flatten().map(|l| (s(l, "name"), s(l, "color"))).collect(),
         conversation,
-        threads: threads["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"].as_array().into_iter().flatten().filter_map(thread).collect(),
+        threads: pr["reviewThreads"]["nodes"].as_array().into_iter().flatten().filter_map(thread).collect(),
         annotations: Ok(Vec::new()),
         commentable: Vec::new(),
         merge_base: String::new(),
         commits: v["commits"].as_array().into_iter().flatten().map(|c| (s(c, "oid"), s(c, "messageHeadline"))).collect(),
         reviewed: reviews.into_iter().map(|r| (login(&r["author"]), s(&r["commit"], "oid"))).collect(),
+        meta: Meta {
+            id: s(v, "id"),
+            auto_merge: v["autoMergeRequest"]["mergeMethod"].as_str().map(str::to_owned),
+            locked: pr["locked"].as_bool().unwrap_or(false),
+            subscribed: pr["viewerSubscription"] == "SUBSCRIBED",
+            milestone: v["milestone"]["title"].as_str().map(str::to_owned),
+            issues: v["closingIssuesReferences"].as_array().into_iter().flatten().map(|i| (i["number"].as_u64().unwrap_or(0) as u32, s(i, "title"), s(i, "url"))).collect(),
+        },
+    }
+}
+
+/// What every comment and review has: who, what, where, and its reactions.
+fn post(c: &Value) -> Post {
+    let reactions = c["reactionGroups"].as_array().into_iter().flatten()
+        .map(|g| (s(g, "content"), g["users"]["totalCount"].as_u64().unwrap_or(0) as u32))
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    Post {
+        author: login(&c["author"]),
+        body: s(c, "body"),
+        time: String::new(),
+        state: String::new(),
+        id: s(c, "id"),
+        url: s(c, "url"),
+        mine: c["viewerDidAuthor"].as_bool().unwrap_or(false),
+        reactions,
     }
 }
 
@@ -743,7 +868,7 @@ fn thread(t: &Value) -> Option<Thread> {
         text,
         resolved: t["isResolved"].as_bool().unwrap_or(false),
         outdated: t["isOutdated"].as_bool().unwrap_or(false),
-        comments: comments.iter().map(|c| Post { author: login(&c["author"]), body: s(c, "body"), time: s(c, "createdAt"), state: String::new() }).collect(),
+        comments: comments.iter().map(|c| Post { author: login(&c["author"]), body: s(c, "body"), time: s(c, "createdAt"), ..Post::default() }).collect(),
     })
 }
 
@@ -785,6 +910,16 @@ pub fn group<'a>(pulls: &'a [Pull], me: &str) -> [(&'static str, Vec<&'a Pull>);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_comment_keeps_its_id_link_author_and_the_reactions_it_has() {
+        let v: Value = serde_json::from_str(r#"{"id":"IC_1","url":"https://github.com/o/r/pull/1#issuecomment-1","author":{"login":"ana"},"body":"Looks good",
+            "viewerDidAuthor":true,"reactionGroups":[{"content":"THUMBS_UP","users":{"totalCount":2}},{"content":"EYES","users":{"totalCount":0}}]}"#).unwrap();
+        let p = post(&v);
+        assert_eq!((p.id.as_str(), p.author.as_str(), p.body.as_str(), p.mine), ("IC_1", "ana", "Looks good", true));
+        assert_eq!(p.url, "https://github.com/o/r/pull/1#issuecomment-1");
+        assert_eq!(p.reactions, vec![("THUMBS_UP".to_owned(), 2)], "a reaction no one gave isn't shown");
+    }
 
     #[test]
     fn a_pull_request_reads_from_ghs_json() {
