@@ -4131,8 +4131,14 @@ fn views_sidebar(s: &Collate, k: &Kit) -> El {
             }
             r.build(k).hand(true).key("view-pulls").help("The repository's open pull requests")
         },
-        SidebarRow::new("Issues").icon(&ISSUES_ICON).selected(s.issues.open).on_select(|s: &mut Collate, _: &mut Tx| s.open_issues())
-            .build(k).hand(true).key("view-issues").help("The repository's issues"),
+        // The open issues on the reader, as Pull Requests counts the reviews asked of them.
+        {
+            let mut r = SidebarRow::new("Issues").icon(&ISSUES_ICON).selected(s.issues.open).on_select(|s: &mut Collate, _: &mut Tx| s.open_issues());
+            if s.issues.assigned() > 0 {
+                r = r.badge(s.issues.assigned().to_string());
+            }
+            r.build(k).hand(true).key("view-issues").help("The repository's issues")
+        },
         // The whole repository, with this view's changes on it.
         SidebarRow::new("Map").icon(&MAP_ICON).selected(s.map.open).on_select(|s: &mut Collate, _: &mut Tx| {
             s.pulls.open = false;

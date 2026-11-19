@@ -2887,6 +2887,7 @@ fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
         assert!(rt.find(key).is_some(), "{key}");
     }
     assert!(rt.find("issue-group-Mentioning You").is_none(), "an empty group isn't shown");
+    assert_eq!(rt.state.issues.assigned(), 1, "the sidebar counts the open issues on the reader");
     assert!(rt.find("label-bug").is_some(), "a row shows its labels");
     assert!(rt.find("issue-6").is_none() && rt.find("issue-group-Closed").is_none(), "the list starts on the open issues");
     click(&mut rt, "issues-state/segment1");

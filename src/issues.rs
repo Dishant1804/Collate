@@ -33,6 +33,14 @@ pub struct IssuesState {
     pub sort: Sort,
 }
 
+impl IssuesState {
+    /// How many open issues are assigned to the reader.
+    pub fn assigned(&self) -> usize {
+        let Some(Ok((me, issues))) = &self.list else { return 0 };
+        issues.iter().filter(|i| i.open && i.assignees.contains(me)).count()
+    }
+}
+
 /// How each group of the list is ordered, as GitHub's sort menu offers.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Sort {
