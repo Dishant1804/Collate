@@ -641,7 +641,8 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
                 };
                 return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(filters(s, k)).child(message(k, title, hint));
             }
-            let mut list = col().key("issues-list").w_full().pb(16.0);
+            // Rows past the window aren't laid out or drawn, so a long list costs what's on screen.
+            let mut list = col().key("issues-list").growth(rune::GrowthSpec::default()).virtualize(52.0).w_full().pb(16.0);
             for (title, group) in sections {
                 let folded = s.issues.folded.contains(title);
                 list = list.child(group_head(k, title, group.len(), folded));
