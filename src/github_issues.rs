@@ -55,6 +55,9 @@ pub struct Detail {
     pub can_edit: bool,
     /// The milestone it's in, by title.
     pub milestone: Option<String>,
+    /// The pull requests that close it when they merge: number, title and state (`OPEN`,
+    /// `CLOSED`, `MERGED`).
+    pub pulls: Vec<(u32, String, String)>,
 }
 
 /// A change in an issue's timeline, said as GitHub says it.
@@ -85,7 +88,7 @@ const EVENTS: &str = "... on LabeledEvent{createdAt actor{login} label{name colo
 
 /// GitHub's timeline holds the last 100 items; older ones are on GitHub.
 fn detail_fields() -> String {
-    format!("body viewerCanUpdate milestone{{title}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
+    format!("body viewerCanUpdate milestone{{title}} closedByPullRequestsReferences(first:10,includeClosedPrs:true){{nodes{{number title state}}}} timelineItems(last:100,itemTypes:[ISSUE_COMMENT,LABELED_EVENT,UNLABELED_EVENT,ASSIGNED_EVENT,UNASSIGNED_EVENT,CLOSED_EVENT,REOPENED_EVENT,\
 RENAMED_TITLE_EVENT,CROSS_REFERENCED_EVENT,MILESTONED_EVENT,DEMILESTONED_EVENT]){{nodes{{__typename ... on IssueComment{{{COMMENT}}} {EVENTS}}}}}")
 }
 
@@ -226,7 +229,9 @@ fn detail(v: &Value) -> Detail {
     let (comments, events): (Vec<&Value>, Vec<&Value>) = items.partition(|e| e["__typename"] == "IssueComment");
     let comments = comments.into_iter().map(|c| Post { time: s(c, "createdAt"), ..post(c) }).collect();
     Detail { issue: issue(v), body: s(v, "body"), comments, events: events.into_iter().filter_map(event).collect(), can_edit: v["viewerCanUpdate"].as_bool().unwrap_or(false),
-        milestone: v["milestone"]["title"].as_str().map(str::to_owned) }
+        milestone: v["milestone"]["title"].as_str().map(str::to_owned),
+        pulls: v["closedByPullRequestsReferences"]["nodes"].as_array().into_iter().flatten()
+            .map(|p| (p["number"].as_u64().unwrap_or(0) as u32, s(p, "title"), s(p, "state"))).collect() }
 }
 
 /// An event as GitHub words it; `None` for a kind the timeline doesn't show.

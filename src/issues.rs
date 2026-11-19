@@ -859,7 +859,29 @@ fn side(s: &Collate, k: &Kit, d: &Detail) -> El {
             Some(m) => text(m.clone()).font(k.ty.text_small).color(k.c.text_base),
             None => text("No milestone".to_owned()).font(k.ty.text_small).color(k.c.text_faint),
         });
-    col().key("issue-side").w(220.0).gap(24.0).child(assignees).child(labels).child(milestone)
+    let mut side = col().key("issue-side").w(220.0).gap(24.0).child(assignees).child(labels).child(milestone);
+    // The pull requests that close it, each opening here as the Pull Requests list opens it.
+    if !d.pulls.is_empty() {
+        side = side.child(col().key("issue-pulls").w_full().gap(2.0).child(heading(k, "issue-pulls-title", "Development", None))
+            .children(d.pulls.iter().map(|(n, title, state)| {
+                let (glyph, tint, said): (&'static Icon, rune::Color, &str) = match state.as_str() {
+                    "MERGED" => (&crate::MERGE_ICON, SyntaxTheme::from_kit(k).color(Syntax::Keyword), "Merged"),
+                    "CLOSED" => (&crate::PULL_CLOSED_ICON, k.c.danger.icon, "Closed"),
+                    _ => (&crate::PULLS_ICON, k.c.success.icon, "Open"),
+                };
+                let n = *n;
+                row().key(format!("issue-pull-{n}")).w_full().h(24.0).gap(8.0).items_center().radius(k.radius.sm).hover(k.c.hover)
+                    .cursor(Cursor::Pointer).role("button").label(format!("#{n} {title} - {said}")).help("Open the pull request")
+                    .on_press(move |s: &mut Collate| {
+                        s.open_pulls();
+                        s.open_pull(n);
+                    })
+                    .child(icon(glyph, 14.0).color(tint).a11y_hidden())
+                    .child(text(title.clone()).font(k.ty.text_small).color(k.c.text_base).truncate().min_w(0.0).grow(1.0))
+                    .child(text(format!("#{n}")).font(k.ty.text_small).color(k.c.text_faint))
+            })));
+    }
+    side
 }
 
 /// An event in the activity, set between the comments as GitHub sets it: a mark in the faces'
