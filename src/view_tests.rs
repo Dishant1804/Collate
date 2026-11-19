@@ -2909,6 +2909,9 @@ fn issues_sit_under_pull_requests_and_list_the_repositorys_issues() {
     click(&mut rt, "issues-assignee");
     rt.resolve_popup(Some("any")).unwrap();
     rt.frame(1.0 / 60.0);
+    click(&mut rt, "issues-sort");
+    rt.resolve_popup(Some("Most Commented")).unwrap();
+    assert_eq!(rt.state.issues.sort, crate::issues::Sort::Commented, "Sort orders the groups");
     click(&mut rt, "issue-group-Created by You");
     assert!(rt.find("issue-6").is_some() && rt.find("issue-4").is_none(), "a group's title folds and opens it");
     click(&mut rt, "view-all");

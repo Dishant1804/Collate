@@ -29,6 +29,37 @@ pub struct IssuesState {
     pub label: Option<String>,
     /// The login the list is narrowed to the issues of; empty for issues no one has.
     pub assignee: Option<String>,
+    /// How each group is ordered.
+    pub sort: Sort,
+}
+
+/// How each group of the list is ordered, as GitHub's sort menu offers.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Sort {
+    #[default]
+    Updated,
+    Newest,
+    Oldest,
+    Commented,
+}
+
+impl Sort {
+    const ALL: [(Sort, &'static str); 4] = [(Sort::Updated, "Recently Updated"), (Sort::Newest, "Newest"), (Sort::Oldest, "Oldest"), (Sort::Commented, "Most Commented")];
+
+    fn name(self) -> &'static str {
+        Sort::ALL.iter().find(|(s, _)| *s == self).map_or("", |(_, n)| n)
+    }
+
+    /// Order the issues; ties keep the order they came in, newest activity first.
+    fn apply(self, issues: &mut [Issue]) {
+        match self {
+            // The times are ISO 8601, so they order as text.
+            Sort::Updated => issues.sort_by(|a, b| b.updated.cmp(&a.updated)),
+            Sort::Newest => issues.sort_by(|a, b| b.created.cmp(&a.created)),
+            Sort::Oldest => issues.sort_by(|a, b| a.created.cmp(&b.created)),
+            Sort::Commented => issues.sort_by_key(|i| std::cmp::Reverse(i.comments)),
+        }
+    }
 }
 
 /// The issues the list shows: open ones to act on, closed ones to look back on, or both.
@@ -52,7 +83,7 @@ impl Shown {
 
 impl Default for IssuesState {
     fn default() -> IssuesState {
-        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None }
+        IssuesState { open: false, list: None, loading: false, folded: HashSet::new(), filter: TextEdit::new(""), shown: Shown::Open, label: None, assignee: None, sort: Sort::Updated }
     }
 }
 
@@ -149,7 +180,7 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
         Some(Ok((_, issues))) if issues.is_empty() => message(k, "No issues", "This repository has no open or recently closed issues."),
         Some(Ok((me, issues))) => {
             let words: Vec<String> = s.issues.filter.text.split_whitespace().map(str::to_lowercase).collect();
-            let shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && has_assignee(i, s.issues.assignee.as_deref()) && matches(i, &words)).cloned().collect();
+            let mut shown: Vec<Issue> = issues.iter().filter(|i| s.issues.shown.wants(i) && has_label(i, s.issues.label.as_deref()) && has_assignee(i, s.issues.assignee.as_deref()) && matches(i, &words)).cloned().collect();
             if shown.is_empty() {
                 let (title, hint) = match (s.issues.shown, words.is_empty() && s.issues.label.is_none() && s.issues.assignee.is_none()) {
                     (Shown::Open, true) => ("No open issues", "Closed shows the ones done with."),
@@ -158,6 +189,7 @@ pub fn issues_view(s: &Collate, k: &Kit) -> El {
                 };
                 return col().key("issues").w_full().grow(1.0).min_h(0.0).pt(COLUMN_TOP).child(head).child(filters(s, k)).child(message(k, title, hint));
             }
+            s.issues.sort.apply(&mut shown);
             let mut list = col().key("issues-list").w_full().pb(16.0);
             for (title, group) in github_issues::group(&shown, me) {
                 if group.is_empty() {
@@ -199,7 +231,16 @@ fn filters(s: &Collate, k: &Kit) -> El {
         Some(a) => format!("Assignee: {a}"),
     };
     let assignee = menu_button(k, "issues-assignee", assignee, s.issues.assignee.is_some(), "Show only issues someone has", |s, tx| s.pick_issue_assignee(tx));
+    let sort = menu_button(k, "issues-sort", s.issues.sort.name().to_owned(), false, "Order the issues", |s, tx| {
+        let menu = PopupMenu::picker(Sort::ALL.iter().map(|(_, n)| (*n, *n)), s.issues.sort.name());
+        tx.popup_menu(menu, "issues-sort", |s: &mut Collate, picked, _| {
+            if let Some(&(sort, _)) = Sort::ALL.iter().find(|(_, n)| Some(*n) == picked) {
+                s.issues.sort = sort;
+            }
+        });
+    });
     row().key("issues-filters").w_full().px(EDGE).pt(8.0).pb(4.0).gap(8.0).items_center().child(state).child(label).child(assignee)
+        .child(row().grow(1.0)).child(sort)
 }
 
 /// A button that opens a menu, with the chevron that says so; it stands out while it narrows.
@@ -344,6 +385,17 @@ fn issue_row(s: &Collate, k: &Kit, i: &Issue) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sorting_orders_by_time_or_talk() {
+        let i = |number: u32, created: &str, updated: &str, comments: u32| Issue { number, created: created.into(), updated: updated.into(), comments, ..Issue::default() };
+        let mut all = [i(1, "2026-01-01", "2026-03-01", 0), i(2, "2026-02-01", "2026-02-02", 5), i(3, "2026-01-15", "2026-04-01", 2)];
+        let order = |all: &[Issue]| all.iter().map(|i| i.number).collect::<Vec<_>>();
+        for (sort, want) in [(Sort::Updated, [3, 1, 2]), (Sort::Newest, [2, 3, 1]), (Sort::Oldest, [1, 3, 2]), (Sort::Commented, [2, 3, 1])] {
+            sort.apply(&mut all);
+            assert_eq!(order(&all), want, "{sort:?}");
+        }
+    }
 
     #[test]
     fn the_filter_wants_every_word_somewhere() {
