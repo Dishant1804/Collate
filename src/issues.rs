@@ -206,6 +206,27 @@ impl Collate {
         self.issue_act("Commenting…", move |gh| gh.issue_comment(n, &body).map(|_| format!("Commented on #{n}")), |s| s.issues.reply = TextEdit::new(""));
     }
 
+    /// Close the open issue for `reason` (`completed` or `not planned`), or reopen it with
+    /// `None`, with the comment written, if any, said as it goes.
+    pub fn set_issue_open(&mut self, reason: Option<&'static str>) {
+        let Some(n) = self.issues.number else { return };
+        let body = self.issues.reply.text.trim().to_owned();
+        let (doing, done) = match reason {
+            Some(_) => ("Closing…", format!("Closed #{n}")),
+            None => ("Reopening…", format!("Reopened #{n}")),
+        };
+        self.issue_act(doing, move |gh| gh.set_issue_open(n, reason, &body).map(|_| done), |s| s.issues.reply = TextEdit::new(""));
+    }
+
+    fn pick_close_reason(&mut self, tx: &mut Tx) {
+        let menu = PopupMenu::new().items([PopupItem::new("completed", "Close as Completed"), PopupItem::new("not planned", "Close as Not Planned")]);
+        tx.popup_menu(menu, "issue-close-reason", |s: &mut Collate, picked: Option<&str>, _| match picked {
+            Some("completed") => s.set_issue_open(Some("completed")),
+            Some("not planned") => s.set_issue_open(Some("not planned")),
+            _ => {}
+        });
+    }
+
     /// Asks for the pictures of everyone the issues show: the reader, the authors and the assignees.
     fn request_issue_faces(&mut self) {
         let Some(Ok((me, issues))) = &self.issues.list else { return };
@@ -561,9 +582,23 @@ fn composer(s: &Collate, k: &Kit) -> El {
         .on_edit(|s: &mut Collate| &mut s.issues.reply).width(None).build(k).key("issue-message").w_full();
     let send = Button::new("Comment").variant(ButtonVariant::Contrast).disabled(blocked).help("Add it to the issue (⌘↩)")
         .on_press(|s: &mut Collate| s.send_issue_comment()).build(k).hand(!blocked).key("issue-comment-send");
+    // As GitHub words it: what's written goes with the closing or reopening.
+    let open = s.issues.detail.as_ref().and_then(|d| d.as_ref().ok()).is_none_or(|d| d.issue.open);
+    let busy = s.busy.is_some();
+    let with = if empty { "" } else { " with Comment" };
+    let state = if open {
+        row().gap(2.0).items_center()
+            .child(Button::new(format!("Close{with}")).icon(&DONE_ICON).variant(ButtonVariant::Outline).disabled(busy).help("Close it as completed")
+                .on_press(|s: &mut Collate| s.set_issue_open(Some("completed"))).build(k).hand(!busy).key("issue-close"))
+            .child(IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::GhostMuted).label("Close as…").disabled(busy)
+                .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.pick_close_reason(tx)).build(k).hand(!busy).key("issue-close-reason"))
+    } else {
+        row().child(Button::new(format!("Reopen{with}")).icon(&ISSUES_ICON).variant(ButtonVariant::Outline).disabled(busy).help("Open it again")
+            .on_press(|s: &mut Collate| s.set_issue_open(None)).build(k).hand(!busy).key("issue-reopen"))
+    };
     row().key("issue-composer").w_full().gap(12.0).items_start()
         .child(crate::history_view::face(k, s, me, 32.0).mt(2.0))
-        .child(col().grow(1.0).min_w(0.0).gap(8.0).child(area).child(row().w_full().child(row().grow(1.0)).child(send)))
+        .child(col().grow(1.0).min_w(0.0).gap(8.0).child(area).child(row().w_full().gap(8.0).items_center().child(row().grow(1.0)).child(state).child(send)))
 }
 
 /// An event in the activity, set between the comments as GitHub sets it: a mark in the faces'

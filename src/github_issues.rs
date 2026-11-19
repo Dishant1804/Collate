@@ -100,6 +100,21 @@ impl Gh {
         self.run(&["issue", "comment", &n.to_string(), "--body-file", "-"], Some(body))
     }
 
+    /// Close issue `n` for `reason` (`completed` or `not planned`), or reopen it with `None`,
+    /// saying `comment` as it goes if there's one.
+    pub fn set_issue_open(&self, n: u32, reason: Option<&str>, comment: &str) -> Result<String, String> {
+        let n = n.to_string();
+        let mut args = vec!["issue", if reason.is_some() { "close" } else { "reopen" }, n.as_str()];
+        let reason = reason.map(|r| format!("--reason={r}"));
+        args.extend(reason.as_deref());
+        // `=` so a comment that starts with a dash isn't taken for a flag.
+        let comment = format!("--comment={comment}");
+        if comment.len() > "--comment=".len() {
+            args.push(&comment);
+        }
+        self.run(&args, None)
+    }
+
     fn query(&self, q: &str) -> Result<Value, String> {
         self.json(&["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", &format!("query={q}")], None)
     }

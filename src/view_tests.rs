@@ -2987,6 +2987,14 @@ fn an_issue_opens_from_its_row_and_esc_goes_back() {
         rt.frame(1.0 / 60.0);
     }
     assert_eq!(rt.state.issues.reply.text, "me too, j", "letters typed there are words, not keys");
+    assert!(rt.find("issue-close").is_some() && rt.find("issue-reopen").is_none(), "an open issue can be closed from there");
+    click(&mut rt, "issue-close-reason");
+    let menu = rt.popup_menu().expect("the reasons to close it");
+    assert!(menu.find("completed").is_some() && menu.find("not planned").is_some());
+    rt.resolve_popup(None).unwrap();
+    rt.update(|s, _| if let Some(Ok(d)) = &mut s.issues.detail { d.issue.open = false });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("issue-reopen").is_some() && rt.find("issue-close").is_none(), "and a closed one reopened");
     rt.update(|s, _| s.issues.reply.focused = false);
     rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
     rt.frame(1.0 / 60.0);
