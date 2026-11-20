@@ -23,13 +23,12 @@ fn history_graph_renders_and_selects_commits() {
             refs: vec![], subject: format!("Commit {i}"),
         }).collect();
         (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
-        s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
-        s.commit = Some(s.commit_ids[0].clone());
-        let second = s.commit_ids[1].clone();
+        s.commit = Some(s.graph_commits[0].id.clone());
+        let second = s.graph_commits[1].id.clone();
         let mut rt = Runtime::new(s, view, (width, 840.0), Env { system_dark: true, scale: 2.0 });
         rt.frame(0.0);
         assert!(rt.presented("history-graph").is_some());
-        assert!(rt.presented(&format!("graph-{}", rt.state.commit_ids[599])).is_none(), "far rows are virtualized");
+        assert!(rt.presented(&format!("graph-{}", rt.state.graph_commits[599].id)).is_none(), "far rows are virtualized");
         let (rect, _) = rt.presented(&format!("graph-{second}")).unwrap();
         rt.pointer_down(rect[0] + 40.0, rect[1] + 15.0);
         rt.pointer_up(rect[0] + 40.0, rect[1] + 15.0);
@@ -161,7 +160,6 @@ fn scrolling_near_the_end_asks_for_more_history() {
         author: "Ada".into(), email: "a@x".into(), date: String::new(), refs: vec![], subject: format!("Commit {i}"),
     }).collect();
     (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
-    s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
     let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
     rt.frame(0.0);
     assert!(rt.presented("graph-refresh").is_some(), "refresh is an icon button");
@@ -185,10 +183,23 @@ fn leaving_history_keeps_only_its_first_page() {
         author: "Ada".into(), email: "a@x".into(), date: String::new(), refs: vec![], subject: format!("Commit {i}"),
     }).collect();
     (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
-    s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
     s.graph_limit = n;
     s.set_scope(Scope::Uncommitted);
-    assert_eq!((s.graph_limit, s.graph_commits.len(), s.commit_ids.len(), s.graph_rows.len()), (HISTORY_PAGE, HISTORY_PAGE, HISTORY_PAGE, HISTORY_PAGE));
+    assert_eq!((s.graph_limit, s.graph_commits.len(), s.graph_rows.len()), (HISTORY_PAGE, HISTORY_PAGE, HISTORY_PAGE));
+}
+
+#[test]
+fn a_page_of_history_adds_only_commits_not_shown() {
+    let mut s = init();
+    let commit = |i: usize| graph::Commit {
+        id: format!("{i:040x}"), parents: vec![format!("{:040x}", i + 1)],
+        author: "Ada".into(), email: String::new(), date: String::new(), refs: vec![], subject: format!("Commit {i}"),
+    };
+    s.graph_commits = (0..3).map(commit).collect();
+    // A ref moved since the first page, so the next one starts a commit early.
+    s.extend_history((2..5).map(commit).collect());
+    assert_eq!(s.commits().iter().map(|c| c.id.clone()).collect::<Vec<_>>(), (0..5).map(|i| format!("{i:040x}")).collect::<Vec<_>>());
+    assert_eq!((s.graph_commits.len(), s.graph_rows.len()), (5, 5));
 }
 
 #[test]
@@ -203,8 +214,7 @@ fn a_commit_opens_from_its_files_and_esc_goes_back() {
         refs: vec![], subject: format!("Commit {i}"),
     }).collect();
     (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
-    s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
-    s.commit = Some(s.commit_ids[1].clone());
+    s.commit = Some(s.graph_commits[1].id.clone());
     s.commit_body = "Why it changed.".into();
     let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
     rt.on_key = Some(on_key);
@@ -242,7 +252,6 @@ fn the_uncommitted_row_opens_all_changes() {
     s.total = 2;
     let head = format!("{:040x}", 1);
     let commits = vec![graph::Commit { id: head.clone(), parents: vec![], author: "Ada".into(), email: "a@x".into(), date: String::new(), refs: vec![], subject: "Only".into() }];
-    s.commit_ids = vec![head.clone()];
     s.graph_commits = graph::with_uncommitted(commits, Some(&head), true);
     (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
     let mut rt = Runtime::new(s, view, (1280.0, 840.0), Env { system_dark: true, scale: 2.0 });
@@ -496,7 +505,7 @@ fn the_search_finds_files_in_the_map_and_commits_in_history() {
     assert!(rt.state.map.hover.is_some(), "picked there");
     assert!(rt.find("found").is_none(), "and the results close");
 
-    let (commits, head) = Repo::open(test_repo()).unwrap().graph(50, None);
+    let (commits, head) = Repo::open(test_repo()).unwrap().graph(0, 50, None);
     rt.update(move |s, _| {
         s.map.open = false;
         s.set_scope(Scope::History);

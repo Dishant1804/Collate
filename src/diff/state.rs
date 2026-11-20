@@ -1188,7 +1188,7 @@ impl DiffState {
         for (h, hunk) in self.files[f].hunks.iter().enumerate() {
             for (i, l) in hunk.lines.iter().enumerate() {
                 let Some(n) = l.number(a.side) else { continue };
-                if l.text == a.text && best.is_none_or(|(d, ..)| n.abs_diff(a.line) < d) {
+                if *l.text == *a.text && best.is_none_or(|(d, ..)| n.abs_diff(a.line) < d) {
                     best = Some((n.abs_diff(a.line), h, i));
                 }
             }
@@ -1287,6 +1287,7 @@ impl DiffState {
         }
         static KEYS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         self.keys_rev = KEYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        rows.shrink_to_fit();
         self.rows = rows;
     }
 

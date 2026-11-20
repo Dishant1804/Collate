@@ -273,7 +273,7 @@ fn three_for_three(name: &str) -> (PathBuf, Repo, FileDiff) {
 
 /// Picks the lines of hunk 0 whose text is in `texts`.
 fn pick(f: &FileDiff, texts: &[&str]) -> Vec<bool> {
-    f.hunks[0].lines.iter().map(|l| l.kind != crate::diff::LineKind::Context && texts.contains(&l.text.as_str())).collect()
+    f.hunks[0].lines.iter().map(|l| l.kind != crate::diff::LineKind::Context && texts.contains(&&*l.text)).collect()
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn history_shows_each_commit_against_its_parent() {
     sh(&dir, &["commit", "-qm", "second"]);
     // Uncommitted work doesn't leak into a past commit.
     write(&dir, "b.txt", "edited later\n");
-    let (commits, _) = r.graph(10, None);
+    let (commits, _) = r.graph(0, 10, None);
     let log: Vec<(String, String)> = commits.into_iter().map(|c| (c.id, c.subject)).collect();
     assert_eq!(log.len(), 2);
     assert!(log[0].1.contains("second") && log[1].1.contains("init"), "{log:?}");
@@ -471,7 +471,7 @@ fn the_graph_reads_every_branch_with_its_labels_and_lanes() {
     sh(&dir, &["commit", "-qam", "main work"]);
     sh(&dir, &["tag", "v1"]);
     sh(&dir, &["merge", "-q", "--no-ff", "-m", "Merge feature", "feature"]);
-    let (commits, head) = r.graph(50, None);
+    let (commits, head) = r.graph(0, 50, None);
     let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
     assert_eq!(subjects.len(), 4, "{subjects:?}");
     assert_eq!(subjects[0], "Merge feature");
@@ -486,8 +486,12 @@ fn the_graph_reads_every_branch_with_its_labels_and_lanes() {
     assert_eq!(rows[0].col, 0);
     assert_eq!(rows[0].down.len(), 2, "the merge opens a lane for feature");
     // One branch alone: the merge and what's under it, not other tips.
-    let (only, _) = r.graph(50, Some("feature"));
+    let (only, _) = r.graph(0, 50, Some("feature"));
     assert_eq!(only.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["feature work", "init"]);
+    // Pages read with a skip join up to the whole list.
+    let (first, _) = r.graph(0, 2, None);
+    let (rest, _) = r.graph(2, 2, None);
+    assert_eq!(first.into_iter().chain(rest).collect::<Vec<_>>(), commits);
 }
 
 #[test]

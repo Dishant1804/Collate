@@ -34,17 +34,17 @@ pub struct Line {
     /// Its 1-based number on the new side, unless it was removed.
     pub new: Option<u32>,
     /// The line without its line break.
-    pub text: String,
+    pub text: Box<str>,
     /// Byte ranges of `text` that differ from the line it replaced or was replaced by (word
     /// changes), when it pairs with one and they share enough to say.
-    pub changes: Vec<Range<usize>>,
+    pub changes: Box<[Range<usize>]>,
     /// The file ends here without a line break (`\ No newline at end of file`).
     pub no_newline: bool,
 }
 
 impl Line {
     fn new(kind: LineKind, old: Option<u32>, new: Option<u32>, text: &str) -> Line {
-        Line { kind, old, new, text: text.to_owned(), changes: Vec::new(), no_newline: false }
+        Line { kind, old, new, text: text.into(), changes: Box::default(), no_newline: false }
     }
 
     /// Its number on `side`.
@@ -384,8 +384,8 @@ impl FileDiff {
                 if pairs <= 128 {
                     for k in 0..pairs {
                         let (a, b) = myers::words(&h.lines[del + k].text, &h.lines[add + k].text);
-                        h.lines[del + k].changes = a;
-                        h.lines[add + k].changes = b;
+                        h.lines[del + k].changes = a.into();
+                        h.lines[add + k].changes = b.into();
                     }
                 }
             }
@@ -445,7 +445,7 @@ fn hunks(old: &Source, new: &Source, context: u32, ignore_whitespace: bool) -> V
             _ => groups.push(vec![c]),
         }
     }
-    let line = |s: &Source, n: u32| s.line(n + 1).unwrap_or("").to_owned();
+    let line = |s: &Source, n: u32| Box::<str>::from(s.line(n + 1).unwrap_or(""));
     groups
         .into_iter()
         .map(|g| {
@@ -484,6 +484,7 @@ fn hunks(old: &Source, new: &Source, context: u32, ignore_whitespace: bool) -> V
                 };
             }
             let (oc, nc) = (i - os, j - ns);
+            lines.shrink_to_fit();
             Hunk {
                 old_start: if oc == 0 { os } else { os + 1 },
                 old_count: oc,
@@ -590,6 +591,10 @@ pub fn parse(patch: &str) -> Vec<FileDiff> {
             };
         }
         f.pair_words();
+        // Lines were pushed one at a time; a big diff otherwise keeps a fifth of them spare.
+        for h in Arc::make_mut(&mut f.hunks) {
+            h.lines.shrink_to_fit();
+        }
     }
     files
 }
@@ -908,18 +913,18 @@ mod tests {
     #[test]
     fn a_missing_final_newline_is_a_change() {
         let f = FileDiff::from_texts("a", "one\ntwo", "one\ntwo\n");
-        let l: Vec<(LineKind, &str, bool)> = f.hunks[0].lines.iter().map(|l| (l.kind, l.text.as_str(), l.no_newline)).collect();
+        let l: Vec<(LineKind, &str, bool)> = f.hunks[0].lines.iter().map(|l| (l.kind, &*l.text, l.no_newline)).collect();
         assert_eq!(l, vec![(LineKind::Context, "one", false), (LineKind::Removed, "two", true), (LineKind::Added, "two", false)]);
         let both_missing = FileDiff::from_texts("a", "one\ntwo", "one\nthree");
-        let l2: Vec<(LineKind, &str, bool)> = both_missing.hunks[0].lines.iter().map(|l| (l.kind, l.text.as_str(), l.no_newline)).collect();
+        let l2: Vec<(LineKind, &str, bool)> = both_missing.hunks[0].lines.iter().map(|l| (l.kind, &*l.text, l.no_newline)).collect();
         assert_eq!(l2, vec![(LineKind::Context, "one", false), (LineKind::Removed, "two", true), (LineKind::Added, "three", true)]);
         assert!(FileDiff::from_texts("a", "same\n", "same\n").hunks.is_empty());
         assert!(FileDiff::from_texts("a", "same", "same").hunks.is_empty());
         // CRLF normalizes line endings while preserving changes.
         assert!(FileDiff::from_texts("a", "one\r\ntwo\r\n", "one\ntwo\n").hunks.is_empty());
         let crlf = FileDiff::from_texts("a", "one\r\ntwo\r\n", "one\r\nthree\r\n");
-        assert_eq!(crlf.hunks[0].lines[1].text, "two");
-        assert_eq!(crlf.hunks[0].lines[2].text, "three");
+        assert_eq!(&*crlf.hunks[0].lines[1].text, "two");
+        assert_eq!(&*crlf.hunks[0].lines[2].text, "three");
         // NUL bytes mark a binary file.
         let bin = FileDiff::from_texts("img.bin", "a\0b", "c\0d");
         assert!(bin.binary && bin.hunks.is_empty());

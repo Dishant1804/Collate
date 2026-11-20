@@ -55,11 +55,23 @@ fn listen() -> Result<(), String> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     std::thread::spawn(move || {
+        prune(&dir);
         for stream in listener.incoming().flatten() {
             std::thread::spawn(move || answer(stream));
         }
     });
     Ok(())
+}
+
+/// Takes away the sockets nothing listens on: a window that crashed or was killed left its
+/// own, and only an agent listing the windows would otherwise clear them.
+fn prune(dir: &Path) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = e.path();
+        if path.extension().is_some_and(|x| x == "sock") && UnixStream::connect(&path).is_err() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Takes the socket away as the app quits, so agents don't find a window that's gone.

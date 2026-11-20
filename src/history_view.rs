@@ -45,7 +45,7 @@ pub fn history_graph(s: &Collate, k: &Kit) -> El {
         .virtual_rows_version(s.graph_version)
         // Within a hundred rows of the end, the next page starts loading.
         .on_visible_rows(|s: &mut Collate, rows| {
-            if rows.end + 100 >= s.graph_commits.len() && !s.graph_loading && s.commit_ids.len() >= s.graph_limit {
+            if rows.end + 100 >= s.graph_commits.len() && !s.graph_loading && s.commits().len() >= s.graph_limit {
                 s.load_more_history();
                 return true;
             }

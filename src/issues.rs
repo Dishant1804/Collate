@@ -2,7 +2,7 @@
 //! issue's overview, in place of the diff, as the pull requests are.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::syntax::{Syntax, SyntaxTheme};
@@ -156,12 +156,12 @@ pub fn state_mark(k: &Kit, i: &Issue) -> (&'static Icon, rune::Color, &'static s
 /// The signed-in login and the issues.
 type List = (String, Vec<Issue>);
 
-/// Each project's last list, shown at once when it's opened again while a new one is read.
-static LISTS: std::sync::Mutex<Option<HashMap<PathBuf, List>>> = std::sync::Mutex::new(None);
+/// The recent projects' last lists.
+static LISTS: std::sync::Mutex<github::Recent<List>> = std::sync::Mutex::new(github::Recent::new());
 
 /// The last list read for the project at `root`.
 pub fn cached(root: &Path) -> Option<List> {
-    LISTS.lock().ok()?.as_ref()?.get(root).cloned()
+    LISTS.lock().ok()?.get(root)
 }
 
 impl Collate {
@@ -585,7 +585,7 @@ impl Collate {
         std::thread::spawn(move || {
             let got = Gh::new(&root).issues();
             if let (Ok(list), Ok(mut lists)) = (&got, LISTS.lock()) {
-                lists.get_or_insert_default().insert(root.clone(), list.clone());
+                lists.put(root.clone(), list.clone());
             }
             app.update(move |s, _| {
                 // The reader switched projects meanwhile: this list was the last one's.

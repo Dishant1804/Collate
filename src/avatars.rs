@@ -102,6 +102,13 @@ impl Avatars {
         self.cache.as_ref().map(|c| c.load(bytes))
     }
 
+    /// Lets go of the authors' pictures `keep` turns down; an account's, by login, stay. One asked
+    /// for again comes back from the disk cache.
+    pub fn retain_authors(&mut self, keep: impl Fn(&str) -> bool) {
+        self.images.retain(|key, _| key.starts_with('@') || keep(key));
+        self.images.shrink_to_fit();
+    }
+
     /// The picture for `email`, once it's decoded.
     pub fn get(&self, email: &str) -> Option<&Image> {
         self.images.get(email)?.as_ref().filter(|i| i.is_ready() && i.error().is_none())

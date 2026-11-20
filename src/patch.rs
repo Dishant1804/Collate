@@ -126,7 +126,7 @@ pub fn line_to(file: &FileDiff, h: usize, r: usize, a: usize, target: &str, reve
     let mut f = file.clone();
     let hunk = std::sync::Arc::make_mut(&mut f.hunks).get_mut(h)?;
     let edited = if reverse { r } else { a };
-    hunk.lines.get_mut(edited)?.text = target.to_owned();
+    hunk.lines.get_mut(edited)?.text = target.into();
     let picked: Vec<bool> = (0..hunk.lines.len()).map(|i| i == r || i == a).collect();
     lines(&f, h, Some(&picked), reverse)
 }

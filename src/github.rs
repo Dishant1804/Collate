@@ -10,6 +10,28 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+/// The last lists read for the projects opened most recently, newest first: a project opened
+/// again shows its list at once while a new one is read, and one long gone isn't kept.
+pub struct Recent<T>(Vec<(PathBuf, T)>);
+
+impl<T: Clone> Recent<T> {
+    const KEPT: usize = 4;
+
+    pub const fn new() -> Self {
+        Recent(Vec::new())
+    }
+
+    pub fn get(&self, root: &Path) -> Option<T> {
+        self.0.iter().find(|(r, _)| r == root).map(|(_, t)| t.clone())
+    }
+
+    pub fn put(&mut self, root: PathBuf, t: T) {
+        self.0.retain(|(r, _)| *r != root);
+        self.0.insert(0, (root, t));
+        self.0.truncate(Self::KEPT);
+    }
+}
+
 /// One pull request in the list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pull {
@@ -910,6 +932,16 @@ pub fn group<'a>(pulls: &'a [Pull], me: &str) -> [(&'static str, Vec<&'a Pull>);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_last_projects_opened_keep_their_lists() {
+        let mut r = Recent::new();
+        for n in 0..6 {
+            r.put(format!("/p{n}").into(), n);
+        }
+        r.put("/p3".into(), 33);
+        assert_eq!((r.get(Path::new("/p3")), r.get(Path::new("/p5")), r.get(Path::new("/p2")), r.get(Path::new("/p1"))), (Some(33), Some(5), Some(2), None));
+    }
 
     #[test]
     fn a_comment_keeps_its_id_link_author_and_the_reactions_it_has() {

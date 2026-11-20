@@ -1323,10 +1323,11 @@ impl Repo {
 
     /// The latest `n` commits of every branch, remote branch and tag (or of `branch` alone),
     /// newest first and each after its children, with HEAD's id.
-    pub fn graph(&self, n: usize, branch: Option<&str>) -> (Vec<crate::graph::Commit>, Option<String>) {
+    pub fn graph(&self, skip: usize, n: usize, branch: Option<&str>) -> (Vec<crate::graph::Commit>, Option<String>) {
         let limit = format!("-{n}");
+        let skip = format!("--skip={skip}");
         let format = format!("--format={}", crate::graph::FORMAT);
-        let mut args = vec!["log", &limit, "--date-order", "--decorate=full", "--date=format-local:%d %b %Y %H:%M", &format];
+        let mut args = vec!["log", &limit, &skip, "--date-order", "--decorate=full", "--date=format-local:%d %b %Y %H:%M", &format];
         match branch {
             Some(b) => args.extend([b, "--"]),
             // Not `--all`: that takes in stashes and notes.

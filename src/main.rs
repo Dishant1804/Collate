@@ -366,8 +366,7 @@ struct Collate {
     show_help: bool,
     /// What's typed into the shortcuts sheet's search.
     help_query: String,
-    /// History: recent commits (ids and labels, newest first) and the one shown.
-    commit_ids: Vec<String>,
+    /// History: recent commits (newest first, the uncommitted changes' row on top) and the one shown.
     graph_commits: Vec<graph::Commit>,
     graph_rows: Vec<graph::Row>,
     graph_lanes: usize,
@@ -579,7 +578,6 @@ fn init() -> Collate {
         pulls: pulls::PullsState::default(),
         issues: issues::IssuesState::default(),
         update: update::Status::default(),
-        commit_ids: Vec::new(),
         graph_commits: Vec::new(),
         graph_rows: Vec::new(),
         graph_lanes: 1,
@@ -751,7 +749,6 @@ impl Collate {
         self.hit = None;
         self.commit = None;
         self.history_diff = false;
-        self.commit_ids.clear();
         self.graph_commits.clear();
         self.reset_map();
         self.forget_places();
@@ -914,7 +911,7 @@ impl Collate {
     /// else HEAD's.
     fn load_history(&mut self) {
         let limit = self.graph_limit;
-        self.read_bg(move |r| (r.graph(limit, None), r.web_url()), |s, ((commits, head), web)| {
+        self.read_bg(move |r| (r.graph(0, limit, None), r.web_url()), |s, ((commits, head), web)| {
             s.web = web;
             s.show_history(commits, head);
         });
@@ -925,29 +922,42 @@ impl Collate {
         self.read_bg(Repo::branches, |s, branches| s.branches = branches);
     }
 
-    /// Near the end of the list: reads the next page off the main thread, so the list keeps
-    /// scrolling, and shows it when it's in. Without a window (tests) it reads it right away.
+    /// Near the end of the list: reads only the next page off the main thread, so the list
+    /// keeps scrolling, and adds it when it's in. Without a window (tests) it reads it right away.
     fn load_more_history(&mut self) {
-        if self.graph_loading || self.commit_ids.len() < self.graph_limit {
+        if self.graph_loading || self.commits().len() < self.graph_limit {
             return;
         }
         self.graph_limit += HISTORY_PAGE;
-        let (Some(r), Some(app)) = (current_repo(), HANDLE.get().cloned()) else {
-            self.load_history();
+        let skip = self.commits().len();
+        let Some(r) = current_repo() else { return };
+        let Some(app) = HANDLE.get().cloned() else {
+            self.extend_history(r.graph(skip, HISTORY_PAGE, None).0);
             return;
         };
         self.graph_loading = true;
         let limit = self.graph_limit;
         std::thread::spawn(move || {
-            let (commits, head) = r.graph(limit, None);
+            let (page, _) = r.graph(skip, HISTORY_PAGE, None);
             app.update(move |s, _| {
                 // A project switch or refresh since started over: this page is stale.
                 if s.graph_loading && s.graph_limit == limit {
                     s.graph_loading = false;
-                    s.show_history(commits, head);
+                    s.extend_history(page);
                 }
             });
         });
+    }
+
+    /// Adds a page read past the commits shown and lays the graph out again.
+    fn extend_history(&mut self, page: Vec<graph::Commit>) {
+        // A ref that moved since the first page shifts `--skip`, which can read a commit again.
+        let have: HashSet<&str> = self.commits().iter().map(|c| c.id.as_str()).collect();
+        let page: Vec<graph::Commit> = page.into_iter().filter(|c| !have.contains(c.id.as_str())).collect();
+        self.avatars.request(self.web.as_deref(), &page);
+        self.graph_commits.extend(page);
+        (self.graph_rows, self.graph_lanes) = graph::layout(&self.graph_commits);
+        self.graph_version = self.graph_version.wrapping_add(1);
     }
 
     /// Leaving History drops the pages scrolled in past the first, which it reads again only
@@ -962,15 +972,13 @@ impl Collate {
         let uncommitted = usize::from(self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED));
         self.graph_commits.truncate(HISTORY_PAGE + uncommitted);
         self.graph_commits.shrink_to_fit();
-        self.commit_ids.truncate(HISTORY_PAGE);
-        self.commit_ids.shrink_to_fit();
+        let authors: HashSet<&str> = self.graph_commits.iter().map(|c| c.email.as_str()).collect();
+        self.avatars.retain_authors(|email| authors.contains(email));
         (self.graph_rows, self.graph_lanes) = graph::layout(&self.graph_commits);
         self.graph_version = self.graph_version.wrapping_add(1);
     }
 
     fn show_history(&mut self, commits: Vec<graph::Commit>, head: Option<String>) {
-        // Only real commits can be stepped through and diffed against their parent.
-        self.commit_ids = commits.iter().map(|c| c.id.clone()).collect();
         let commits = graph::with_uncommitted(commits, head.as_deref(), self.total > 0);
         (self.graph_rows, self.graph_lanes) = graph::layout(&commits);
         self.avatars.request(self.web.as_deref(), &commits);
@@ -979,9 +987,16 @@ impl Collate {
         // A commit opened from elsewhere (a stash, a file's history, a compare) stays shown
         // though the graph doesn't list it.
         let keep = self.commit.clone();
-        if let Some(c) = keep.or_else(|| head.filter(|h| self.commit_ids.contains(h))).or_else(|| self.commit_ids.first().cloned()) {
+        if let Some(c) = keep.or_else(|| head.filter(|h| self.commits().iter().any(|c| c.id == *h))).or_else(|| self.commits().first().map(|c| c.id.clone())) {
             self.set_commit(&c);
         }
+    }
+
+    /// The graph's real commits, which can be stepped through and diffed against their parent:
+    /// all but the uncommitted changes' row.
+    fn commits(&self) -> &[graph::Commit] {
+        let uncommitted = usize::from(self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED));
+        &self.graph_commits[uncommitted..]
     }
 
     fn set_commit(&mut self, id: &str) {
@@ -1022,10 +1037,10 @@ impl Collate {
     }
 
     fn step_commit(&mut self, by: isize, tx: &mut Tx) {
-        let Some(at) = self.commit.as_ref().and_then(|c| self.commit_ids.iter().position(|x| x == c)) else { return };
+        let Some(at) = self.commit.as_ref().and_then(|c| self.commits().iter().position(|x| x.id == *c)) else { return };
         let to = at as isize + by;
-        if to >= 0 && (to as usize) < self.commit_ids.len() {
-            let id = self.commit_ids[to as usize].clone();
+        if to >= 0 && (to as usize) < self.commits().len() {
+            let id = self.commits()[to as usize].id.clone();
             tx.scroll_into_view(format!("graph-{id}"));
             self.set_commit(&id);
         }
@@ -1499,7 +1514,7 @@ impl Collate {
             (LineKind::Added, LineKind::Removed) => (b, a),
             _ => return None,
         };
-        let (old, new) = (lines[removed].text.clone(), lines[added].text.clone());
+        let (old, new) = (lines[removed].text.to_string(), lines[added].text.to_string());
         let edits = word_edits(&old, &new);
         if edits.is_empty() {
             return None;
@@ -4650,8 +4665,9 @@ fn compare_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
             Some(row().key("compare").gap(6.0).items_center().child(text("Showing").font(k.ty.text_small).color(k.c.text_muted)).child(pick))
         }
         Scope::History => {
-            let at = s.commit.as_ref().and_then(|c| s.commit_ids.iter().position(|x| x == c));
-            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= s.commit_ids.len())).help(if at.is_none_or(|i| i + 1 >= s.commit_ids.len()) { "The oldest commit the graph has read" } else { "Older commit" }).shortcut("<").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).hand(!(at.is_none_or(|i| i + 1 >= s.commit_ids.len()))).key("older");
+            let n = s.commits().len();
+            let at = s.commit.as_ref().and_then(|c| s.commits().iter().position(|x| x.id == *c));
+            let older = Button::new("‹ Older").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i + 1 >= n)).help(if at.is_none_or(|i| i + 1 >= n) { "The oldest commit the graph has read" } else { "Older commit" }).shortcut("<").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(1, tx)).build(k).hand(!(at.is_none_or(|i| i + 1 >= n))).key("older");
             let newer = Button::new("Newer ›").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).disabled(at.is_none_or(|i| i == 0)).help(if at.is_none_or(|i| i == 0) { "The newest commit" } else { "Newer commit" }).shortcut(">").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.step_commit(-1, tx)).build(k).hand(!(at.is_none_or(|i| i == 0))).key("newer");
             Some(row().key("compare").gap(6.0).items_center().child(older).child(newer))
         }
@@ -5043,7 +5059,7 @@ fn find_extras(s: &Collate, k: &Kit) -> El {
 fn found_list(s: &Collate, k: &Kit, place: Searched) -> El {
     let mut rows = col().key("found-rows").w_full().padding(4.0);
     if s.found.is_empty() {
-        let none = if place == Searched::Map { "No file matches".to_owned() } else { format!("Nothing matches in the {} commits loaded", s.commit_ids.len()) };
+        let none = if place == Searched::Map { "No file matches".to_owned() } else { format!("Nothing matches in the {} commits loaded", s.commits().len()) };
         rows = rows.child(row().key("found-none").h(28.0).px(8.0).items_center().child(text(none).font(k.ty.ui).color(k.c.text_faint)));
     }
     for (n, f) in s.found.iter().enumerate() {
@@ -5301,13 +5317,14 @@ mod sizes {
         let snap = repo.snapshot(Scope::Uncommitted, &raw, None).unwrap();
         let p = prepare(snap, DiffOpts { context: 3, ignore_whitespace: false, moved: true, hide_low_signal: true, source_first: true }, &mut DiffCache::new()).unwrap();
         let mut texts = 0usize;
-        let (mut lines, mut line_text, mut changes) = (0usize, 0usize, 0usize);
+        let (mut lines, mut line_text, mut changes, mut spare) = (0usize, 0usize, 0usize, 0usize);
         for f in &p.files {
             texts += [diff::Side::Old, diff::Side::New].iter().filter_map(|&s| f.text(s)).map(|t| t.len() + t.lines().count() * 8).sum::<usize>();
+            spare += f.hunks.iter().map(|h| h.lines.capacity() - h.lines.len()).sum::<usize>();
             for l in f.hunks.iter().flat_map(|h| &h.lines) {
                 lines += 1;
-                line_text += l.text.capacity();
-                changes += l.changes.capacity() * 16;
+                line_text += l.text.len();
+                changes += l.changes.len() * 16;
             }
         }
         let line_struct = std::mem::size_of::<diff::Line>();
@@ -5316,6 +5333,7 @@ mod sizes {
         eprintln!("files {}", p.files.len());
         eprintln!("whole texts (both sides, with line index)  {:6.1} MB", texts as f64 / 1e6);
         eprintln!("hunk lines: {lines} × {line_struct} B + text {:.1} MB + word ranges {:.1} MB = {:6.1} MB per copy", line_text as f64 / 1e6, changes as f64 / 1e6, (lines * line_struct + line_text + changes) as f64 / 1e6);
-        eprintln!("rows {} (keys made on demand; no per-row index)", st.rows.len());
+        eprintln!("hunk lines' spare capacity {:6.1} MB", (spare * line_struct) as f64 / 1e6);
+        eprintln!("rows {} of {} B, {} spare (keys made on demand; no per-row index)", st.rows.len(), std::mem::size_of_val(&st.rows[0]), st.rows.capacity() - st.rows.len());
     }
 }

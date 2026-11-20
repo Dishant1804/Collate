@@ -3,8 +3,8 @@
 //! checks, conversation and actions take the staging panel's top; its line threads sit under
 //! their lines with the reader's own comments, which a review sends as its line comments.
 
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
 
 use rune::{Cursor, El, Icon, PopupItem, PopupMenu, TextEdit, Tx, col, icon, row, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, ControlSize, Dialog, IconButton, IconButtonVariant, Kit, Markdown, MarkdownStyle, SegmentedControl, TextArea, TextInput};
@@ -199,17 +199,19 @@ pub fn watch_reviews() {
 /// The signed-in login and the pull requests.
 type List = (String, Vec<Pull>);
 
-/// Each project's last list, shown at once when it's opened again while a new one is read.
-static LISTS: std::sync::Mutex<Option<HashMap<PathBuf, List>>> = std::sync::Mutex::new(None);
+/// The recent projects' last lists.
+static LISTS: std::sync::Mutex<github::Recent<List>> = std::sync::Mutex::new(github::Recent::new());
 
 /// The last list read for the project at `root`.
 pub fn cached(root: &Path) -> Option<List> {
-    LISTS.lock().ok()?.as_ref()?.get(root).cloned()
+    LISTS.lock().ok()?.get(root)
 }
 
-/// How long Collate waits for the reader to finish connecting GitHub, looking every few seconds.
+/// How long Collate waits for the reader to finish connecting GitHub, looking every 2 seconds
+/// at first and less often the longer it takes, up to every 10: each look asks GitHub.
 const CONNECT_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 const CONNECT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+const CONNECT_EVERY_MOST: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Lucide's GitHub mark (ISC licence).
 pub static GITHUB_ICON: Icon = Icon {
@@ -284,8 +286,10 @@ impl Collate {
         let (mine, Some(gh), Some(app)) = (self.pulls.connect_try, gh(), HANDLE.get().cloned()) else { return };
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
+            let mut every = CONNECT_EVERY;
             while start.elapsed() < CONNECT_FOR {
-                std::thread::sleep(CONNECT_EVERY);
+                std::thread::sleep(every);
+                every = (every * 3 / 2).min(CONNECT_EVERY_MOST);
                 if let Ok(me) = gh.me() {
                     app.update(move |s, _| {
                         if s.pulls.connect_try == mine {
@@ -331,7 +335,7 @@ impl Collate {
         std::thread::spawn(move || {
             let got = Gh::new(&root).list();
             if let (Ok(list), Ok(mut lists)) = (&got, LISTS.lock()) {
-                lists.get_or_insert_default().insert(root.clone(), list.clone());
+                lists.put(root.clone(), list.clone());
             }
             app.update(move |s, _| {
                 // The reader switched projects meanwhile: this list was the last one's.
