@@ -207,7 +207,10 @@ impl<S: 'static> DiffView<S> {
                 .on_magnify(move |s: &mut S, e: MagnifyEvent, _: &mut Tx| pinch(s, e.delta / ZOOM_PINCH));
         }
         let scroll = scroll.child(list).child(col().key(super::state::TAIL_KEY).w_full().h(tail).a11y_hidden());
-        let mut root = col().key(key).w_full().grow(1.0).min_h(0.0).fill(v.look.bg).child(scroll);
+        // The scroll ends a corner's radius above the bottom, so its clip misses the main
+        // pane's rounded corners: one cutting into them makes Rune draw the whole pane through
+        // an offscreen layer, about 40 MB of GPU memory at full screen.
+        let mut root = col().key(key).w_full().grow(1.0).min_h(0.0).pb(k.radius.lg).fill(v.look.bg).child(scroll);
         if let Some(f) = st.sticky() {
             root = root.child(v.file_header(s, st, f, true).key("sticky").absolute(0.0, 0.0).w_full());
         }

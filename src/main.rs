@@ -54,7 +54,7 @@ use std::time::Duration;
 use comments::{Comment, comment_row, load_comments};
 use diff::{DiffMode, DiffState, DiffView, EDGE, FileDiff, Finder, GHOST_PAD, IMAGE_H, LineKind, LineRange, LineRef, Query, WordEdit, apply_edits, word_edits};
 use git::{Change, Repo, Scope, Staged};
-use rune::{App, AppSpec, Cursor, Cx, Drag, El, Icon, Key, KeyEvent, PointerPress, PopupAnchor, PopupItem, Phase, PopupMenu, TextEdit, Tx, col, el, icon, row, text};
+use rune::{App, AppSpec, Cursor, Cx, Drag, El, Icon, Key, KeyEvent, PointerPress, PopupAnchor, PopupItem, Phase, PopupMenu, TextEdit, Transition, Tx, col, el, icon, row, text};
 use rune_kit::shell::{self, PaneState, Sidebar, SidebarRow, SidebarSection, SplitView, Toolbar};
 use rune_kit::syntax::Highlighter;
 use rune_kit::{
@@ -3538,6 +3538,9 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     if let Some(bar) = operation_bar(s, k) {
         with_operation = with_operation.child(bar);
     }
+    // A view replaces the last one at once: a crossfade draws both full-pane views into
+    // offscreen layers at once, which took the window up to about 185 MB higher per switch.
+    let body = body.transition(Transition::none());
     let mut body = col().key("body").w_full().grow(1.0).min_h(0.0).child(with_operation.child(body));
     if let Some(bar) = status_bar(s, k) {
         body = body.child(bar);
