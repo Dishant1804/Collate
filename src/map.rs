@@ -77,8 +77,9 @@ const GENERATED: [&str; 8] = ["target", "node_modules", "dist", ".next", ".turbo
 /// Larger files are weighed by size and not searched for imports.
 const READ_LIMIT: u64 = 2 << 20;
 
-/// The map of the repository at `root`: tracked and untracked (not ignored) files that exist
-/// in the working tree, less low-signal ones (lockfiles, bundles), which would crowd it.
+/// The map of the repository at `root`: tracked and untracked (not ignored) source files that
+/// exist in the working tree. Images, data, docs and config aren't code, and their lines would
+/// crowd it (a repository's JSON can outweigh its source), so they're left off and never read.
 pub fn build(root: &Path) -> Result<RepoMap, String> {
     let list = |which: &str| -> Result<Vec<String>, String> {
         let out = crate::git::command().args(["ls-files", "-z", which, "--exclude-standard"]).current_dir(root).output().map_err(|e| format!("couldn't run git: {e}"))?;
@@ -91,9 +92,9 @@ pub fn build(root: &Path) -> Result<RepoMap, String> {
     // New files belong on the map, but not a build or dependency folder a project forgot to
     // ignore (Cargo's `target`, `node_modules`): those would bury the source.
     paths.extend(list("--others")?.into_iter().filter(|p| !p.split('/').any(|part| GENERATED.contains(&part))));
-    paths.sort();
+    paths.sort_unstable();
     paths.dedup();
-    paths.retain(|p| !crate::settings::low_signal(p));
+    paths.retain(|p| is_code(p) && !crate::settings::low_signal(p));
     let scans = scan_all(root, &paths);
     // A file listed but gone from the working tree (deleted, not yet staged) has no scan.
     let present: Vec<(String, Scan)> = paths.into_iter().zip(scans).filter_map(|(p, s)| Some((p, s?))).collect();
@@ -140,7 +141,7 @@ fn scan(abs: &Path, rel: &str, cached: &HashMap<PathBuf, Scan>) -> Option<Scan> 
         return Some(Scan { len, modified, lines: len / 40, specs: Vec::new() });
     }
     let bytes = std::fs::read(abs).ok()?;
-    // Binary files (images, fonts) keep a token size.
+    // A binary file under a source name keeps a token size.
     if bytes[..bytes.len().min(8000)].contains(&0) {
         return Some(Scan { len, modified, lines: 1, specs: Vec::new() });
     }
@@ -152,6 +153,21 @@ fn scan(abs: &Path, rel: &str, cached: &HashMap<PathBuf, Scan>) -> Option<Scan> 
         Lang::Other => Vec::new(),
     };
     Some(Scan { len, modified, lines: lines.max(1), specs })
+}
+
+/// Source code, by extension or by a build file's name.
+fn is_code(path: &str) -> bool {
+    const EXTS: [&str; 70] = [
+        "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts", "vue", "svelte", "astro", "py", "pyi", "go", "swift", "kt", "kts", "java",
+        "scala", "groovy", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "m", "mm", "cs", "fs", "rb", "php", "pl", "lua", "dart", "ex", "exs",
+        "erl", "hs", "ml", "mli", "clj", "cljs", "elm", "zig", "nim", "jl", "r", "sql", "sh", "bash", "zsh", "fish", "ps1", "css", "scss",
+        "sass", "less", "html", "htm", "wgsl", "metal", "glsl", "hlsl", "proto", "graphql", "sol", "tf",
+    ];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => EXTS.contains(&ext.to_ascii_lowercase().as_str()),
+        _ => matches!(name, "Makefile" | "Dockerfile" | "Justfile" | "Rakefile" | "Gemfile"),
+    }
 }
 
 #[derive(PartialEq)]
@@ -206,7 +222,7 @@ fn js_specs(text: &str) -> Vec<String> {
         }
         i += 1;
     }
-    out.sort();
+    out.sort_unstable();
     out.dedup();
     out
 }
@@ -242,7 +258,7 @@ fn rust_specs(text: &str) -> Vec<String> {
             }
         }
     }
-    out.sort();
+    out.sort_unstable();
     out.dedup();
     out
 }
@@ -775,6 +791,16 @@ mod tests {
     fn finds_js_imports() {
         let src = "import a from './a';\nimport { b,\n  c } from \"../b/c\";\nimport './side.css';\nexport * from '@acme/db/schema';\nconst x = await import('./lazy');\nconst y = require('lodash');\nconst s = 'from the start';\n";
         assert_eq!(js_specs(src), ["../b/c", "./a", "./lazy", "./side.css", "@acme/db/schema", "lodash"]);
+    }
+
+    #[test]
+    fn maps_code_and_leaves_out_assets_data_and_docs() {
+        for p in ["src/main.rs", "web/App.tsx", "lib/x.d.ts", "tool.py", "ui/page.HTML", "Makefile", "scripts/build.sh"] {
+            assert!(is_code(p), "{p} is code");
+        }
+        for p in ["logo.png", "icon.svg", "package.json", "README.md", "Cargo.toml", "ci.yml", "notes.txt", ".gitignore", "LICENSE"] {
+            assert!(!is_code(p), "{p} isn't code");
+        }
     }
 
     #[test]

@@ -158,6 +158,9 @@ pub fn map_view(s: &Collate, k: &Kit) -> El {
             None => message(k, "Mapping the repository…", ""),
         };
     };
+    if m.files == 0 {
+        return message(k, "No source code to map", "The map weighs code by its lines and leaves out images, data, docs and config");
+    }
     let zoom = s.map_zoom_node(&m);
     // This view's changes, by path: added and removed lines and what happened to the file.
     let changes: HashMap<&str, (usize, usize, FileStatus)> = s.diff.files().iter().map(|f| (f.path(), (f.additions(), f.deletions(), f.status))).collect();
@@ -249,7 +252,9 @@ fn header(s: &Collate, k: &Kit, m: &RepoMap, zoom: usize, changes: &HashMap<&str
 
 fn stage(s: &Collate, k: &Kit, m: &Arc<RepoMap>, zoom: usize, changes: &HashMap<&str, (usize, usize, FileStatus)>, changed_dirs: &HashSet<usize>) -> El {
     let size = rune::memo::layout_with("map-canvas", |r| (r[2], r[3]));
-    let mut area = col().key("map-canvas").w_full().grow(1.0).min_h(0.0).clip_rounded(0.0)
+    // A square clip cuts each instance to the rectangle; a rounded one draws the whole map into
+    // an offscreen layer first, which kept about 40 MB of GPU memory for as long as it showed.
+    let mut area = col().key("map-canvas").w_full().grow(1.0).min_h(0.0).clip_soft(0.0)
         .cursor(Cursor::Pointer)
         .role("img")
         .label("Repository map")
@@ -293,7 +298,8 @@ fn stage(s: &Collate, k: &Kit, m: &Arc<RepoMap>, zoom: usize, changes: &HashMap<
     for cell in cells.iter() {
         let n = &m.nodes[cell.node];
         let [x, y, cw, ch] = cell.rect;
-        let outline = rounded(cell.rect, if cw > 8.0 && ch > 8.0 { 3.0 } else { 1.0 });
+        // Corners too small to see stay square: a rounded one costs Rune three times the triangles.
+        let outline = rounded(cell.rect, if cw >= 12.0 && ch >= 12.0 { 3.0 } else { 0.0 });
         let change = changes.get(n.path.as_str()).copied();
         if n.dir {
             shape = shape.fill(outline.clone(), k.alpha(c.text_base, 0.025));
@@ -386,11 +392,13 @@ fn rounded(rect: [f32; 4], r: f32) -> Vec<[f32; 2]> {
     if r < 0.5 {
         return vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
     }
-    let mut pts = Vec::with_capacity(16);
+    // Two segments a corner: at these radii a finer arc differs by under half a pixel, and every
+    // point is another triangle and stroke segment on the GPU.
+    let mut pts = Vec::with_capacity(12);
     let corners = [([x + w - r, y + r], -90.0f32), ([x + w - r, y + h - r], 0.0), ([x + r, y + h - r], 90.0), ([x + r, y + r], 180.0)];
     for (c, start) in corners {
-        for step in 0..=3 {
-            let a = (start + step as f32 * 30.0).to_radians();
+        for step in 0..=2 {
+            let a = (start + step as f32 * 45.0).to_radians();
             pts.push([c[0] + r * a.cos(), c[1] + r * a.sin()]);
         }
     }
