@@ -5051,6 +5051,9 @@ fn found_list(s: &Collate, k: &Kit, place: Searched) -> El {
 /// Before every frame: retire a status message once it's been up long enough.
 fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
     commands::sync_menu(s);
+    if let Some(left) = s.terminals.end_idle(now) {
+        tx.wake_after(Duration::from_secs_f64(left));
+    }
     // Whatever moved the reader since the last frame, back now returns there.
     let moved = s.note_place();
     let Some(n) = &mut s.notice else { return moved };

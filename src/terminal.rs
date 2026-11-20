@@ -36,6 +36,12 @@ const MAX_SHARE: f32 = 0.75;
 const PAD: f32 = 8.0;
 /// The list of terminals beside the grid, shown once there are two.
 const LIST_W: f32 = 144.0;
+/// Lines kept above the screen. A full-width line of cells costs about 3.6 KB, so
+/// alacritty's default of 10,000 grew a busy pane to about 36 MB; 2,000 keep it near 7.
+const SCROLLBACK: usize = 2_000;
+/// Seconds a shell may sit at its prompt in the closed drawer before it ends, so a session
+/// nobody went back to stops holding its scrollback and its process.
+const IDLE_END: f64 = 30.0 * 60.0;
 
 /// Where a shell's events go: the app moves them onto its UI thread.
 pub type Sink = Arc<dyn Fn(u64, Event) + Send + Sync>;
@@ -179,11 +185,13 @@ pub struct Terminals {
     sink: Option<Sink>,
     /// The appearance last drawn in, for programs that ask what a colour is.
     dark: std::cell::Cell<bool>,
+    /// When the poll first saw the drawer closed with shells in it.
+    hidden_since: Option<f64>,
 }
 
 impl Default for Terminals {
     fn default() -> Self {
-        Terminals { open: false, height: DEFAULT_HEIGHT, list: Vec::new(), active: 0, next: 1, sink: None, dark: std::cell::Cell::new(true) }
+        Terminals { open: false, height: DEFAULT_HEIGHT, list: Vec::new(), active: 0, next: 1, sink: None, dark: std::cell::Cell::new(true), hidden_since: None }
     }
 }
 
@@ -249,7 +257,7 @@ impl Terminals {
         let dirty = Arc::new(AtomicBool::new(false));
         let sender = Arc::new(OnceLock::new());
         let proxy = Proxy { id, dirty: dirty.clone(), pty: sender.clone(), sink };
-        let term = Arc::new(FairMutex::new(Term::new(Config::default(), &TermSize::new(cols, rows), proxy.clone())));
+        let term = Arc::new(FairMutex::new(Term::new(Config { scrolling_history: SCROLLBACK, ..Config::default() }, &TermSize::new(cols, rows), proxy.clone())));
         let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false).map_err(|e| format!("Couldn't start a shell: {e}"))?;
         let pty = event_loop.channel();
         let _ = sender.set(pty.clone());
@@ -311,6 +319,24 @@ impl Terminals {
         if let Some(t) = self.list.get_mut(active) {
             t.keys.focused = open;
         }
+    }
+
+    /// Ends the shells that have sat at their prompt for `IDLE_END` with the drawer closed;
+    /// one running a program is asked again after as long. Returns the seconds until the
+    /// next check, for the poll to wake then.
+    pub fn end_idle(&mut self, now: f64) -> Option<f64> {
+        if self.open || self.list.is_empty() {
+            self.hidden_since = None;
+            return None;
+        }
+        let since = *self.hidden_since.get_or_insert(now);
+        if now < since + IDLE_END {
+            return Some(since + IDLE_END - now);
+        }
+        self.list.retain(|t| t.running().is_some());
+        self.active = self.active.min(self.list.len().saturating_sub(1));
+        self.hidden_since = (!self.list.is_empty()).then_some(now);
+        self.hidden_since.map(|_| IDLE_END)
     }
 
     /// An event from a shell's thread, now on the UI thread. True when the view should run.
@@ -807,7 +833,7 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
         .grow(1.0)
         .h_full()
         .min_w(0.0)
-        .clip_rounded(0.0)
+        .clip_soft(0.0)
         .cursor(Cursor::Text)
         .role("terminal")
         .label(t.title.clone())
@@ -906,7 +932,7 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
         // Not `opacity(0)`: Rune won't focus what doesn't show, so it draws in clear ink instead.
         .color(Color::TRANSPARENT)
         .caret(Color::TRANSPARENT, Color::TRANSPARENT)
-        .clip_rounded(0.0)
+        .clip_soft(0.0)
         .label("Terminal input")
         .on_edit(move |s: &mut S| {
             let ts = access(s);
@@ -1048,6 +1074,24 @@ mod tests {
         assert!(ts.list[0].shown().contains(&dir.display().to_string()), "it started in the folder");
         ts.close(0);
         assert!(!ts.open && ts.list.is_empty(), "closing the last shell closes the drawer");
+    }
+
+    #[test]
+    fn a_shell_left_idle_in_the_closed_drawer_ends() {
+        let mut ts = Terminals::default();
+        ts.connect(Arc::new(|_, _| {}));
+        ts.spawn(&std::env::temp_dir()).expect("a shell starts");
+        assert_eq!(ts.end_idle(0.0), None, "nothing ends while the drawer is open");
+        ts.set_open(false);
+        assert_eq!(ts.end_idle(100.0), Some(IDLE_END), "closing starts the wait");
+        assert_eq!(ts.end_idle(100.0 + IDLE_END - 1.0), Some(1.0));
+        let start = std::time::Instant::now();
+        while ts.list[0].running().is_some() {
+            assert!(start.elapsed().as_secs() < 20, "the shell reached its prompt");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(ts.end_idle(100.0 + IDLE_END), None, "the idle shell ended");
+        assert!(ts.list.is_empty());
     }
 
     #[test]
