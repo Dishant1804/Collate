@@ -171,7 +171,7 @@ lucide!(WRITE_ICON, "collate-sparkles", r#"<path d="M9.937 15.5A2 2 0 0 0 8.5 14
 lucide!(EXTERNAL_ICON, "collate-external-link", r#"<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>"#);
 
 /// Commits read per page of History; the next page loads as the list nears its end.
-const HISTORY_PAGE: usize = 500;
+const HISTORY_PAGE: usize = 250;
 
 #[derive(Clone, Copy)]
 struct Stat {
@@ -653,6 +653,9 @@ impl Collate {
             self.close_pull();
         }
         if self.scope != scope {
+            if self.scope == Scope::History {
+                self.shrink_history();
+            }
             self.scope = scope;
             self.loaded = false;
             self.error = None;
@@ -945,6 +948,24 @@ impl Collate {
                 }
             });
         });
+    }
+
+    /// Leaving History drops the pages scrolled in past the first, which it reads again only
+    /// when scrolled to; the first stays, so coming back shows it at once.
+    fn shrink_history(&mut self) {
+        if self.graph_limit <= HISTORY_PAGE {
+            return;
+        }
+        self.graph_limit = HISTORY_PAGE;
+        // A page still being read is stale now.
+        self.graph_loading = false;
+        let uncommitted = usize::from(self.graph_commits.first().is_some_and(|c| c.id == graph::UNCOMMITTED));
+        self.graph_commits.truncate(HISTORY_PAGE + uncommitted);
+        self.graph_commits.shrink_to_fit();
+        self.commit_ids.truncate(HISTORY_PAGE);
+        self.commit_ids.shrink_to_fit();
+        (self.graph_rows, self.graph_lanes) = graph::layout(&self.graph_commits);
+        self.graph_version = self.graph_version.wrapping_add(1);
     }
 
     fn show_history(&mut self, commits: Vec<graph::Commit>, head: Option<String>) {

@@ -175,6 +175,23 @@ fn scrolling_near_the_end_asks_for_more_history() {
 }
 
 #[test]
+fn leaving_history_keeps_only_its_first_page() {
+    let mut s = init();
+    s.has_project = true;
+    s.scope = Scope::History;
+    let n = 2 * HISTORY_PAGE;
+    s.graph_commits = (0..n).map(|i| graph::Commit {
+        id: format!("{i:040x}"), parents: if i + 1 < n { vec![format!("{:040x}", i + 1)] } else { vec![] },
+        author: "Ada".into(), email: "a@x".into(), date: String::new(), refs: vec![], subject: format!("Commit {i}"),
+    }).collect();
+    (s.graph_rows, s.graph_lanes) = graph::layout(&s.graph_commits);
+    s.commit_ids = s.graph_commits.iter().map(|c| c.id.clone()).collect();
+    s.graph_limit = n;
+    s.set_scope(Scope::Uncommitted);
+    assert_eq!((s.graph_limit, s.graph_commits.len(), s.commit_ids.len(), s.graph_rows.len()), (HISTORY_PAGE, HISTORY_PAGE, HISTORY_PAGE, HISTORY_PAGE));
+}
+
+#[test]
 fn a_commit_opens_from_its_files_and_esc_goes_back() {
     let mut s = init();
     s.has_project = true;

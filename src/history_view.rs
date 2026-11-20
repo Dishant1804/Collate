@@ -58,12 +58,12 @@ pub fn history_graph(s: &Collate, k: &Kit) -> El {
         .on_press(|s: &mut Collate| { s.load_history(); refresh(); })
         .build(k).hand(true)
         .key("graph-refresh");
-    let shown = s.commit_ids.len();
     let title = row().key("graph-title").w_full().h(36.0).px(EDGE).gap(8.0).items_center()
         .child(text("Commits").font(k.ty.text_small_medium).color(k.c.text_base))
-        .child(text(format!("{shown}{} on all branches{}", if shown >= s.graph_limit { "+" } else { "" }, if s.graph_loading { " - loading more…" } else { "" })).font(k.ty.text_small).color(k.c.text_muted).grow(1.0).truncate().min_w(0.0))
+        .child(text(if s.graph_loading { "On all branches - loading more…" } else { "On all branches" }).font(k.ty.text_small).color(k.c.text_muted).grow(1.0).truncate().min_w(0.0))
         .child(refresh.mr(-4.0));
-    col().key("history-graph").w_full().grow(1.0).min_h(0.0)
+    // The scroll stops short of the pane's rounded bottom corners; see `DiffView::build`.
+    col().key("history-graph").w_full().grow(1.0).min_h(0.0).pb(k.radius.lg)
         .child(title)
         .child(header)
         .child(col().w_full().h(1.0).fill(k.c.border_weak))
