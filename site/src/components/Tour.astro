@@ -1,0 +1,59 @@
+---
+import ThemedShot from './ThemedShot.astro';
+---
+<section style="max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; display: flex; flex-direction: column; gap: 24px">
+  <article class="shell" style="display: flex; flex-wrap: wrap; align-items: center; border-radius: 24px; overflow: hidden">
+    <div style="flex: 1 1 320px; padding: clamp(24px, 4vw, 48px); display: flex; flex-direction: column; gap: 12px">
+      <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--accent)">Agent</p>
+      <h2 style="margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.15; font-weight: 400; letter-spacing: -0.02em">Hand your review to your agent.</h2>
+      <p style="margin: 0; font-size: 16px; line-height: 1.6; color: var(--fg-3)">Leave comments on the lines, then send them to Claude Code in the Agent pane beside the diff. Press i to ask about the selected lines.</p>
+    </div>
+    <div class="inset" style="flex: 1.6 1 440px; min-width: 0; align-self: stretch; margin: 8px; border-radius: 16px; padding: clamp(16px, 3vw, 32px); display: flex; align-items: center">
+      <ThemedShot name="agent" sizes="(max-width: 900px) calc(100vw - 112px), 620px" alt="Collate's Agent pane running Claude Code beside the diff, answering a review comment by changing the code" style="display: block; width: 100%; height: auto; border-radius: 10px; box-shadow: var(--shot-shadow-sm)" />
+    </div>
+  </article>
+
+  <article class="shell" style="display: flex; flex-wrap: wrap-reverse; flex-direction: row-reverse; align-items: center; border-radius: 24px; overflow: hidden">
+    <div style="flex: 1 1 320px; padding: clamp(24px, 4vw, 48px); display: flex; flex-direction: column; gap: 12px">
+      <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--accent)">Git Graph</p>
+      <h2 style="margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.15; font-weight: 400; letter-spacing: -0.02em">Every branch, at a glance.</h2>
+      <p style="margin: 0; font-size: 16px; line-height: 1.6; color: var(--fg-3)">Walk the history of every branch with its authors and tags. Press ↩ to open a commit's diff, and &lt; or &gt; to step through them.</p>
+    </div>
+    <div class="inset" style="flex: 1.6 1 440px; min-width: 0; align-self: stretch; margin: 8px; border-radius: 16px; padding: clamp(16px, 3vw, 32px); display: flex; align-items: center">
+      <ThemedShot name="graph" sizes="(max-width: 900px) calc(100vw - 112px), 620px" alt="Collate's Git Graph listing commits on all branches with authors, dates and branch labels" style="display: block; width: 100%; height: auto; border-radius: 10px; box-shadow: var(--shot-shadow-sm)" />
+    </div>
+  </article>
+
+  <article class="shell" style="display: flex; flex-wrap: wrap; align-items: center; border-radius: 24px; overflow: hidden">
+    <div style="flex: 1 1 320px; padding: clamp(24px, 4vw, 48px); display: flex; flex-direction: column; gap: 12px">
+      <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--accent)">Pull requests</p>
+      <h2 style="margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.15; font-weight: 400; letter-spacing: -0.02em">Review pull requests without a browser.</h2>
+      <p style="margin: 0; font-size: 16px; line-height: 1.6; color: var(--fg-3)">See checks, reviewers and labels, read the changed files, then approve, request changes or merge. Works with the GitHub CLI you already use.</p>
+    </div>
+    <div class="inset" style="flex: 1.6 1 440px; min-width: 0; align-self: stretch; margin: 8px; border-radius: 16px; padding: clamp(16px, 3vw, 32px); display: flex; align-items: center">
+      <ThemedShot name="pr" sizes="(max-width: 900px) calc(100vw - 112px), 620px" alt="A pull request open in Collate, showing passing checks, a reviewer, labels and Approve, Request Changes and Merge buttons" style="display: block; width: 100%; height: auto; border-radius: 10px; box-shadow: var(--shot-shadow-sm)" />
+    </div>
+  </article>
+
+  <article class="shell" style="display: flex; flex-wrap: wrap-reverse; flex-direction: row-reverse; align-items: center; border-radius: 24px; overflow: hidden">
+    <div style="flex: 1 1 320px; padding: clamp(24px, 4vw, 48px); display: flex; flex-direction: column; gap: 12px">
+      <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--accent)">Map</p>
+      <h2 style="margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.15; font-weight: 400; letter-spacing: -0.02em">See where a change lands.</h2>
+      <p style="margin: 0; font-size: 16px; line-height: 1.6; color: var(--fg-3)">The whole repository as a map, every file sized by its lines and the changed ones lit. Hover a file to see what it imports and what imports it.</p>
+    </div>
+    <div class="inset" style="flex: 1.6 1 440px; min-width: 0; align-self: stretch; margin: 8px; border-radius: 16px; padding: clamp(16px, 3vw, 32px); display: flex; align-items: center">
+      <ThemedShot name="map" sizes="(max-width: 900px) calc(100vw - 112px), 620px" alt="Collate's Map of a repository, with folders and files drawn as boxes sized by lines and the changed files highlighted" style="display: block; width: 100%; height: auto; border-radius: 10px; box-shadow: var(--shot-shadow-sm)" />
+    </div>
+  </article>
+
+  <article class="shell" style="display: flex; flex-wrap: wrap; align-items: center; border-radius: 24px; overflow: hidden">
+    <div style="flex: 1 1 320px; padding: clamp(24px, 4vw, 48px); display: flex; flex-direction: column; gap: 12px">
+      <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--accent)">Issues</p>
+      <h2 style="margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.15; font-weight: 400; letter-spacing: -0.02em">Your issues, next to your code.</h2>
+      <p style="margin: 0; font-size: 16px; line-height: 1.6; color: var(--fg-3)">The issues assigned to you, the ones you opened and everyone else's, filtered by label or assignee. Open a new one without switching apps.</p>
+    </div>
+    <div class="inset" style="flex: 1.6 1 440px; min-width: 0; align-self: stretch; margin: 8px; border-radius: 16px; padding: clamp(16px, 3vw, 32px); display: flex; align-items: center">
+      <ThemedShot name="issues" sizes="(max-width: 900px) calc(100vw - 112px), 620px" alt="Collate's Issues view grouping open issues into assigned to you, created by you and everyone else, with labels" style="display: block; width: 100%; height: auto; border-radius: 10px; box-shadow: var(--shot-shadow-sm)" />
+    </div>
+  </article>
+</section>

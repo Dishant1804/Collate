@@ -1,0 +1,54 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import Hero from '../components/Hero.astro';
+import Showcase from '../components/Showcase.astro';
+import SpeedStats from '../components/SpeedStats.astro';
+import Features from '../components/Features.astro';
+import Speed from '../components/Speed.astro';
+import Tour from '../components/Tour.astro';
+import Commands from '../components/Commands.astro';
+import Install from '../components/Install.astro';
+import Footer from '../components/Footer.astro';
+import { release } from '../lib/release';
+
+const title = 'Collate - Fast git diff viewer for Mac';
+const description = 'Collate is a fast, free and open-source git diff viewer for Mac. Review changes, stage hunks, lines or words, and commit without leaving the diff.';
+const site = Astro.site;
+const abs = (path: string) => (site ? new URL(path, site).href : path);
+const shots = ['diff', 'graph', 'pr', 'map', 'issues', 'agent'];
+
+// What search engines show for an app: free, for macOS, its version, download and screenshots.
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Collate',
+  description,
+  applicationCategory: 'DeveloperApplication',
+  applicationSubCategory: 'Git client',
+  operatingSystem: 'macOS 13 or later',
+  softwareVersion: release.version,
+  downloadUrl: release.dmgUrl,
+  ...(site && { url: site.href }),
+  image: abs('/og.png'),
+  screenshot: shots.map((name) => abs(`/images/light/${name}.webp`)),
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  isAccessibleForFree: true,
+  license: 'https://github.com/Dishant1804/Collate/blob/main/LICENSE',
+  sameAs: ['https://github.com/Dishant1804/Collate', 'https://www.npmjs.com/package/collate-app'],
+};
+---
+<Layout title={title} description={description} jsonLd={jsonLd}>
+  <Header />
+  <main>
+    <Hero />
+    <Showcase />
+    <SpeedStats />
+    <Features />
+    <Speed />
+    <Tour />
+    <Commands />
+    <Install />
+  </main>
+  <Footer />
+</Layout>

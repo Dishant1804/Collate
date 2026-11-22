@@ -1,0 +1,77 @@
+<section id="speed" style="max-width: 1100px; margin: 0 auto; padding: 48px 24px 64px; display: flex; flex-direction: column; gap: 40px">
+  <div style="display: flex; flex-direction: column; gap: 14px; align-items: center; text-align: center">
+    <h2 style="margin: 0; font-size: clamp(32px, 4.5vw, 48px); line-height: 1.1; font-weight: 400; letter-spacing: -0.025em">Fast on big changes,<br>not just small ones.</h2>
+    <p style="margin: 0; font-size: 17px; line-height: 1.5; color: var(--fg-2); max-width: 36rem">Built in Rust and drawn on the GPU with Metal. Here is how long Collate takes on four real repositories with a lot changed.</p>
+  </div>
+  <div style="display: flex; flex-direction: column; gap: 16px">
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px">
+    <article class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <h3 style="margin: 0; font-size: 16px; font-weight: 500">A large review</h3>
+        <p style="margin: 0; font-size: 14px; line-height: 1.5; color: var(--fg-3)">416 files, 95,280 changed lines</p>
+      </div>
+      <div style="display: flex; flex-direction: column; margin-top: auto">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Opens in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">76 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Refreshes in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">12 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Scroll frame, p99</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">9.2 ms</span></div>
+      </div>
+    </article>
+    <article class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <h3 style="margin: 0; font-size: 16px; font-weight: 500">Linux v6.12</h3>
+        <p style="margin: 0; font-size: 14px; line-height: 1.5; color: var(--fg-3)">323 files, 39,407 changed lines</p>
+      </div>
+      <div style="display: flex; flex-direction: column; margin-top: auto">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Opens in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">76 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Refreshes in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">35 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Scroll frame, p99</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">10.3 ms</span></div>
+      </div>
+    </article>
+    <article class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <h3 style="margin: 0; font-size: 16px; font-weight: 500">Kubernetes v1.31</h3>
+        <p style="margin: 0; font-size: 14px; line-height: 1.5; color: var(--fg-3)">298 files, 26,926 changed lines</p>
+      </div>
+      <div style="display: flex; flex-direction: column; margin-top: auto">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Opens in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">55 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Refreshes in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">29 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Scroll frame, p99</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">9.5 ms</span></div>
+      </div>
+    </article>
+    <article class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; flex-direction: column; gap: 4px">
+        <h3 style="margin: 0; font-size: 16px; font-weight: 500">One huge file</h3>
+        <p style="margin: 0; font-size: 14px; line-height: 1.5; color: var(--fg-3)">A 400,000-line file edited every 50 lines, plus a new one</p>
+      </div>
+      <div style="display: flex; flex-direction: column; margin-top: auto">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Opens in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">122 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Refreshes in</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">54 ms</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line)"><span style="font-size: 14px; color: var(--fg-3)">Scroll frame, p99</span><span style="font-family: 'Geist Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums">8.4 ms</span></div>
+      </div>
+    </article>
+  </div>
+  <p style="margin: 0; font-size: 13px; line-height: 1.6; color: var(--fg-4)">Medians of 7 runs on an Apple M5 Pro, November 2026, with the build going into the next release. Refresh includes git status, which takes most of the time on the Linux and Kubernetes trees. p99 means 99 frames in 100 are this fast or faster, with every file unfolded. Run the same benchmarks with <a href="https://github.com/Dishant1804/Collate/blob/main/scripts/bench-set.py" style="color: var(--fg-2)">scripts/bench-set.py</a>.</p>
+  </div>
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px">
+    <div class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 8px">
+      <svg width="20" height="20" viewBox="2 2 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M4 9h16"></path><path d="M4 15h16"></path></svg>
+      <h3 style="margin: 0; font-size: 16px; font-weight: 500">Draws only what you see</h3>
+      <p style="margin: 0; font-size: 14px; line-height: 1.55; color: var(--fg-3)">Diff rows are virtual and memoised. A row is built again only when what it shows changes.</p>
+    </div>
+    <div class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 8px">
+      <svg width="20" height="20" viewBox="2 2 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12a8 8 0 0 1 14-5.3"></path><path d="M18 3v4h-4"></path><path d="M20 12a8 8 0 0 1-14 5.3"></path><path d="M6 21v-4h4"></path></svg>
+      <h3 style="margin: 0; font-size: 16px; font-weight: 500">Rediffs only what changed</h3>
+      <p style="margin: 0; font-size: 14px; line-height: 1.55; color: var(--fg-3)">After one edit in a 416-file review, Collate does about 6 ms of work. Files that didn't change are skipped.</p>
+    </div>
+    <div class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 8px">
+      <svg width="20" height="20" viewBox="2 2 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3 5 14h6l-1 7 8-11h-6z"></path></svg>
+      <h3 style="margin: 0; font-size: 16px; font-weight: 500">Never blocks your input</h3>
+      <p style="margin: 0; font-size: 14px; line-height: 1.55; color: var(--fg-3)">git and diffing run on a background thread, so scrolling and typing never wait for them.</p>
+    </div>
+    <div class="shell" style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 8px">
+      <svg width="20" height="20" viewBox="2 2 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"></rect><path d="M9 2v3"></path><path d="M15 2v3"></path><path d="M9 19v3"></path><path d="M15 19v3"></path><path d="M2 9h3"></path><path d="M2 15h3"></path><path d="M19 9h3"></path><path d="M19 15h3"></path></svg>
+      <h3 style="margin: 0; font-size: 16px; font-weight: 500">Light on memory</h3>
+      <p style="margin: 0; font-size: 14px; line-height: 1.55; color: var(--fg-3)">390 changed files fit in 5.5 MB. The terminal keeps 2,000 lines, and a hidden idle shell ends after 30 minutes.</p>
+    </div>
+  </div>
+</section>

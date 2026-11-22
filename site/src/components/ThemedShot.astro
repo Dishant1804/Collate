@@ -1,0 +1,47 @@
+---
+// An app screenshot in the theme the page is in: the light capture on the light page and
+// the dark one on the dark page. A shot without a light capture shows the dark one in both.
+// Each comes as WebP at 900, 1200 and 1800px wide; the browser fetches the one its screen needs.
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+interface Props {
+  name: string;
+  alt: string;
+  style: string;
+  // How wide the image is drawn, for the browser to pick a size.
+  sizes: string;
+  // The first screenshot on the page: fetched at once rather than when scrolled to.
+  priority?: boolean;
+}
+const { name, alt, style, sizes, priority = false } = Astro.props;
+// Astro builds from the site folder; check against its public/ rather than this file's place,
+// which moves when the build bundles it.
+const images = join(process.cwd(), 'public/images');
+for (const file of [`${name}.webp`, `${name}-900.webp`, `${name}-1200.webp`]) {
+  if (!existsSync(join(images, file))) throw new Error(`No screenshot ${file} in ${images}`);
+}
+const hasLight = existsSync(join(images, 'light', `${name}.webp`));
+const set = (dir: string) => ({
+  src: `${dir}/${name}.webp`,
+  srcset: `${dir}/${name}-900.webp 900w, ${dir}/${name}-1200.webp 1200w, ${dir}/${name}.webp 1800w`,
+});
+const dark = set('/images');
+const light = set('/images/light');
+// Light is the default theme, so its shot is the one worth fetching early.
+const eager = priority ? { loading: 'eager' as const, fetchpriority: 'high' as const } : { loading: 'lazy' as const };
+---
+{hasLight ? (
+  <>
+    <img class="shot-light" src={light.src} srcset={light.srcset} sizes={sizes} alt={alt} {...eager} decoding="async" width="1800" height="1129" style={style}>
+    <img class="shot-dark" src={dark.src} srcset={dark.srcset} sizes={sizes} alt={alt} loading="lazy" decoding="async" width="1800" height="1129" style={style}>
+  </>
+) : (
+  <img src={dark.src} srcset={dark.srcset} sizes={sizes} alt={alt} {...eager} decoding="async" width="1800" height="1129" style={style}>
+)}
+
+<style>
+  .shot-dark { display: none !important; }
+  :global([data-theme='dark']) .shot-light { display: none !important; }
+  :global([data-theme='dark']) .shot-dark { display: block !important; }
+</style>
