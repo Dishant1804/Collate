@@ -10,12 +10,11 @@ interface Props {
   noindex?: boolean;
 }
 const { title, description, jsonLd, noindex = false } = Astro.props;
-// Absolute URLs need the site's address (SITE_URL); without it the tags that require one are
-// left out, and the build says so.
-const site = Astro.site;
+// The site's address comes from astro.config.mjs.
+const site = Astro.site!;
 // A page kept out of search results names no canonical address.
-const canonical = site && !noindex ? new URL(Astro.url.pathname, site).href : undefined;
-const image = site ? new URL('/og.png', site).href : '/og.png';
+const canonical = noindex ? undefined : new URL(Astro.url.pathname, site).href;
+const image = new URL('/og.png', site).href;
 const imageAlt = 'Collate, a git diff viewer for Mac, showing a split diff with a review comment';
 ---
 <!doctype html>
