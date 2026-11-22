@@ -1,0 +1,93 @@
+---
+import Logo from './Logo.astro';
+import { release } from '../lib/release';
+const methods = [
+  { id: 'brew', cmd: 'brew install --cask dishant1804/tap/collate', note: 'Collate updates itself, so brew upgrade leaves it alone unless you add --greedy.' },
+  { id: 'npx', cmd: 'npx collate-app@latest', note: 'Puts Collate in Applications and adds the collate command. Needs Node.js 18 or newer.' },
+];
+const [first] = methods;
+---
+<section id="install" style="max-width: 1100px; margin: 0 auto; padding: 32px 24px 120px; display: flex; flex-direction: column; align-items: center; gap: 22px; text-align: center">
+  <Logo size={96} style="filter: drop-shadow(0 18px 24px var(--icon-drop))" />
+  <h2 style="margin: 0; font-size: clamp(32px, 4.5vw, 48px); line-height: 1.1; font-weight: 400; letter-spacing: -0.025em">Ready to try Collate?</h2>
+  <p style="margin: 0; font-size: 17px; color: var(--fg-2)">Free, open source, and it updates itself. No account, no telemetry.</p>
+  <div style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; align-items: stretch; width: 100%; padding-top: 8px">
+    <a href={release.dmgUrl} download class="dl-wide btn-primary" style="text-decoration: none; color: #FFFFFF; font-size: 16px; font-weight: 500; padding: 0 26px; min-height: 56px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; border-radius: 14px">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"></path><path d="m7 10 5 5 5-5"></path><path d="M5 20h14"></path></svg>
+      Download for macOS
+    </a>
+    <div class="cmd-box shell-crisp" data-install style="flex: 0 1 560px; min-width: 0; display: flex; align-items: center; gap: 8px; border-radius: 14px; padding: 6px; box-sizing: border-box">
+      <div role="tablist" aria-label="Install with" class="inset" style="flex: none; display: flex; gap: 2px; border-radius: 10px; padding: 3px">
+        {methods.map((m) => (
+          <button type="button" role="tab" class="tab" aria-selected={m.id === first.id ? 'true' : 'false'} data-cmd={m.cmd} data-note={m.note}>{m.id}</button>
+        ))}
+      </div>
+      <code class="cmd-code" style="flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; text-align: left; font-family: 'Geist Mono', monospace; font-size: 13px; padding: 0 4px"><span style="color: var(--fg-5)">$ </span><span data-cmd-text>{first.cmd}</span></code>
+      <button type="button" class="cmd-copy btn" data-copy aria-label="Copy install command" style="flex: none; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 10px; color: var(--fg); cursor: pointer">
+        <svg data-copied hidden width="16" height="16" viewBox="0 0 24 24" fill="none" style="stroke: var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+        <svg data-not-copied width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
+      </button>
+    </div>
+  </div>
+  <p data-note style="margin: 0; font-size: 14px; color: var(--fg-3)">{first.note}</p>
+  <p style="margin: 0; font-size: 13px; color: var(--fg-4)">macOS 13 or newer</p>
+</section>
+
+<style>
+  .tab {
+    font: 500 13px Geist, sans-serif;
+    border: 0;
+    border-radius: 8px;
+    height: 36px;
+    padding: 0 12px;
+    cursor: pointer;
+    background: transparent;
+    color: var(--fg-3);
+    transition: color 0.12s ease, transform 0.12s ease;
+  }
+  .tab:active { transform: scale(0.97); }
+  .cmd-copy svg[hidden] {
+    display: none;
+  }
+  .tab[aria-selected='true'] {
+    background: var(--material);
+    color: var(--fg);
+    box-shadow: var(--raised);
+  }
+</style>
+
+<script>
+  const box = document.querySelector<HTMLElement>('[data-install]')!;
+  const tabs = [...box.querySelectorAll<HTMLButtonElement>('[role=tab]')];
+  const cmdText = box.querySelector<HTMLElement>('[data-cmd-text]')!;
+  const note = document.querySelector<HTMLElement>('#install p[data-note]')!;
+  const copied = box.querySelector<SVGElement>('[data-copied]')!;
+  const notCopied = box.querySelector<SVGElement>('[data-not-copied]')!;
+
+  const showCopied = (on: boolean) => {
+    copied.toggleAttribute('hidden', !on);
+    notCopied.toggleAttribute('hidden', on);
+  };
+
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => {
+      for (const t of tabs) t.setAttribute('aria-selected', String(t === tab));
+      cmdText.textContent = tab.dataset.cmd!;
+      note.textContent = tab.dataset.note!;
+      showCopied(false);
+    });
+  }
+
+  box.querySelector('[data-copy]')!.addEventListener('click', () => {
+    navigator.clipboard.writeText(cmdText.textContent ?? '').then(
+      () => showCopied(true),
+      () => {
+        // Clipboard refused (an insecure origin or a denied permission): select the command so it can be copied by hand.
+        const range = document.createRange();
+        range.selectNodeContents(cmdText);
+        getSelection()?.removeAllRanges();
+        getSelection()?.addRange(range);
+      },
+    );
+  });
+</script>

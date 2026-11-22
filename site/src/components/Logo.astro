@@ -1,0 +1,17 @@
+---
+// The logo in the finish that suits the theme: Porcelain on light, Graphite on dark.
+interface Props {
+  size: number;
+  style?: string;
+}
+const { size, style = '' } = Astro.props;
+---
+<img class="logo logo-porcelain" src="/logo-porcelain.svg" alt="" width={size} height={size} style={`width: ${size}px; height: ${size}px; ${style}`}>
+<img class="logo logo-graphite" src="/logo-graphite.svg" alt="" width={size} height={size} style={`width: ${size}px; height: ${size}px; ${style}`}>
+
+<style>
+  .logo { display: block; }
+  .logo-graphite { display: none; }
+  :global([data-theme='dark']) .logo-porcelain { display: none; }
+  :global([data-theme='dark']) .logo-graphite { display: block; }
+</style>

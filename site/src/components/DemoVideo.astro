@@ -1,0 +1,103 @@
+<button type="button" class="btn demo-open hero-cta" data-demo-open>
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"></path></svg>
+  Watch demo
+</button>
+
+<dialog class="demo shell-crisp" data-demo aria-label="Collate demo video">
+  <button type="button" class="btn demo-close" data-demo-close aria-label="Close video">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg>
+  </button>
+  <div class="inset demo-well">
+    <video data-demo-video src="/videos/collate-demo.mp4" poster="/videos/collate-demo-poster.jpg" controls playsinline preload="none" width="1920" height="1080"></video>
+  </div>
+</dialog>
+
+<style>
+  .demo-open {
+    height: 54px;
+    padding: 0 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    border: 0;
+    border-radius: 14px;
+    font: 500 16px Geist, system-ui, sans-serif;
+    color: var(--fg);
+    cursor: pointer;
+  }
+
+  .demo {
+    width: min(1100px, calc(100vw - 32px));
+    max-width: none;
+    padding: 8px;
+    border: 0;
+    border-radius: 22px;
+    color: var(--fg);
+    overflow: visible;
+  }
+  .demo::backdrop {
+    background: rgba(8, 8, 8, 0.6);
+    backdrop-filter: blur(6px);
+  }
+  .demo[open] {
+    animation: demo-in 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .demo-well {
+    border-radius: 16px;
+    padding: 6px;
+  }
+  video {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    border-radius: 11px;
+    background: #000000;
+  }
+  .demo-close {
+    position: absolute;
+    top: -14px;
+    right: -14px;
+    z-index: 1;
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 50%;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  @media (max-width: 600px) {
+    .demo-close { top: -44px; right: 0; }
+  }
+
+  @keyframes demo-in {
+    from { opacity: 0; scale: 0.97; }
+    to { opacity: 1; scale: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .demo[open] { animation: none; }
+  }
+</style>
+
+<script>
+  const dialog = document.querySelector<HTMLDialogElement>('[data-demo]')!;
+  const video = dialog.querySelector<HTMLVideoElement>('[data-demo-video]')!;
+
+  document.querySelector('[data-demo-open]')!.addEventListener('click', () => {
+    dialog.showModal();
+    // Started from the click, so the browser lets it play with sound.
+    video.play().catch(() => {
+      // Autoplay refused: the controls are there to start it.
+    });
+  });
+  dialog.querySelector('[data-demo-close]')!.addEventListener('click', () => dialog.close());
+  // A click on the backdrop lands on the dialog itself, outside its padded content.
+  dialog.addEventListener('click', (e) => {
+    if (e.target === dialog) dialog.close();
+  });
+  dialog.addEventListener('close', () => video.pause());
+</script>

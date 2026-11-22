@@ -1,0 +1,202 @@
+---
+import '../styles/fonts.css';
+
+interface Props {
+  title: string;
+  description: string;
+  // Structured data for search engines, as schema.org JSON-LD.
+  jsonLd?: Record<string, unknown>;
+  // Keeps the page out of search results, as the 404 page is.
+  noindex?: boolean;
+}
+const { title, description, jsonLd, noindex = false } = Astro.props;
+// Absolute URLs need the site's address (SITE_URL); without it the tags that require one are
+// left out, and the build says so.
+const site = Astro.site;
+// A page kept out of search results names no canonical address.
+const canonical = site && !noindex ? new URL(Astro.url.pathname, site).href : undefined;
+const image = site ? new URL('/og.png', site).href : '/og.png';
+const imageAlt = 'Collate, a git diff viewer for Mac, showing a split diff with a review comment';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#F4F4F2">
+    <title>{title}</title>
+    <meta name="description" content={description}>
+    {noindex && <meta name="robots" content="noindex">}
+    {canonical && <link rel="canonical" href={canonical}>}
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Collate">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:title" content={title}>
+    <meta property="og:description" content={description}>
+    {canonical && <meta property="og:url" content={canonical}>}
+    <meta property="og:image" content={image}>
+    <meta property="og:image:type" content="image/png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content={imageAlt}>
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content={title}>
+    <meta name="twitter:description" content={description}>
+    <meta name="twitter:image" content={image}>
+    <meta name="twitter:image:alt" content={imageAlt}>
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    {jsonLd && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+    <link rel="icon" href="/logo-porcelain.svg" type="image/svg+xml" media="(prefers-color-scheme: light)">
+    <link rel="icon" href="/logo-graphite.svg" type="image/svg+xml" media="(prefers-color-scheme: dark)">
+    <link rel="preload" href="/fonts/geist-latin-edc7ad.woff2" as="font" type="font/woff2" crossorigin>
+    <script is:inline>
+      // Runs before the page paints, so a saved dark choice never flashes light first.
+      // Light is the default; the toggle's choice is remembered.
+      (() => {
+        let saved = null;
+        try { saved = localStorage.getItem('theme'); } catch {}
+        document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : 'light';
+      })();
+    </script>
+  </head>
+  <body>
+    <div style="background: var(--bg); color: var(--fg); font-family: Geist, system-ui, sans-serif; min-height: 100vh">
+      <slot />
+    </div>
+  </body>
+</html>
+
+<style is:global>
+  /* Materials from the skeuomorphic system: one light, from the top. Raised surfaces get a
+     highlight on their upper edge and lift below; insets are carved in. Light is the base
+     theme; dark overrides it. */
+  :root {
+    color-scheme: light;
+    --bg: #F4F4F2;
+    --fg: #0A0A0A;
+    --fg-2: #4A4D55;
+    --fg-3: #5C5F66;
+    --fg-4: #6B6E75;
+    --fg-5: #8A8D94;
+    --accent: #1A7F37;
+    --add-fg: #116329;
+    --line: rgba(10, 10, 10, 0.08);
+    --header-bg: rgba(244, 244, 242, 0.82);
+    --header-line: rgba(10, 10, 10, 0.08);
+    --header-edge: rgba(255, 255, 255, 0.6);
+    --del-bg: #FFEBE9;
+    --add-bg: #E6F4EA;
+    --del-word: #FFC1BA;
+    --add-word: #ACEEBB;
+    --move-bg: #EEF0FB;
+    --move-fg: #3B4FB8;
+    --shot-shadow: 0 0 0 1px rgba(10, 10, 10, 0.12), 0 24px 60px rgba(10, 10, 10, 0.22);
+    --shot-shadow-sm: 0 0 0 1px rgba(10, 10, 10, 0.1), 0 18px 40px rgba(10, 10, 10, 0.18);
+    --icon-drop: rgba(10, 10, 10, 0.22);
+
+    --material: linear-gradient(to bottom, #FFFFFF, #F7F7F5);
+    --raised: 0 1px 0 #ffffff inset, 0 0 0 1px rgba(10, 10, 10, 0.06), 0 10px 10px -9px rgba(10, 10, 10, 0.12), 0 20px 20px -14px rgba(10, 10, 10, 0.1), 0 0px 6px 0px rgba(10, 10, 10, 0.05);
+    --raised-crisp: 0 1px 0 #ffffff inset, 0 0 0 1px rgba(10, 10, 10, 0.08), 0 10px 10px -9px rgba(10, 10, 10, 0.14), 0 20px 20px -14px rgba(10, 10, 10, 0.12), 0 0px 6px 0px rgba(10, 10, 10, 0.06);
+    --inset-bg: #ECECEA;
+    --inset: 0 1px 0 #ffffff, 0 2px 5px rgba(10, 10, 10, 0.12) inset, 0 0 0 1px rgba(10, 10, 10, 0.04) inset;
+    --pressed: 0 1px 0 #ffffff, 0 2px 4px rgba(10, 10, 10, 0.16) inset;
+    --primary-glow: rgba(46, 160, 79, 0.3);
+    --primary-lift: 0 10px 10px -9px rgba(10, 10, 10, 0.35), 0 20px 20px -14px rgba(10, 10, 10, 0.22), 0 0px 6px 0px rgba(10, 10, 10, 0.12);
+  }
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+    --bg: #0F0F0F;
+    --fg: #EDEDED;
+    --fg-2: #A1A1AA;
+    --fg-3: #8B8B93;
+    --fg-4: #71717A;
+    --fg-5: #6B6B73;
+    --accent: #3FB950;
+    --add-fg: #3FB950;
+    --line: rgba(255, 255, 255, 0.07);
+    --header-bg: rgba(15, 15, 15, 0.78);
+    --header-line: #000000;
+    --header-edge: rgba(255, 255, 255, 0.04);
+    --del-bg: rgba(248, 81, 73, 0.12);
+    --add-bg: rgba(46, 160, 67, 0.15);
+    --del-word: rgba(248, 81, 73, 0.4);
+    --add-word: rgba(46, 160, 67, 0.45);
+    --move-bg: rgba(129, 140, 248, 0.14);
+    --move-fg: #A5B4FC;
+    --shot-shadow: 0 0 0 1px #000000, 0 0.5px 0 1px rgba(255, 255, 255, 0.08), 0 24px 60px rgba(0, 0, 0, 0.6);
+    --shot-shadow-sm: 0 0 0 1px #000000, 0 18px 40px rgba(0, 0, 0, 0.55);
+    --icon-drop: rgba(0, 0, 0, 0.6);
+
+    --material: linear-gradient(to bottom, #202020, #191919);
+    --raised: 0 1px 0.5px #ffffff1a inset, 0 1px 1px #ffffff35 inset, 0 10px 10px -9px #00000070, 0 20px 20px -14px #00000060, 0 0px 6px 0px #00000060;
+    --raised-crisp: 0 0.5px 0px #ffffff1a inset, 0 1px 0.5px #ffffff25 inset, 0 10px 10px -9px #00000070, 0 20px 20px -14px #00000060, 0 0px 6px 0px #00000060;
+    --inset-bg: #121212;
+    --inset: 0 0.5px 0 #ffffff50, 0 2px 6px #00000090 inset;
+    --pressed: 0 0.5px 0 #ffffff30, 0 2px 4px #00000090 inset;
+    --primary-glow: rgba(46, 160, 79, 0.45);
+    --primary-lift: 0 10px 10px -9px #00000080, 0 20px 20px -14px #00000070, 0 0px 6px 0px #00000060;
+  }
+
+  /* Jumps to a section stop below the 61px sticky header, and glide unless the reader asked
+     for less motion. */
+  html { scroll-padding-top: 61px; }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+  /* These sections open with 48px of padding and Command line with 32px; pulling them up
+     16px lands every heading 32px under the header. */
+  #features, #speed { scroll-margin-top: -16px; }
+  body { margin: 0; background: var(--bg); }
+  a { color: var(--fg); }
+  a:hover { color: var(--accent); }
+
+  .shell { background: var(--material); box-shadow: var(--raised); }
+  .shell-crisp { background: var(--material); box-shadow: var(--raised-crisp); }
+  .inset { background: var(--inset-bg); box-shadow: var(--inset); }
+  .key {
+    background: var(--material);
+    box-shadow: var(--raised);
+    color: var(--fg);
+  }
+  .btn, .btn-primary {
+    transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+  }
+  .btn {
+    background: var(--material);
+    box-shadow: var(--raised);
+  }
+  .btn:hover { filter: brightness(1.15); }
+  :root:not([data-theme='dark']) .btn:hover { filter: brightness(0.97); }
+  .btn:active { transform: scale(0.97); box-shadow: var(--pressed); }
+  /* A click shouldn't leave a ring; keyboard focus still shows one. */
+  .btn:focus:not(:focus-visible) { outline: none; }
+  .btn-primary {
+    background: linear-gradient(to bottom, #2EA04F, #1E7A39);
+    box-shadow: 0 1px 0.5px #ffffff40 inset, 0 1px 2px #ffffff45 inset, var(--primary-lift), 0 0 22px -6px var(--primary-glow);
+    text-shadow: 0 -1px 0 rgba(0, 0, 0, 0.25);
+  }
+  .btn-primary:hover { color: #FFFFFF; filter: brightness(1.08); }
+  .btn-primary:active { transform: scale(0.97); box-shadow: 0 0.5px 0 #ffffff30, 0 2px 5px #00000070 inset; }
+  .cmds li:first-child { border-top: 0 !important; }
+
+  @media (max-width: 800px) { .nav-text { display: none !important; } }
+  @media (max-width: 540px) { .nav-star { display: none !important; } }
+  @media (max-width: 360px) { .header-dl svg { display: none; } }
+  @media (max-width: 480px) {
+    .hero-ctas { width: 100%; }
+    .hero-cta { flex: 1 1 100%; justify-content: center; }
+  }
+  @media (max-width: 600px) {
+    .dl-wide { flex: 1 1 100% !important; }
+    .cmd-box { flex-wrap: wrap !important; }
+    .cmd-code {
+      order: 3;
+      flex: 1 1 100% !important;
+      white-space: normal !important;
+      overflow-x: visible !important;
+      padding: 6px 15px 10px calc(15px + 2ch) !important;
+      text-indent: -2ch;
+      line-height: 1.6;
+    }
+    .cmd-copy { margin-left: auto; }
+  }
+</style>
