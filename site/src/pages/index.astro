@@ -14,8 +14,8 @@ import { release } from '../lib/release';
 
 const title = 'Collate - Fast git diff viewer for Mac';
 const description = 'Collate is a fast, free and open-source git diff viewer for Mac. Review changes, stage hunks, lines or words, and commit without leaving the diff.';
-const site = Astro.site;
-const abs = (path: string) => (site ? new URL(path, site).href : path);
+const site = Astro.site!;
+const abs = (path: string) => new URL(path, site).href;
 const shots = ['diff', 'graph', 'pr', 'map', 'issues', 'agent'];
 
 // What search engines show for an app: free, for macOS, its version, download and screenshots.
@@ -29,7 +29,7 @@ const jsonLd = {
   operatingSystem: 'macOS 13 or later',
   softwareVersion: release.version,
   downloadUrl: release.dmgUrl,
-  ...(site && { url: site.href }),
+  url: site.href,
   image: abs('/og.png'),
   screenshot: shots.map((name) => abs(`/images/light/${name}.webp`)),
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },

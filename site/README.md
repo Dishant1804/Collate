@@ -11,15 +11,9 @@ npm run preview   # serve the build
 
 Astro 7.3 needs Node.js 22.12 or newer.
 
-For production, give the build the site's address:
-
-```sh
-SITE_URL=https://your-domain npm run build
-```
-
-It sets the canonical link, the absolute share-card URLs and `sitemap.xml`; `robots.txt` is
-always written and points to the sitemap when there is one. Without `SITE_URL` the build warns
-and leaves those out rather than guess an address.
+The site lives at https://collate.dishant.site, set in `astro.config.mjs`; it's the base of
+the canonical link, the share-card URLs, `sitemap.xml` and `robots.txt`. To build for another
+address, such as a preview deployment, set `SITE_URL=https://… npm run build`.
 
 ## Search and sharing
 
