@@ -346,6 +346,8 @@ impl Terminals {
         let t = &mut self.list[i];
         match event {
             Event::Wakeup => {
+                // New output repaints whole rows: they land at once, as a terminal's do.
+                tx.instant();
                 t.dirty.store(false, Ordering::Release);
                 return true;
             }
@@ -814,9 +816,9 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
             for (i, (c, cells, s, fg, bgc, sp)) in runs.into_iter().enumerate() {
                 let len = s.len();
                 // A run comes and goes whenever its row's text changes, as each line of a scroll
-                // does: the default fade smeared every step, so it takes the shortest one.
+                // does: any fade, even the shortest spring, flickers the text, so it has none.
                 let mut run = rich(s, vec![sp]).key(format!("c{c}")).font(font).color(fg).absolute(c as f32 * cell.0, 0.0).h(cell.1)
-                    .transition(Transition::opacity().springs(rune::tok::motion::pair::INSTANT));
+                    .transition(Transition::none());
                 if strikes[i] {
                     run = run.strike(0, len, Some(fg));
                 }
@@ -838,7 +840,9 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
         .role("terminal")
         .label(t.title.clone())
         .on_layout(move |s: &mut S, r: [f32; 4]| access(s).fit(id, r[2], r[3], cell))
-        .on_wheel(move |s: &mut S, w: WheelEvent, _| {
+        .on_wheel(move |s: &mut S, w: WheelEvent, tx: &mut Tx| {
+            // Rows change text and colour with every line scrolled; tweening them smears the text.
+            tx.instant();
             let ts = access(s);
             let Some(t) = ts.list.iter_mut().find(|t| t.id == id) else { return false };
             t.wheel += w.dy;

@@ -13,7 +13,9 @@ A git diff viewer for macOS, in Rust, on the Rune UI framework. One binary crate
   signed with the Developer ID in the repository's secrets and notarized) and publishes the
   release with notes from `scripts/release-notes.sh`. `npx collate-app@latest` installs the
   newest release, so a new tag reaches every user. The installer lives in `npm/`; publish a
-  change to it with `npm publish` there after bumping its `package.json` version.
+  change to it with `npm publish` there after bumping its `package.json` version. The
+  workflow also sets the new version in the Homebrew cask (`Dishant1804/homebrew-tap`,
+  `Casks/collate.rb`), pushing with the deploy key in the `HOMEBREW_TAP_KEY` secret.
 
 Run all three checks before saying a change is done. Never run `cargo fmt`: the code is
 laid out by hand and `rustfmt.toml` disables the formatter.

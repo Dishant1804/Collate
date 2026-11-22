@@ -5,6 +5,8 @@ A fast, lightweight git diff viewer for macOS, built on [Rune](https://github.co
 Collate shows what changed in a git repository beside a file tree and refreshes as you edit.
 Review, stage, discard and commit without leaving the diff; review GitHub pull requests too.
 
+![A change in Collate: the split diff, a note on line 17 and the line that answers it](assets/screenshots/diff.png)
+
 ## Install
 
 ```sh
@@ -17,6 +19,9 @@ That checks your Mac, installs anything missing, puts Collate in Applications an
 You need macOS 13 or newer and [Node.js](https://nodejs.org) 18 or newer. Then open Collate
 from Launchpad, or run `collate` in a repository.
 
+Or with [Homebrew](https://brew.sh): `brew install --cask dishant1804/tap/collate`. Collate
+updates itself, so `brew upgrade` leaves it alone unless you add `--greedy`.
+
 Or download `Collate-<version>-macos-universal.dmg` from the
 [latest release](https://github.com/Dishant1804/Collate/releases/latest), open it and drag
 Collate to Applications. Releases are signed with a Developer ID and notarized by Apple, so
@@ -24,6 +29,34 @@ they open without a warning. Collate can check for newer releases and install th
 
 Optional: the GitHub CLI (`brew install gh`, then `gh auth login`) for pull requests and
 commit authors' pictures.
+
+## A look around
+
+Leave notes on lines and send them to your agent from the diff; it works in the Agent tab
+beside it, and its edit shows up in the diff as it lands.
+
+![The Agent tab beside the diff, with the agent's one-line fix](assets/screenshots/agent.png)
+
+The Git Graph shows every branch and its commits, with their authors and tags.
+
+![The Git Graph](assets/screenshots/graph.png)
+
+Pull requests: the list by what needs you, and each one's overview with its reviews, checks
+and merge button.
+
+| | |
+| --- | --- |
+| ![Pull requests](assets/screenshots/pulls.png) | ![A pull request's overview](assets/screenshots/pr.png) |
+
+Issues: the list, and each issue with its comments.
+
+| | |
+| --- | --- |
+| ![Issues](assets/screenshots/issues.png) | ![An issue](assets/screenshots/issue.png) |
+
+The Map lays out the repository's source files by size and shows which ones changed.
+
+![The Map](assets/screenshots/map.png)
 
 ## The `collate` command
 

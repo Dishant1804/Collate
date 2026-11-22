@@ -3,12 +3,21 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Files larger than this show as "too large" instead of being diffed.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// What `status` runs with: untracked files listed from the index's untracked cache, which git
+/// uses only when "all" comes from config, not `--untracked-files=all`. On Linux's tree that
+/// takes `status` from about 180 ms to 75.
+const STATUS_CONFIG: &[&str] = &["-c", "core.untrackedCache=true", "-c", "status.showUntrackedFiles=all"];
+
+/// From this many files in the index, `status` asks git's file monitor what changed instead of
+/// checking every file: that saves about 0.6 ms per thousand files and costs about 11 ms a call.
+const MONITOR_FROM: u32 = 20_000;
 
 /// A `git` to run. On macOS `/usr/bin/git` is xcrun's shim, which looks up the developer tools
 /// on every call and doubles the cost of each spawn (about 5 ms); the git it would run is
@@ -241,6 +250,9 @@ fn oid(s: &str) -> Option<String> {
     (!s.bytes().all(|b| b == b'0')).then(|| s.to_owned())
 }
 
+/// The last commit's subject, and whether it has a parent.
+type LastCommit = Option<(String, bool)>;
+
 /// What a refresh remembers about the files it read, so the next one reads only files that
 /// changed: per path, what it was read from and what it hashed to, and each path's
 /// `linguist-generated` attribute.
@@ -248,6 +260,26 @@ fn oid(s: &str) -> Option<String> {
 pub struct Memo {
     files: std::collections::HashMap<String, Remembered>,
     generated: std::collections::HashMap<String, bool>,
+    /// The last commit, for the HEAD it was read at.
+    last_commit: Option<(Option<String>, LastCommit)>,
+    /// A `cat-file` kept running for the few blobs a refresh reads: starting one costs more
+    /// than reading them.
+    batch: Option<Batch>,
+}
+
+/// A running `git cat-file --batch` in the repository at `root`.
+struct Batch {
+    root: PathBuf,
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+}
+
+impl Drop for Batch {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl Memo {
@@ -256,6 +288,7 @@ impl Memo {
     pub fn clear(&mut self) {
         self.files.clear();
         self.generated.clear();
+        self.last_commit = None;
     }
 }
 
@@ -343,11 +376,24 @@ impl Repo {
         c
     }
 
+    /// [`STATUS_CONFIG`], with the file monitor on for an index of [`MONITOR_FROM`] files or more.
+    /// Its entry count is in the index's header; a smaller tree keeps the reader's own setting.
+    fn status_config(&self) -> Vec<&'static str> {
+        let mut header = [0u8; 12];
+        let entries = std::fs::File::open(self.git_dir().join("index")).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut header)).map_or(0, |()| u32::from_be_bytes([header[8], header[9], header[10], header[11]]));
+        let mut config = STATUS_CONFIG.to_vec();
+        if entries >= MONITOR_FROM {
+            config.extend(["-c", "core.fsmonitor=true"]);
+        }
+        config
+    }
+
     /// Raw `status` output, also the cheap half of the change fingerprint.
     pub fn status_raw(&self) -> Result<Vec<u8>, String> {
         let out = self
             .git()
-            .args(["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--no-renames"])
+            .args(self.status_config())
+            .args(["status", "--porcelain=v2", "-z", "--branch", "--no-renames"])
             .output()
             .map_err(|e| format!("git status: {e}"))?;
         if !out.status.success() {
@@ -449,13 +495,25 @@ impl Repo {
                 })
                 .collect()
         };
-        let mut changes = self.read_plans(plans, memo)?;
+        let known = memo.last_commit.take().filter(|(at, _)| *at == head);
+        let (changes, last_commit) = std::thread::scope(|scope| {
+            let last = known.is_none().then(|| scope.spawn(|| self.last_commit()));
+            let changes = self.read_plans(plans, memo);
+            let last = match (known, last) {
+                (Some((_, c)), _) => c,
+                (None, Some(t)) => t.join().map_err(|_| "a git reader panicked".to_owned())?,
+                (None, None) => None,
+            };
+            Ok::<_, String>((changes?, last))
+        })?;
+        memo.last_commit = Some((head.clone(), last_commit.clone()));
+        let mut changes = changes;
         // A branch review lists files git named; an identical pair (a change undone) drops out.
         if scope == Scope::Branch {
             changes.retain(|c| c.reused || !same(&c.old, &c.new));
         }
         let base = base.map(|(name, c)| (name.to_owned(), c.to_owned()));
-        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes, ahead_behind: ahead_behind(raw), operation: self.operation(), last_commit: self.last_commit() })
+        Ok(Snapshot { scope, branch, head, base, staged, unstaged, total, working, changes, ahead_behind: ahead_behind(raw), operation: self.operation(), last_commit })
     }
 
     /// The files commit `sha` changed, each against its first parent (nothing, for a root
@@ -534,7 +592,8 @@ impl Repo {
         // The blobs, the attributes and the working files at once: the first two wait on git,
         // the last on the disk.
         let (blobs, marked, mut on_disk) = std::thread::scope(|scope| {
-            let blobs = scope.spawn(|| self.cat_files_parallel(&specs));
+            let batch = &mut memo.batch;
+            let blobs = scope.spawn(|| if specs.iter().map(|s| s.len() + 1).sum::<usize>() <= KEPT_INPUT { self.cat_files_kept(batch, &specs) } else { self.cat_files_parallel(&specs) });
             let marked = (!unknown.is_empty()).then(|| scope.spawn(|| self.generated(unknown.iter().copied())));
             let on_disk: Vec<Option<Blob>> = plans.iter().zip(&fresh).map(|(p, &f)| if f && matches!(p.new, Source::Worktree) { self.read_worktree(&p.path) } else { None }).collect();
             let panicked = |_| "a git reader panicked".to_owned();
@@ -608,6 +667,35 @@ impl Repo {
         })
     }
 
+    /// [`Repo::cat_files`] through the `cat-file` kept in `batch`, started if there's none for
+    /// this repository yet. One that fails is dropped, and the next call starts another.
+    fn cat_files_kept(&self, batch: &mut Option<Batch>, specs: &[String]) -> Result<Vec<Option<Blob>>, String> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        if batch.as_ref().is_none_or(|b| b.root != self.root) {
+            // No `--buffer`: git answers each line as it comes instead of when input ends.
+            let mut child = self
+                .git()
+                .args(["cat-file", "--batch"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("git cat-file: {e}"))?;
+            let (stdin, stdout) = (child.stdin.take().unwrap(), BufReader::new(child.stdout.take().unwrap()));
+            *batch = Some(Batch { root: self.root.clone(), child, stdin, stdout });
+        }
+        let b = batch.as_mut().unwrap();
+        // At most `KEPT_INPUT` bytes: they fit the pipe, so writing first can't block.
+        let input: String = specs.iter().map(|s| format!("{s}\n")).collect();
+        let blobs = b.stdin.write_all(input.as_bytes()).map_err(|e| format!("git cat-file: {e}")).and_then(|()| read_batch(&mut b.stdout, specs.len()));
+        if blobs.is_err() {
+            *batch = None;
+        }
+        blobs
+    }
+
     fn read_worktree(&self, path: &str) -> Option<Blob> {
         let p = self.root.join(path);
         let meta = std::fs::symlink_metadata(&p).ok()?;
@@ -644,34 +732,7 @@ impl Repo {
             let _ = stdin.write_all(input.as_bytes());
         });
         let mut out = BufReader::new(child.stdout.take().unwrap());
-        let mut read = || -> Result<Vec<Option<Blob>>, String> {
-            let mut blobs = Vec::with_capacity(specs.len());
-            let mut header = String::new();
-            for _ in specs {
-                header.clear();
-                if out.read_line(&mut header).map_err(|e| e.to_string())? == 0 {
-                    return Err("git cat-file ended early".into());
-                }
-                let fields: Vec<&str> = header.trim_end().split(' ').collect();
-                match fields.as_slice() {
-                    [_, kind, size] => {
-                        let size: usize = size.parse().map_err(|_| format!("bad cat-file header: {header}"))?;
-                        let mut buf = vec![0; size + 1];
-                        out.read_exact(&mut buf).map_err(|e| e.to_string())?;
-                        buf.pop();
-                        blobs.push(match *kind {
-                            "blob" if size > MAX_BYTES => Some(Blob::TooLarge(size)),
-                            "blob" => Some(classify(buf)),
-                            // A submodule shows as a commit; there's no text to diff.
-                            _ => None,
-                        });
-                    }
-                    _ => blobs.push(None),
-                }
-            }
-            Ok(blobs)
-        };
-        let blobs = read();
+        let blobs = read_batch(&mut out, specs.len());
         // On a failed read git may still be writing: stop it, so neither it nor the writer
         // waits on a pipe nobody reads, and reap it either way so it isn't left a zombie.
         if blobs.is_err() {
@@ -681,6 +742,39 @@ impl Repo {
         let _ = child.wait();
         blobs
     }
+}
+
+/// The most input a refresh sends the kept `cat-file`, well under a pipe's smallest buffer;
+/// more goes to fresh ones in parallel.
+const KEPT_INPUT: usize = 8 * 1024;
+
+/// Reads `n` answers of `git cat-file --batch`; `None` for a spec git reports missing.
+fn read_batch(out: &mut impl BufRead, n: usize) -> Result<Vec<Option<Blob>>, String> {
+    let mut blobs = Vec::with_capacity(n);
+    let mut header = String::new();
+    for _ in 0..n {
+        header.clear();
+        if out.read_line(&mut header).map_err(|e| e.to_string())? == 0 {
+            return Err("git cat-file ended early".into());
+        }
+        let fields: Vec<&str> = header.trim_end().split(' ').collect();
+        match fields.as_slice() {
+            [_, kind, size] => {
+                let size: usize = size.parse().map_err(|_| format!("bad cat-file header: {header}"))?;
+                let mut buf = vec![0; size + 1];
+                out.read_exact(&mut buf).map_err(|e| e.to_string())?;
+                buf.pop();
+                blobs.push(match *kind {
+                    "blob" if size > MAX_BYTES => Some(Blob::TooLarge(size)),
+                    "blob" => Some(classify(buf)),
+                    // A submodule shows as a commit; there's no text to diff.
+                    _ => None,
+                });
+            }
+            _ => blobs.push(None),
+        }
+    }
+    Ok(blobs)
 }
 
 /// Changing the repository: staging, unstaging, discarding and committing. Each runs one git
@@ -776,10 +870,12 @@ impl Repo {
         Ok(backup)
     }
 
-    /// Refreshes the index's cached file stats so later `status` calls are cheap again. It
-    /// takes the index lock for a moment; if another git holds it, nothing happens.
+    /// Refreshes the index's cached file stats, untracked cache and file monitor token, which
+    /// [`Repo::status_raw`] can't save, so later `status` calls are cheap again. It takes the
+    /// index lock for a moment; if another git holds it, nothing happens.
     pub fn refresh_index(&self) {
-        let _ = self.run(&["update-index", "-q", "--refresh"], None);
+        let args: Vec<&str> = self.status_config().into_iter().chain(["status", "--porcelain", "-z"]).collect();
+        let _ = self.run(&args, None);
     }
 
     /// The paths among `paths` that `.gitattributes` marks `linguist-generated`.

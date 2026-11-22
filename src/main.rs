@@ -408,6 +408,9 @@ struct Collate {
     /// A checkpoint is being saved before the agent starts.
     agent_starting: bool,
     project_open: bool,
+    /// ⌘` is held: the recent project picked, as an index into `cycle_projects`. Letting go
+    /// of ⌘ opens it, as ⌘Tab does with apps.
+    cycle: Option<usize>,
     project_search: TextEdit,
     /// The switcher's keyboard pick: an index into `project_order`, or one past it for "Add".
     project_pick: usize,
@@ -569,6 +572,7 @@ fn init() -> Collate {
         chat_draft: None,
         agent_starting: false,
         project_open: false,
+        cycle: None,
         project_search: TextEdit::new(""),
         project_pick: 0,
         picking: false,
@@ -888,6 +892,35 @@ impl Collate {
         self.project_search.focused = true;
         let order = project_order(&self.projects, &self.favorites, "");
         self.project_pick = current_repo().and_then(|r| order.iter().position(|&i| self.projects[i] == r.root)).unwrap_or(0);
+    }
+
+    /// The projects ⌘` steps through: most recently opened first, so the open one leads,
+    /// leaving out folders that have gone.
+    fn cycle_projects(&self) -> Vec<PathBuf> {
+        self.projects.iter().filter(|p| p.exists()).cloned().collect()
+    }
+
+    /// ⌘` (⇧⌘` back): the first press picks the project opened before this one, each next
+    /// press the one after, wrapping round.
+    fn step_cycle(&mut self, forward: bool) {
+        let n = self.cycle_projects().len();
+        if n < 2 {
+            return;
+        }
+        self.close_projects();
+        self.cycle = Some(match self.cycle {
+            None if forward => 1,
+            None => n - 1,
+            Some(i) if forward => (i + 1) % n,
+            Some(i) => (i + n - 1) % n,
+        });
+    }
+
+    /// ⌘ let go: opens the project ⌘` picked.
+    fn end_cycle(&mut self, tx: &mut Tx) {
+        if let Some(p) = self.cycle.take().and_then(|i| self.cycle_projects().get(i).cloned()) {
+            self.open_project(&p, tx);
+        }
     }
 
     fn close_projects(&mut self) {
@@ -1484,13 +1517,7 @@ impl Collate {
         let scope = self.scope;
         let what = if picked.is_some() { "the selected lines" } else { "the hunk" };
         self.selection_clear();
-        self.act(|r| {
-            r.apply(&p, true, false).map(|_| format!("Staged {what}")).map_err(|e| match scope {
-                // HEAD → working tree hunks apply to the index only where it still matches HEAD.
-                Scope::Uncommitted => format!("Couldn't stage this hunk here; part of the file is already staged. Stage it from Unstaged. ({e})"),
-                _ => e,
-            })
-        });
+        self.act(|r| r.apply(&p, true, false).map(|_| format!("Staged {what}")).map_err(|e| staged_apart(scope, "this hunk", e)));
     }
 
     fn unstage_hunk(&mut self, f: usize, h: usize, picked: Option<Vec<bool>>) {
@@ -1553,7 +1580,10 @@ impl Collate {
         let Some(p) = patch::line_to(&file, w.hunk, w.removed, w.added, &target, !staging) else { return };
         self.selection_clear();
         match how {
-            Scope::Unstaged => self.act(|r| r.apply(&p, true, false).map(|_| format!("Staged {what}"))),
+            Scope::Unstaged => {
+                let scope = self.scope;
+                self.act(|r| r.apply(&p, true, false).map(|_| format!("Staged {what}")).map_err(|e| staged_apart(scope, "these words", e)))
+            }
             Scope::Staged => self.act(|r| r.apply(&p, true, true).map(|_| format!("Unstaged {what}"))),
             _ => {
                 let Some(repo) = current_repo() else { return };
@@ -3741,6 +3771,9 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
     if s.palette {
         command_palette(s, k, layer);
     }
+    if s.cycle.is_some() {
+        project_cycler(s, k, layer);
+    }
 
     if let Some((path, lines)) = &s.blame {
         blame_dialog(k, path, lines.len(), layer);
@@ -3954,6 +3987,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("App", &[
         ("⌘O", "Add a local project (the project menu, top left, switches)"),
+        ("⌘`", "Switch to the last project; hold ⌘ and press ` again to go further back"),
         ("⇧⌘P", "Find and run any command by name"),
         ("⌘,", "Settings"),
         ("?", "These shortcuts; every command is in the menu bar too"),
@@ -4049,6 +4083,28 @@ fn command_palette(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
             .child(field)
             .child(col().key("palette-list").w_full().max_h(360.0).scroll(rune::ScrollSpec { stick_bottom: false }).children(rows))
             .child(text(note.to_owned()).font(k.ty.text_small).color(k.c.text_muted)))
+        .build(k, layer);
+}
+
+/// The recent projects while ⌘` is held, the picked one tinted, as ⌘Tab shows apps.
+fn project_cycler(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
+    let list = s.cycle_projects();
+    let labels = project_labels(&list);
+    let pick = s.cycle.unwrap_or(0);
+    let rows = labels.into_iter().enumerate().map(|(n, label)| {
+        row().key(format!("cycle-{n}")).w_full().h(28.0).px(10.0).items_center().radius(k.radius.sm)
+            .fill(if n == pick { k.alpha(k.c.text_base, 0.10) } else { k.alpha(k.c.text_base, 0.0) })
+            .role("option").label(label.clone())
+            .child(text(label).font(k.ty.ui).color(k.c.text_base).truncate().min_w(0.0))
+    });
+    Dialog::new("cycle", "Projects")
+        .open(true)
+        .fit()
+        .width(360.0)
+        .on_close(|s: &mut Collate| s.cycle = None)
+        .child(col().key("cycle-body").w_full().px(16.0).pb(16.0).gap(8.0)
+            .child(col().key("cycle-list").w_full().max_h(360.0).scroll(rune::ScrollSpec { stick_bottom: false }).children(rows))
+            .child(text("Let go of ⌘ to open, esc to stay".to_owned()).font(k.ty.text_small).color(k.c.text_muted)))
         .build(k, layer);
 }
 
@@ -5217,6 +5273,7 @@ fn main() {
                     app.update_if(move |s, tx| s.agent_chat.event(id, event, tx));
                 }
             }));
+            keys::catch_backquote();
             pulls::watch_reviews();
             update::watch();
             control::serve();
@@ -5301,6 +5358,15 @@ fn diff_opts(s: &Settings, show_low_signal: bool) -> DiffOpts {
     DiffOpts { context: s.context, ignore_whitespace: s.ignore_whitespace, moved: s.show_moved, hide_low_signal: s.hide_low_signal && !show_low_signal, source_first: s.source_first }
 }
 
+/// Why staging failed in All Changes: its patches run HEAD → working tree, so they apply to the
+/// index only where the index still matches HEAD.
+fn staged_apart(scope: Scope, what: &str, e: String) -> String {
+    match scope {
+        Scope::Uncommitted => format!("Couldn't stage {what} here; part of the file is already staged. Stage it from Unstaged. ({e})"),
+        _ => e,
+    }
+}
+
 #[cfg(test)]
 mod sizes {
     use super::*;
@@ -5337,3 +5403,4 @@ mod sizes {
         eprintln!("rows {} of {} B, {} spare (keys made on demand; no per-row index)", st.rows.len(), std::mem::size_of_val(&st.rows[0]), st.rows.capacity() - st.rows.len());
     }
 }
+

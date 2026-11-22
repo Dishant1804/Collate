@@ -363,6 +363,8 @@ fn modal(s: &Collate) -> Option<&'static str> {
         "command palette"
     } else if s.show_help {
         "shortcuts sheet"
+    } else if s.cycle.is_some() {
+        "project cycler"
     } else if s.project_open {
         "project switcher"
     } else if s.screen == Screen::Settings {

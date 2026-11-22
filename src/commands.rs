@@ -77,6 +77,10 @@ fn letter(s: &mut Collate, key: &str, tx: &mut Tx) {
 pub const COMMANDS: &[Command] = &[
     cmd("settings", "Settings…", "", "cmd+comma", always, |s, _| s.screen = Screen::Settings),
     cmd("add-project", "Add Project…", "File", "cmd+o", |s| !s.picking, |s, _| s.add_project()),
+    cmd("last-project", "Switch to Last Project", "File", "", |s| s.cycle_projects().len() > 1 && !s.modal_open(), |s, tx| {
+        s.step_cycle(true);
+        s.end_cycle(tx);
+    }),
     cmd("reread", "Reread Repository", "File", "cmd+r", ready, |_, _| {
         refresh();
     }),

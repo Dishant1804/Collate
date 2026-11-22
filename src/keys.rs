@@ -1,6 +1,6 @@
 //! The keyboard: what each key does in each place, for the keys the focused control leaves
 //! alone.
-use rune::{Key, KeyEvent, Tx};
+use rune::{Key, KeyEvent, Modifier, PhysicalKeyCode, Tx};
 use rune_kit::shell;
 
 use crate::diff::DiffMode;
@@ -9,6 +9,25 @@ use crate::merge::Take;
 use crate::{Collate, PanelTab, Screen, merge_view, refresh};
 
 pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    // ⌘` switches projects as ⌘Tab does apps: each press while ⌘ is held picks the next
+    // recent one, and letting go of ⌘ opens it.
+    let backquote = tx.physical_key() == Some(PhysicalKeyCode::Backquote) || matches!(ev.key, Key::Command('`' | '~'));
+    if s.cycle.is_some() {
+        match ev.key {
+            Key::Modifier { modifier: Modifier::SuperLeft | Modifier::SuperRight, .. } if !ev.mods.cmd => s.end_cycle(tx),
+            Key::Escape => s.cycle = None,
+            _ if backquote && ev.mods.cmd => s.step_cycle(!ev.mods.shift),
+            // ⌘ went up where the window didn't hear it, as when it lost focus meanwhile.
+            Key::Modifier { .. } => {}
+            _ if !ev.mods.cmd => s.end_cycle(tx),
+            _ => {}
+        }
+        return true;
+    }
+    if backquote && ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt && s.screen != Screen::Settings && !s.modal_open() && !s.palette {
+        s.step_cycle(!ev.mods.shift);
+        return true;
+    }
     if ev.is_command(',') {
         s.screen = if s.screen == Screen::Settings { Screen::Review } else { Screen::Settings };
         return true;
@@ -365,4 +384,41 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
         "r" => refresh(),
         _ => false,
     }
+}
+
+/// AppKit takes ⌘` and ⇧⌘` in `sendEvent:` to cycle the app's windows, so they never reach
+/// `on_key`. A local monitor sees them first: it hands them to the window's first responder,
+/// Rune's view, as a plain key press, and keeps them from AppKit. Call it once, on the main thread.
+pub fn catch_backquote() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    const KEY_DOWN: u64 = 1 << 10;
+    const BACKQUOTE: u16 = 50;
+    const CONTROL: usize = 1 << 18;
+    const OPTION: usize = 1 << 19;
+    const COMMAND: usize = 1 << 20;
+    let handler = block2::RcBlock::new(|event: *mut AnyObject| -> *mut AnyObject {
+        // SAFETY: AppKit passes a live key-down event on the main thread.
+        unsafe {
+            let code: u16 = msg_send![event, keyCode];
+            let flags: usize = msg_send![event, modifierFlags];
+            if code != BACKQUOTE || flags & (COMMAND | CONTROL | OPTION) != COMMAND {
+                return event;
+            }
+            let window: *mut AnyObject = msg_send![event, window];
+            if window.is_null() {
+                return event;
+            }
+            let responder: *mut AnyObject = msg_send![window, firstResponder];
+            if responder.is_null() {
+                return event;
+            }
+            let _: () = msg_send![responder, keyDown: event];
+            std::ptr::null_mut()
+        }
+    });
+    // SAFETY: the block is copied by AppKit; the monitor lasts as long as the app, so its
+    // token is never removed.
+    let token: Option<objc2::rc::Retained<AnyObject>> = unsafe { msg_send![class!(NSEvent), addLocalMonitorForEventsMatchingMask: KEY_DOWN, handler: &*handler] };
+    std::mem::forget(token);
 }

@@ -32,6 +32,10 @@ serde_json = "1"
 rustc-hash = "2"
 # Opens a compiled grammar.
 libloading = "0.8"
+# An AppKit event monitor, so ⌘` reaches the app before AppKit cycles windows with it;
+# Rune already builds both.
+objc2 = "0.6"
+block2 = "0.6"
 
 [profile.release]
 lto = "thin"

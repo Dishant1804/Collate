@@ -66,3 +66,23 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "Collate ${GITHUB_REF_NAME#v}" --notes-file notes.md --verify-tag
+
+      # `brew install --cask dishant1804/tap/collate` installs the zip just published. The tap's
+      # deploy key (HOMEBREW_TAP_KEY) may push to that repository and nothing else.
+      - name: Update the Homebrew cask
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_KEY }}
+        run: |
+          [ -n "$TAP_KEY" ] || { echo "HOMEBREW_TAP_KEY isn't set"; exit 1; }
+          version=${GITHUB_REF_NAME#v}
+          sum=$(shasum -a 256 "dist/Collate-$version-macos-universal.zip" | cut -d' ' -f1)
+          printf '%s\n' "$TAP_KEY" > "$RUNNER_TEMP/tap_key"
+          chmod 600 "$RUNNER_TEMP/tap_key"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 git@github.com:Dishant1804/homebrew-tap.git "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          sed -i '' -e "s/^  version \".*\"/  version \"$version\"/" -e "s/^  sha256 \".*\"/  sha256 \"$sum\"/" Casks/collate.rb
+          grep -q "version \"$version\"" Casks/collate.rb && grep -q "sha256 \"$sum\"" Casks/collate.rb || { echo "couldn't set the cask's version and sha256"; exit 1; }
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit -am "Collate $version"
+          git push origin HEAD:main

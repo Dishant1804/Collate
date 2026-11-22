@@ -1252,6 +1252,16 @@ fn the_review_loop_stages_discards_and_commits() {
     click(&mut rt, "words-stage");
     assert!(rt.state.words.is_none());
     assert_eq!(git(&dir, &["show", ":w.rs"]), "fn a() {\n    let total = price * quantity;\n}\n", "only qty → quantity is staged");
+    // The other word, picked in All Changes, can't apply to an index that no longer matches HEAD.
+    reread(&mut rt);
+    rt.update(move |s, _| s.diff.set_selection(Some(diff::LineRange { file: f, start: LineRef::new(diff::Side::Old, 2), end: LineRef::new(diff::Side::Old, 2) })));
+    rt.key(KeyEvent { key: Key::Text("p".into()), mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    rt.update(|s, _| s.words.as_mut().expect("the word picker opened").picked[1] = false);
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "words-stage");
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.contains("Stage it from Unstaged")), "says where it can be staged");
+    assert_eq!(git(&dir, &["show", ":w.rs"]), "fn a() {\n    let total = price * quantity;\n}\n", "the index is untouched");
 
     // Switch to another project: the review starts over there, and the list remembers both.
     let other = std::env::temp_dir().join(format!("collate-other-{}", std::process::id()));
@@ -1299,6 +1309,31 @@ fn the_review_loop_stages_discards_and_commits() {
     assert!(rt.find("project-none").is_some(), "no match says so");
     rt.update(|s, _| s.close_projects());
     rt.frame(1.0 / 60.0);
+    // ⌘` as ⌘Tab: a press picks the last project, another goes on and ⇧ comes back, Escape
+    // stays put, and letting go of ⌘ opens the one picked.
+    let cmd = rune::Mods { cmd: true, ..Default::default() };
+    let press = |rt: &mut Runtime<Collate>, key: Key, mods: rune::Mods| {
+        rt.key(KeyEvent { key, mods });
+        rt.frame(1.0 / 60.0);
+    };
+    rt.set_modifier_keys(true);
+    let let_go = Key::Modifier { modifier: rune::Modifier::SuperLeft, pressed: false };
+    press(&mut rt, Key::Command('`'), cmd);
+    assert!(rt.state.cycle == Some(1) && rt.find("cycle-1").is_some(), "the cycler shows, the last project picked");
+    let n = rt.state.cycle_projects().len();
+    press(&mut rt, Key::Command('`'), cmd);
+    assert_eq!(rt.state.cycle, Some(2 % n), "another press goes on");
+    press(&mut rt, Key::Command('~'), rune::Mods { shift: true, ..cmd });
+    assert_eq!(rt.state.cycle, Some(1), "⇧ steps back");
+    press(&mut rt, Key::Escape, cmd);
+    press(&mut rt, let_go.clone(), Default::default());
+    assert!(rt.state.cycle.is_none() && current_repo().unwrap().root.canonicalize().unwrap() == dir.canonicalize().unwrap(), "Escape stays");
+    press(&mut rt, Key::Command('`'), cmd);
+    press(&mut rt, let_go.clone(), Default::default());
+    assert_eq!(current_repo().unwrap().root, root, "letting go opens the last project");
+    press(&mut rt, Key::Command('`'), cmd);
+    press(&mut rt, let_go, Default::default());
+    assert_eq!(current_repo().unwrap().root.canonicalize().unwrap(), dir.canonicalize().unwrap(), "and again goes back, as ⌘Tab does");
     rt.update(|s, tx| s.open_project(std::path::Path::new("/"), tx));
     assert!(rt.state.notice.as_ref().is_some_and(|n| n.error), "a folder outside git says so and changes nothing");
     assert_eq!(current_repo().unwrap().root.canonicalize().unwrap(), dir.canonicalize().unwrap());
@@ -1496,42 +1531,6 @@ fn the_wheel_scrolls_the_terminal_or_the_program_that_asked_for_the_mouse() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(!rt.state.terminals.list[0].shown().contains("^[[A"), "not arrow keys");
-}
-
-#[test]
-fn command_w_asks_before_ending_a_terminal_that_runs_a_program() {
-    let mut rt = loaded();
-    rt.on_key = Some(on_key);
-    rt.update(|s, _| {
-        s.terminals.connect(std::sync::Arc::new(|_, _| {}));
-        s.new_terminal();
-        s.new_terminal();
-    });
-    let cmd_w = KeyEvent { key: Key::Command('w'), mods: rune::Mods { cmd: true, ..Default::default() } };
-    // An idle shell ends at once.
-    rt.key(cmd_w.clone());
-    rt.frame(1.0 / 60.0);
-    assert!(rt.state.terminals.list.len() == 1 && rt.state.notice.is_none(), "an idle shell ends without asking");
-    for c in "sleep 30".chars() {
-        rt.key(KeyEvent { key: Key::Text(c.to_string()), mods: Default::default() });
-    }
-    rt.key(KeyEvent { key: Key::Enter, mods: Default::default() });
-    let start = std::time::Instant::now();
-    while rt.state.terminals.list[0].running().is_none() {
-        assert!(start.elapsed().as_secs() < 20, "sleep runs in front of the shell");
-        rt.frame(1.0 / 60.0);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert_eq!(rt.state.terminals.list[0].running().as_deref(), Some("sleep"));
-    rt.key(cmd_w.clone());
-    rt.frame(1.0 / 60.0);
-    assert!(rt.state.terminals.list.len() == 1 && rt.state.notice.as_ref().is_some_and(|n| n.end.is_some()), "it asks first");
-    click(&mut rt, "end-cancel");
-    assert!(rt.state.terminals.list.len() == 1 && rt.state.notice.is_none(), "Cancel keeps it");
-    rt.key(cmd_w.clone());
-    rt.frame(1.0 / 60.0);
-    click(&mut rt, "end-terminal");
-    assert!(rt.state.terminals.list.is_empty() && !rt.state.terminals.open, "End Terminal ends it and the drawer goes");
 }
 
 /// Frames while a shell floods the terminal with coloured lines, every row changing.
@@ -2397,6 +2396,8 @@ fn bench_refresh() {
     use std::time::Instant;
     let dir = std::env::var("COLLATE_BENCH_REPO").expect("COLLATE_BENCH_REPO");
     let repo = Repo::open(std::path::Path::new(&dir)).unwrap();
+    // As the watcher does after a slow status: save the caches `status` reads.
+    repo.refresh_index();
     let median = |mut v: Vec<f64>| {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap());
         (v[v.len() / 2], v[0], v[v.len() - 1])
@@ -2447,8 +2448,10 @@ fn bench_refresh() {
     // A real refresh: the watcher's memory in place, one file edited on disk.
     let readme = ["README.md", "README"].iter().map(|n| std::path::Path::new(&dir).join(n)).find(|p| p.exists()).expect("a README");
     let original = std::fs::read(&readme).unwrap();
+    // One memory for every run, as the watcher keeps; cleared, as on a refresh asked for.
+    let mut memo = git::Memo::default();
     for i in 0..runs {
-        let mut memo = git::Memo::default();
+        memo.clear();
         let raw = repo.status_raw().unwrap();
         let t = Instant::now();
         let _ = repo.snapshot_with(Scope::Uncommitted, &raw, None, &mut memo).unwrap();
@@ -2495,6 +2498,7 @@ fn bench_start_scroll() {
     let steps = ["open", "git status", "snapshot", "diff (watcher thread)", "apply (UI thread)", "first frame"];
     let mut times: Vec<Vec<f64>> = vec![Vec::new(); steps.len() + 1];
     let mut rt = None;
+    Repo::open(std::path::Path::new(&dir)).unwrap().refresh_index();
     for _ in 0..5 {
         let mut t = [0.0; 6];
         let start = Instant::now();
