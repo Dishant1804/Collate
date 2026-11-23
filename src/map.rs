@@ -82,7 +82,7 @@ const READ_LIMIT: u64 = 2 << 20;
 /// crowd it (a repository's JSON can outweigh its source), so they're left off and never read.
 pub fn build(root: &Path) -> Result<RepoMap, String> {
     let list = |which: &str| -> Result<Vec<String>, String> {
-        let out = crate::git::command().args(["ls-files", "-z", which, "--exclude-standard"]).current_dir(root).output().map_err(|e| format!("couldn't run git: {e}"))?;
+        let out = crate::git::output(crate::git::command().args(["ls-files", "-z", which, "--exclude-standard"]).current_dir(root)).map_err(|e| format!("couldn't run git: {e}"))?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
         }

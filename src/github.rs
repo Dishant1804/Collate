@@ -439,7 +439,7 @@ impl Gh {
     }
 
     fn git(&self, args: &[&str]) -> Result<String, String> {
-        let out = crate::git::command().args(args).current_dir(&self.root).env("GIT_TERMINAL_PROMPT", "0").output().map_err(|e| format!("can't run git: {e}"))?;
+        let out = crate::git::output(crate::git::command().args(args).current_dir(&self.root).env("GIT_TERMINAL_PROMPT", "0")).map_err(|e| format!("can't run git: {e}"))?;
         if out.status.success() { Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()) }
     }
 
@@ -1044,7 +1044,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let (origin, here) = (tmp.join("origin"), tmp.join("here"));
         let git = |dir: &Path, args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+            let out = crate::git::output(Command::new("git").arg("-C").arg(dir).args(args)).unwrap();
             assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8_lossy(&out.stdout).trim().to_owned()
         };

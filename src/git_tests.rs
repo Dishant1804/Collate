@@ -9,7 +9,7 @@ use crate::git::{Blob, Change, Repo, Scope, Staged, default_base};
 use crate::patch;
 
 fn sh(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    let out = crate::git::output(Command::new("git").arg("-C").arg(dir).args(args)).unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
@@ -584,7 +584,7 @@ fn conflicts_settle_by_side_by_block_or_both() {
     sh(&dir, &["switch", "-q", "main"]);
     write(&dir, "a.txt", "ours\n");
     sh(&dir, &["commit", "-qam", "ours"]);
-    let merge = Command::new("git").arg("-C").arg(&dir).args(["merge", "-q", "other"]).output().unwrap();
+    let merge = crate::git::output(Command::new("git").arg("-C").arg(&dir).args(["merge", "-q", "other"])).unwrap();
     assert!(!merge.status.success(), "the merge stops on the conflict");
     let changes = snapshot(&r, Scope::Uncommitted);
     assert!(changes[0].conflicted && changes[0].path == "a.txt");
@@ -610,14 +610,14 @@ fn a_stopped_merge_or_rebase_is_seen_and_aborts() {
     use crate::git::Operation;
     let (dir, r) = diverged("operation");
     assert_eq!(r.operation(), None);
-    assert!(Command::new("git").arg("-C").arg(&dir).args(["merge", "other"]).output().unwrap().status.code() != Some(0));
+    assert!(crate::git::output(Command::new("git").arg("-C").arg(&dir).args(["merge", "other"])).unwrap().status.code() != Some(0));
     assert_eq!(r.operation(), Some(Operation::Merge));
     let raw = r.status_raw().unwrap();
     assert_eq!(r.snapshot(Scope::Uncommitted, &raw, None).unwrap().operation, Some(Operation::Merge));
     r.resume(Operation::Merge, "abort").unwrap();
     assert_eq!(r.operation(), None);
     assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "ours\n", "abort puts the file back");
-    assert!(Command::new("git").arg("-C").arg(&dir).args(["rebase", "other"]).output().unwrap().status.code() != Some(0));
+    assert!(crate::git::output(Command::new("git").arg("-C").arg(&dir).args(["rebase", "other"])).unwrap().status.code() != Some(0));
     assert_eq!(r.operation(), Some(Operation::Rebase));
     // Settled in favour of theirs and staged, the rebase continues without an editor.
     write(&dir, "a.txt", "theirs\n");

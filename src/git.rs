@@ -41,6 +41,22 @@ pub fn command() -> Command {
     }))
 }
 
+/// Starts a git `c`. Every git process starts through here, one at a time. On macOS std makes
+/// a child's pipes with `pipe()` and marks them close-on-exec after, so a child started
+/// meanwhile on another thread would inherit them. The kept `cat-file` would then hold another
+/// git's stdin open, and that git would wait for its end forever. The pipes are made and
+/// marked inside `spawn`, so no git can start while another's are unmarked.
+fn spawn(c: &mut Command) -> std::io::Result<std::process::Child> {
+    static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    c.spawn()
+}
+
+/// [`Command::output`] through [`spawn`], for a git `c`.
+pub fn output(c: &mut Command) -> std::io::Result<std::process::Output> {
+    spawn(c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
+}
+
 /// Which two versions of each file to compare.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
@@ -338,7 +354,7 @@ struct Plan {
 
 impl Repo {
     pub fn open(dir: &Path) -> Result<Repo, String> {
-        let out = command().arg("-C").arg(dir).args(["rev-parse", "--show-toplevel"]).output().map_err(|e| format!("can't run git: {e}"))?;
+        let out = output(command().arg("-C").arg(dir).args(["rev-parse", "--show-toplevel"])).map_err(|e| format!("can't run git: {e}"))?;
         if !out.status.success() {
             return Err(format!("{} is not inside a git repository", dir.display()));
         }
@@ -402,11 +418,7 @@ impl Repo {
 
     /// Raw `status` output, also the cheap half of the change fingerprint.
     pub fn status_raw(&self) -> Result<Vec<u8>, String> {
-        let out = self
-            .git()
-            .args(self.status_config())
-            .args(["status", "--porcelain=v2", "-z", "--branch", "--no-renames"])
-            .output()
+        let out = output(self.git().args(self.status_config()).args(["status", "--porcelain=v2", "-z", "--branch", "--no-renames"]))
             .map_err(|e| format!("git status: {e}"))?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
@@ -458,7 +470,7 @@ impl Repo {
         } else {
             if let (Scope::Branch, Some(mb)) = (scope, base_commit) {
                 // Every file that differs from the merge base, committed on this branch or not.
-                let out = self.git().args(["diff", "--name-only", "-z", "--no-renames", mb]).output().map_err(|e| format!("git diff: {e}"))?;
+                let out = output(self.git().args(["diff", "--name-only", "-z", "--no-renames", mb])).map_err(|e| format!("git diff: {e}"))?;
                 if !out.status.success() {
                     return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
                 }
@@ -542,8 +554,7 @@ impl Repo {
             Some((a, b)) => cmd.args([a, b]),
             None => cmd.args(["--root", sha]),
         };
-        let out = cmd
-            .output()
+        let out = output(&mut cmd)
             .map_err(|e| format!("git diff-tree: {e}"))?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
@@ -687,13 +698,7 @@ impl Repo {
         }
         if batch.as_ref().is_none_or(|b| b.root != self.root) {
             // No `--buffer`: git answers each line as it comes instead of when input ends.
-            let mut child = self
-                .git()
-                .args(["cat-file", "--batch"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
+            let mut child = spawn(self.git().args(["cat-file", "--batch"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()))
                 .map_err(|e| format!("git cat-file: {e}"))?;
             let (stdin, stdout) = (child.stdin.take().unwrap(), BufReader::new(child.stdout.take().unwrap()));
             *batch = Some(Batch { root: self.root.clone(), child, stdin, stdout });
@@ -729,13 +734,7 @@ impl Repo {
         if specs.is_empty() {
             return Ok(Vec::new());
         }
-        let mut child = self
-            .git()
-            .args(["cat-file", "--batch", "--buffer"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
+        let mut child = spawn(self.git().args(["cat-file", "--batch", "--buffer"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()))
             .map_err(|e| format!("git cat-file: {e}"))?;
         let mut stdin = child.stdin.take().unwrap();
         let input: String = specs.iter().map(|s| format!("{s}\n")).collect();
@@ -805,7 +804,7 @@ impl Repo {
         c.arg("-C").arg(&self.root).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_EDITOR", "true").stdout(Stdio::piped()).stderr(Stdio::piped());
         c.envs(env.iter().map(|(k, v)| (k, v)));
         c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
-        let mut child = c.spawn().map_err(|e| format!("can't run git: {e}"))?;
+        let mut child = spawn(&mut c).map_err(|e| format!("can't run git: {e}"))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
             pipe.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
         }
@@ -1510,7 +1509,7 @@ pub struct Moved {
 /// `git diff` of two files or folders outside any repository. It exits 1 when they differ,
 /// which isn't a failure.
 pub fn diff_no_index(a: &Path, b: &Path) -> Result<String, String> {
-    let out = command().args(["diff", "--no-index", "--no-color", "--no-ext-diff", "--"]).arg(a).arg(b).output().map_err(|e| format!("can't run git: {e}"))?;
+    let out = output(command().args(["diff", "--no-index", "--no-color", "--no-ext-diff", "--"]).arg(a).arg(b)).map_err(|e| format!("can't run git: {e}"))?;
     match out.status.code() {
         Some(0 | 1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         _ => Err(String::from_utf8_lossy(&out.stderr).trim().lines().take(3).collect::<Vec<_>>().join(" ")),
@@ -1529,7 +1528,7 @@ pub fn register_tool(exe: &Path) -> Result<(), String> {
         ("merge.tool", "collate".into()),
     ];
     for (key, value) in settings {
-        let out = command().args(["config", "--global", key, &value]).output().map_err(|e| format!("can't run git: {e}"))?;
+        let out = output(command().args(["config", "--global", key, &value])).map_err(|e| format!("can't run git: {e}"))?;
         if !out.status.success() {
             return Err(format!("git config {key}: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
@@ -1746,7 +1745,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            let out = crate::git::output(Command::new("git").arg("-C").arg(&dir).args(args)).unwrap();
             assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
@@ -1768,7 +1767,7 @@ mod tests {
         assert_eq!((git(&["rev-parse", "HEAD"]), git(&["status", "--porcelain"])), (head.clone(), status.clone()), "nothing moved");
         assert_eq!(repo.checkpoints().unwrap(), [(cp.clone(), repo.checkpoints().unwrap()[0].1, "Before the agent".to_owned())]);
         assert_eq!(git(&["show", &format!("{cp}:new.txt")]), "mine\n", "untracked files are kept");
-        assert!(Command::new("git").arg("-C").arg(&dir).args(["cat-file", "-e", &format!("{cp}:ignored.txt")]).output().unwrap().status.code() != Some(0), "ignored ones aren't");
+        assert!(crate::git::output(Command::new("git").arg("-C").arg(&dir).args(["cat-file", "-e", &format!("{cp}:ignored.txt")])).unwrap().status.code() != Some(0), "ignored ones aren't");
         // The agent's: edits, a deletion, a file of its own.
         std::fs::write(dir.join("a.txt"), "agent\n").unwrap();
         std::fs::remove_file(dir.join("new.txt")).unwrap();
@@ -1790,7 +1789,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            let out = crate::git::output(Command::new("git").arg("-C").arg(&dir).args(args)).unwrap();
             assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["config", "commit.gpgsign", "false"]] {
@@ -1826,7 +1825,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let git = |args: &[&str]| {
-            let out = Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            let out = crate::git::output(Command::new("git").arg("-C").arg(&dir).args(args)).unwrap();
             assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         let commit = |file: &str| {

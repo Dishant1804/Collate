@@ -310,7 +310,7 @@ fn test_repo() -> &'static std::path::Path {
         };
         write(false);
         for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["config", "commit.gpgsign", "false"], &["add", "-A"], &["commit", "-qm", "init"], &["branch", "develop"]] {
-            let out = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            let out = crate::git::output(std::process::Command::new("git").arg("-C").arg(&dir).args(args)).unwrap();
             assert!(out.status.success(), "{args:?}");
         }
         write(true);
@@ -1132,7 +1132,7 @@ fn settings_restyle_the_diff() {
 #[test]
 fn the_review_loop_stages_discards_and_commits() {
     let git = |dir: &std::path::Path, args: &[&str]| {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        let out = crate::git::output(std::process::Command::new("git").arg("-C").arg(dir).args(args)).unwrap();
         assert!(out.status.success(), "{args:?}");
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
