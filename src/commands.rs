@@ -172,6 +172,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("new-tag", "New Tag at HEAD…", "Branch", "", idle, |s, _| s.branch_do("new-tag")),
     cmd("stashes", "Stashes…", "Branch", "", idle, |s, tx| s.stashes_menu(tx)),
     cmd("tags", "Tags…", "Branch", "", idle, |s, tx| s.tags_menu(tx)),
+    cmd("worktrees", "Switch Worktree…", "Branch", "", |s| ready(s) && s.loose.is_none(), |s, tx| s.worktrees_menu(tx)),
     sep("Branch"),
     cmd("compare", "Compare Branches or Tags…", "Branch", "", idle, |s, _| s.branch_do("compare")),
     cmd("new-issue", "New Issue…", "Issues", "", |s| ready(s) && matches!(s.issues.list, Some(Ok(_))), |s, _| {

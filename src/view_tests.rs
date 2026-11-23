@@ -1037,12 +1037,20 @@ fn starred_projects_come_first_and_stay() {
 
 #[test]
 fn only_changes_that_matter_wake_the_watcher() {
-    let root = std::path::Path::new("/r");
+    let git = [PathBuf::from("/r/.git"), PathBuf::from("/r/.git")];
     for p in ["/r/src/a.rs", "/r/.git/index", "/r/.git/HEAD", "/r/.git/refs/heads/main"] {
-        assert!(relevant(std::path::Path::new(p), root), "{p}");
+        assert!(relevant(std::path::Path::new(p), &git), "{p}");
     }
     for p in ["/r/.git/objects/ab/cdef", "/r/.git/index.lock", "/r/.git/collate-backup/1/a.rs", "/r/.git/logs/HEAD"] {
-        assert!(!relevant(std::path::Path::new(p), root), "{p}");
+        assert!(!relevant(std::path::Path::new(p), &git), "{p}");
+    }
+    // A linked worktree at /w: its HEAD and index are in the main repository's git folder.
+    let git = [PathBuf::from("/r/.git/worktrees/w"), PathBuf::from("/r/.git")];
+    for p in ["/w/a.rs", "/r/.git/worktrees/w/index", "/r/.git/worktrees/w/HEAD", "/r/.git/refs/heads/topic"] {
+        assert!(relevant(std::path::Path::new(p), &git), "{p}");
+    }
+    for p in ["/r/.git/worktrees/other/index", "/r/.git/worktrees/w/index.lock", "/r/.git/objects/ab/cdef"] {
+        assert!(!relevant(std::path::Path::new(p), &git), "{p}");
     }
 }
 

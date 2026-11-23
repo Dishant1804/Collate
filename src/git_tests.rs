@@ -873,3 +873,20 @@ fn a_conflicted_file_merges_from_its_three_versions() {
     assert!(r.merge("gone").is_err());
     assert!(r.merge_sides("m.txt").unwrap_err().contains("deleted"));
 }
+
+#[test]
+fn a_linked_worktree_is_listed_and_its_git_folders_found() {
+    let (dir, r) = repo("worktree", &[("a.txt", "one\n")]);
+    let linked = dir.with_file_name(format!("{}-linked", dir.file_name().unwrap().to_string_lossy()));
+    sh(&dir, &["worktree", "add", "-q", "-b", "topic", linked.to_str().unwrap()]);
+    let main = std::fs::canonicalize(&dir).unwrap();
+    let other = std::fs::canonicalize(&linked).unwrap();
+    let trees = r.worktrees().unwrap();
+    assert_eq!(trees.iter().map(|t| (t.path.clone(), t.branch.as_deref())).collect::<Vec<_>>(), [(main.clone(), Some("main")), (other.clone(), Some("topic"))]);
+    assert_eq!(r.git_dirs().unwrap(), [main.join(".git"), main.join(".git")]);
+    let w = Repo::open(&linked).unwrap();
+    assert_eq!(w.git_dirs().unwrap(), [main.join(".git/worktrees").join(other.file_name().unwrap()), main.join(".git")], "its own folder is in the main one's");
+    assert_eq!(w.worktrees().unwrap(), trees, "either lists the same");
+    std::fs::remove_dir_all(&linked).unwrap();
+    assert!(r.worktrees().unwrap()[1].prunable, "a deleted folder can't be opened");
+}

@@ -37,34 +37,43 @@ pub enum Cmd {
 /// The file watcher is running: polling is only a slow safety net.
 pub static EVENTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether a change at `path` can change what Collate shows. Inside `.git`, only the index,
-/// HEAD and refs matter; objects, logs, locks and Collate's own backups don't.
-pub fn relevant(path: &std::path::Path, root: &std::path::Path) -> bool {
-    let Ok(rel) = path.strip_prefix(root) else { return true };
-    let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy());
-    match parts.next().as_deref() {
-        Some(".git") => matches!(
-            parts.next().as_deref(),
-            Some("index" | "HEAD" | "refs" | "packed-refs" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge" | "rebase-apply")
-        ),
-        _ => true,
-    }
+/// Whether a change at `path` can change what Collate shows. In the git folders (`git`, the
+/// worktree's own before the shared one), only the index, HEAD and refs matter; objects, logs,
+/// locks, other worktrees and Collate's own backups don't.
+pub fn relevant(path: &std::path::Path, git: &[PathBuf]) -> bool {
+    let Some(rel) = git.iter().find_map(|d| path.strip_prefix(d).ok()) else { return true };
+    matches!(
+        rel.components().next().map(|c| c.as_os_str().to_string_lossy()).as_deref(),
+        Some("index" | "HEAD" | "refs" | "packed-refs" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge" | "rebase-apply")
+    )
 }
 
-/// Watches the working tree with FSEvents, nudging the watcher thread on each relevant
-/// change. `None` if the platform watcher can't start; polling covers it then.
-pub fn watch_files(root: std::path::PathBuf, tx: Sender<Cmd>) -> Option<notify::RecommendedWatcher> {
+/// Watches the working tree with FSEvents, and the git folders where they're outside it (a
+/// linked worktree's), nudging the watcher thread on each relevant change. `None` if the
+/// platform watcher can't start; polling covers it then.
+pub fn watch_files(root: PathBuf, tx: Sender<Cmd>) -> Option<notify::RecommendedWatcher> {
     use notify::Watcher;
-    let base = root.clone();
+    let git = match (git::Repo { root: root.clone() }).git_dirs() {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            eprintln!("collate: can't find {}'s git folder, so changes to it are polled: {e}", root.display());
+            return None;
+        }
+    };
+    let outside: Vec<PathBuf> = git.iter().filter(|d| !d.starts_with(&root)).cloned().collect();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res
-            && ev.paths.iter().any(|p| relevant(p, &base))
+            && ev.paths.iter().any(|p| relevant(p, &git))
         {
             let _ = tx.send(Cmd::Changed);
         }
     })
     .ok()?;
     w.watch(&root, notify::RecursiveMode::Recursive).ok()?;
+    // The shared folder holds the worktree's own, so one watch covers both.
+    for dir in outside.iter().filter(|d| !outside.iter().any(|o| o != *d && d.starts_with(o))) {
+        w.watch(dir, notify::RecursiveMode::Recursive).ok()?;
+    }
     Some(w)
 }
 

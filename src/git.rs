@@ -226,6 +226,17 @@ fn parse_blame(out: &str) -> Vec<Blamed> {
     lines
 }
 
+/// One entry of `git worktree list`: a checkout of the repository in a folder of its own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    /// Its branch, or `None` with HEAD detached.
+    pub branch: Option<String>,
+    pub head: String,
+    /// Its folder is gone; `git worktree prune` forgets it.
+    pub prunable: bool,
+}
+
 /// One entry of `git stash list`.
 #[derive(Clone, Debug)]
 pub struct Stash {
@@ -1084,6 +1095,22 @@ impl Repo {
         Ok(String::new())
     }
 
+    /// Every worktree of the repository, the main one first. A bare repository's own entry has
+    /// no files to show, so it isn't listed.
+    pub fn worktrees(&self) -> Result<Vec<Worktree>, String> {
+        Ok(parse_worktrees(&self.run(&["worktree", "list", "--porcelain"], None)?))
+    }
+
+    /// The folders git keeps this checkout's state in: its own, for HEAD and the index, then the
+    /// shared one, for refs. Both are `.git` in the main worktree; a linked worktree's own is
+    /// `<main>/.git/worktrees/<name>`, outside its folder.
+    pub fn git_dirs(&self) -> Result<[PathBuf; 2], String> {
+        let out = self.run(&["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], None)?;
+        let mut dirs = out.lines().map(|l| std::fs::canonicalize(l).map_err(|e| format!("{l}: {e}")));
+        let (Some(own), Some(common)) = (dirs.next(), dirs.next()) else { return Err(format!("git rev-parse said {out:?}")) };
+        Ok([own?, common?])
+    }
+
     /// The stashes, newest first: their name (`stash@{0}`), commit and message.
     pub fn stashes(&self) -> Vec<Stash> {
         let out = self.run(&["stash", "list", "--format=%gd%x1f%H%x1f%gs"], None).unwrap_or_default();
@@ -1547,6 +1574,26 @@ fn ahead_behind(raw: &[u8]) -> Option<(usize, usize)> {
     let ab = text.split('\0').find_map(|r| r.strip_prefix("# branch.ab "))?;
     let mut n = ab.split(' ').map(|n| n.trim_start_matches(['+', '-']).parse().ok());
     Some((n.next()??, n.next()??))
+}
+
+/// Parses `git worktree list --porcelain`: a block of `key value` lines for each worktree.
+fn parse_worktrees(out: &str) -> Vec<Worktree> {
+    out.split("\n\n").filter_map(|block| {
+        let mut path = None;
+        let mut tree = Worktree { path: PathBuf::new(), branch: None, head: String::new(), prunable: false };
+        for line in block.lines() {
+            let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+            match key {
+                "worktree" => path = Some(PathBuf::from(value)),
+                "HEAD" => tree.head = value.to_owned(),
+                "branch" => tree.branch = Some(value.strip_prefix("refs/heads/").unwrap_or(value).to_owned()),
+                "prunable" => tree.prunable = true,
+                "bare" => return None,
+                _ => {}
+            }
+        }
+        Some(Worktree { path: path?, ..tree })
+    }).collect()
 }
 
 /// Parses `git status --porcelain=v2 -z --branch` into the branch name and the changed entries.

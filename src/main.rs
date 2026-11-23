@@ -1963,6 +1963,32 @@ impl Collate {
         tx.popup_menu(menu, "branch", |s: &mut Collate, picked, _| if let Some(p) = picked { s.branch_do(p) });
     }
 
+    /// Branch > Switch Worktree…: the repository's worktrees, each with its branch; the one
+    /// picked opens as the project, as the switcher opens one.
+    fn worktrees_menu(&mut self, tx: &mut Tx) {
+        let Some(repo) = current_repo() else { return };
+        let trees = match repo.worktrees() {
+            Ok(t) => t,
+            Err(e) => return self.say(format!("Couldn't list the worktrees: {e}"), true),
+        };
+        if trees.len() < 2 {
+            self.say("This repository has no other worktrees. git worktree add makes one.", false);
+            return;
+        }
+        let mut menu = PopupMenu::new();
+        for (i, t) in trees.iter().enumerate() {
+            let on = t.branch.clone().unwrap_or_else(|| format!("detached at {}", t.head.get(..7).unwrap_or(&t.head)));
+            let gone = if t.prunable { " (folder missing)" } else { "" };
+            let here = t.path == repo.root;
+            menu = menu.item(PopupItem::new(i.to_string(), format!("{} - {on}{gone}", tilde(&t.path))).checked(here).enabled(!here && !t.prunable));
+        }
+        tx.popup_menu(menu, "branch", move |s: &mut Collate, picked, tx| {
+            if let Some(t) = picked.and_then(|p| p.parse::<usize>().ok()).and_then(|i| trees.get(i)) {
+                s.open_project(&t.path, tx);
+            }
+        });
+    }
+
     /// Does what the branch menu's item `picked` names (`fetch`, `switch:main`); the menu bar's
     /// Branch menu does the same.
     fn branch_do(&mut self, picked: &str) {
