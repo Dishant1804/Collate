@@ -15,7 +15,9 @@ mod cli;
 mod commands;
 mod comments;
 mod control;
+mod desktop;
 mod diff;
+mod dirs;
 mod git;
 mod github;
 mod github_issues;
@@ -767,31 +769,49 @@ impl Collate {
         }
     }
 
-    /// Ask macOS for a folder (the standard Open dialog, off the UI thread) and open it.
-    fn add_project(&mut self) {
+    /// Ask for a folder and open it: the standard Open dialog, through AppleScript off the UI
+    /// thread on macOS, and the desktop portal's chooser on Linux.
+    fn add_project(&mut self, tx: &mut Tx) {
         self.close_projects();
         let Some(app) = HANDLE.get().cloned() else { return };
         if std::mem::replace(&mut self.picking, true) {
             return;
         }
-        std::thread::spawn(move || {
-            let out = std::process::Command::new("osascript")
-                .args(["-e", "POSIX path of (choose folder with prompt \"Choose a project (a folder in a git repository)\")"])
-                .output();
-            app.update(move |s, tx| {
-                s.picking = false;
-                match out {
-                    Ok(o) if o.status.success() => {
-                        let path = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-                        s.open_project(std::path::Path::new(&path), tx);
+        #[cfg(target_os = "macos")]
+        {
+            let _ = tx;
+            std::thread::spawn(move || {
+                let out = std::process::Command::new("osascript")
+                    .args(["-e", "POSIX path of (choose folder with prompt \"Choose a project (a folder in a git repository)\")"])
+                    .output();
+                app.update(move |s, tx| {
+                    s.picking = false;
+                    match out {
+                        Ok(o) if o.status.success() => {
+                            let path = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                            s.open_project(std::path::Path::new(&path), tx);
+                        }
+                        // Cancelled (error -128): nothing to say.
+                        Ok(o) if String::from_utf8_lossy(&o.stderr).contains("-128") => {}
+                        Ok(o) => s.say(format!("Couldn't open the folder picker: {}", String::from_utf8_lossy(&o.stderr).trim()), true),
+                        Err(e) => s.say(format!("Couldn't open the folder picker: {e}"), true),
                     }
-                    // Cancelled (error -128): nothing to say.
-                    Ok(o) if String::from_utf8_lossy(&o.stderr).contains("-128") => {}
-                    Ok(o) => s.say(format!("Couldn't open the folder picker: {}", String::from_utf8_lossy(&o.stderr).trim()), true),
+                });
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = app;
+            let options = rune::FileDialogOptions { title: "Choose a project (a folder in a git repository)".into(), ..Default::default() };
+            tx.open_folder(options, |s: &mut Collate, picked, tx| {
+                s.picking = false;
+                match picked {
+                    Ok(Some(path)) => s.open_project(&path, tx),
+                    Ok(None) => {}
                     Err(e) => s.say(format!("Couldn't open the folder picker: {e}"), true),
                 }
             });
-        });
+        }
     }
 
     fn forget_project(&mut self, i: usize) {
@@ -936,7 +956,7 @@ impl Collate {
                 let p = self.projects[i].clone();
                 self.open_project(&p, tx);
             }
-            None => self.add_project(),
+            None => self.add_project(tx),
         }
     }
 
@@ -1775,7 +1795,7 @@ impl Collate {
             .item(PopupItem::new("open", "Open"))
             .item(PopupItem::new("star", if starred { "Unstar" } else { "Star" }))
             .separator()
-            .item(PopupItem::new("finder", "Show in Finder").enabled(path.exists()))
+            .item(PopupItem::new("finder", format!("Show in {}", desktop::FILE_MANAGER)).enabled(path.exists()))
             .item(PopupItem::new("copy", "Copy Path"))
             .separator()
             .item(PopupItem::new("forget", "Remove from List"));
@@ -1783,8 +1803,8 @@ impl Collate {
             Some("open") => s.open_project(&path, tx),
             Some("star") => s.toggle_favorite(&path),
             Some("finder") => {
-                if let Err(e) = std::process::Command::new("open").arg("-R").arg(&path).spawn() {
-                    s.say(format!("Couldn't show {} in the Finder: {e}", tilde(&path)), true);
+                if let Err(e) = desktop::reveal(&path) {
+                    s.say(format!("Couldn't show {} in {}: {e}", tilde(&path), desktop::FILE_MANAGER), true);
                 }
             }
             Some("copy") => {
@@ -2041,7 +2061,7 @@ impl Collate {
                 refresh();
             }
             Some("comments") => s.copy_comments(tx),
-            Some("add") => s.add_project(),
+            Some("add") => s.add_project(tx),
             Some("keys") => s.open_help(),
             Some("settings") => s.screen = Screen::Settings,
             Some(id) => s.agent_menu_pick(id),
@@ -2338,15 +2358,8 @@ impl Collate {
             self.say("The file was deleted; there's nothing to open.", true);
             return;
         };
-        let full = repo.root.join(&path);
-        let mut cmd = std::process::Command::new("open");
-        if let Some(app) = self.settings.editor.app() {
-            cmd.args(["-a", app]);
-        }
-        match cmd.arg(&full).status() {
-            Ok(st) if st.success() => {}
-            Ok(_) => self.say(format!("Couldn't open {path} in {}", self.settings.editor.app().unwrap_or("the default app")), true),
-            Err(e) => self.say(format!("Couldn't run open: {e}"), true),
+        if let Err(e) = desktop::edit(self.settings.editor, &repo.root.join(&path), false) {
+            self.say(e, true);
         }
     }
 
@@ -2906,7 +2919,7 @@ impl Collate {
 }
 
 /// Where this repository's viewed marks are kept, so they survive a restart:
-/// `~/Library/Application Support/Collate/viewed/<hash of the repository's path>`.
+/// `viewed/<hash of the repository's path>` in Collate's data folder.
 fn viewed_file() -> Option<PathBuf> {
     project_data("viewed")
 }
@@ -2918,14 +2931,13 @@ fn project_data(kind: &str) -> Option<PathBuf> {
     let root = &repo.root;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     root.hash(&mut h);
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(format!("Library/Application Support/Collate/{kind}/{:016x}", h.finish())))
+    Some(crate::dirs::data()?.join(format!("{kind}/{:016x}", h.finish())))
 }
 
-/// `~/Library/Application Support/Collate/<name>`: one path per line. `projects` holds the
+/// `<name>` in Collate's data folder: one path per line. `projects` holds the
 /// repositories most recently opened first, `favorites` the starred ones.
 fn paths_file(name: &str) -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Collate").join(name))
+    Some(crate::dirs::data()?.join(name))
 }
 
 fn load_paths(name: &str) -> Vec<PathBuf> {
@@ -3039,16 +3051,21 @@ fn hash_bytes(b: &[u8]) -> u64 {
     std::hash::Hasher::finish(&h)
 }
 
-/// A PDF's first page as a JPEG, by macOS's `sips`, at 72 points per inch: about 80 ms a page, on
-/// the watcher thread. JPEG rather than PNG because it has no transparency: the page comes out
-/// white, not the diff's background. On failure the PDF's own bytes stay, and the view says it
-/// can't decode them.
+/// A PDF's first page as a JPEG at 72 points per inch, by macOS's `sips` (about 80 ms a page, on
+/// the watcher thread) or on Linux by poppler's `pdftoppm`. JPEG rather than PNG because it has
+/// no transparency: the page comes out white, not the diff's background. On failure the PDF's
+/// own bytes stay, and the view says it can't decode them.
 fn pdf_page(pdf: &[u8]) -> Result<Vec<u8>, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let base = std::env::temp_dir().join(format!("collate-pdf-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let (src, out) = (base.with_extension("pdf"), base.with_extension("jpg"));
     let result = std::fs::write(&src, pdf).map_err(|e| e.to_string()).and_then(|()| {
+        #[cfg(target_os = "macos")]
         let o = std::process::Command::new("sips").args(["-s", "format", "jpeg", "-s", "formatOptions", "90"]).arg(&src).arg("--out").arg(&out).output().map_err(|e| format!("can't run sips: {e}"))?;
+        // `pdftoppm` adds the extension itself.
+        #[cfg(not(target_os = "macos"))]
+        let o = std::process::Command::new("pdftoppm").args(["-jpeg", "-jpegopt", "quality=90", "-r", "72", "-f", "1", "-l", "1", "-singlefile"]).arg(&src).arg(&base).output()
+            .map_err(|e| format!("can't run pdftoppm (install poppler-utils): {e}"))?;
         if !o.status.success() {
             return Err(String::from_utf8_lossy(&o.stderr).trim().to_owned());
         }
@@ -3220,7 +3237,7 @@ fn project_switcher(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
         rows = rows.child(row().key("project-none").h(28.0).px(8.0).items_center().child(text("No project matches").font(k.ty.ui).color(k.c.text_faint)));
     }
     let add = option(order.len(), ADD_PROJECT.to_owned())
-        .on_press(|s: &mut Collate| s.add_project())
+        .on_press_tx(|s: &mut Collate, tx: &mut Tx| s.add_project(tx))
         .child(text(ADD_PROJECT.to_owned()).font(k.ty.ui).color(k.c.text_base).a11y_hidden());
     let hairline = |key: &str| el().key(key.to_owned()).w_full().h(1.0).fill(k.c.border_weak).a11y_hidden();
     let body = col().key("projects-body").w(280.0).shrink().min_h(0.0)
@@ -3263,7 +3280,7 @@ fn welcome(s: &Collate, k: &Kit) -> El {
                 .child(Button::new("Remove").variant(ButtonVariant::GhostMuted).control_size(ControlSize::Small).on_press(move |s: &mut Collate| s.forget_project(i)).build(k).hand(true)),
         );
     }
-    let add = Button::new(if s.picking { "Choose a folder…" } else { ADD_PROJECT }).variant(ButtonVariant::Contrast).shortcut("⌘O").disabled(s.picking).on_press(|s: &mut Collate| s.add_project()).build(k).hand(!s.picking).key("add-project");
+    let add = Button::new(if s.picking { "Choose a folder…" } else { ADD_PROJECT }).variant(ButtonVariant::Contrast).shortcut(keys::caps("⌘O").into_owned()).disabled(s.picking).on_press_tx(|s: &mut Collate, tx: &mut Tx| s.add_project(tx)).build(k).hand(!s.picking).key("add-project");
     let mut c = col()
         .key("welcome")
         .w_full()
@@ -3498,7 +3515,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .variant(IconButtonVariant::GhostMuted)
         .expanded(trailing_open)
         .label(format!("{} {name}", if trailing_open { "Hide" } else { "Show" }))
-        .help(if swap { "Views sidebar" } else { "Staging panel" }).shortcut(keys)
+        .help(if swap { "Views sidebar" } else { "Staging panel" }).shortcut(keys::caps(keys).into_owned())
         .on_press(move |s: &mut Collate| if swap { s.sidebar.toggle() } else { s.inspector.toggle() })
         .build(k).hand(true)
         .key("panel-toggle");
@@ -3507,7 +3524,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
         .expanded(s.terminals.open)
         .label(if s.terminals.open { "Hide terminal" } else { "Show terminal" })
         .help(if no_project { "Terminal: open a project first" } else { "Terminal" })
-        .shortcut("⌘J")
+        .shortcut(keys::caps("⌘J").into_owned())
         .disabled(no_project)
         .on_press(|s: &mut Collate| s.toggle_terminal())
         .build(k).hand(!no_project)
@@ -3859,7 +3876,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .disabled(!s.can_go(back))
             .label(label.to_owned())
             .help(if s.can_go(back) { label.to_owned() } else { format!("{label}: nowhere {} yet", if back { "back" } else { "forward" }) })
-            .shortcut(keys.to_owned())
+            .shortcut(keys::caps(keys).into_owned())
             .on_press(move |s: &mut Collate| s.go(back))
             .build(k).hand(s.can_go(back))
             .key(if back { "nav-back" } else { "nav-forward" })
@@ -3890,7 +3907,7 @@ impl Hand for El {
 /// description stays on one line, so a long one ran past the dialog's edge; this one wraps.
 /// The body is inset to line up with the title.
 fn described_dialog(k: &Kit, key: &str, title: impl Into<String>, what: impl Into<String>, body: El) -> Dialog {
-    let what = what.into();
+    let what = desktop::local(&keys::caps(&what.into())).into_owned();
     // The header's 16 pt under the title, less the kit's 4 pt between title and description.
     let what_el = text(what.clone()).font(k.ty.ui.lh(20.0)).color(k.c.text_muted).wrap().w_full().mt(-12.0).key(format!("{key}-what"));
     Dialog::new(key, title).open(true).fit()
@@ -3990,7 +4007,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         ("⌘`", "Switch to the last project; hold ⌘ and press ` again to go further back"),
         ("⇧⌘P", "Find and run any command by name"),
         ("⌘,", "Settings"),
-        ("?", "These shortcuts; every command is in the menu bar too"),
+        ("?", if cfg!(target_os = "macos") { "These shortcuts; every command is in the menu bar too" } else { "These shortcuts; ⇧⌘P finds every command" }),
     ]),
 ];
 
@@ -4001,7 +4018,7 @@ fn shortcuts(query: &str) -> Vec<(&'static str, Vec<(&'static str, &'static str)
     let words: Vec<&str> = query.split_whitespace().collect();
     SHORTCUTS.iter().filter_map(|&(section, keys)| {
         let keys: Vec<_> = keys.iter().copied()
-            .filter(|(key, what)| words.iter().all(|w| [section, key, what].iter().any(|t| t.to_lowercase().contains(w))))
+            .filter(|(key, what)| words.iter().all(|w| [section, &keys::caps(key), &keys::caps(what)].iter().any(|t| t.to_lowercase().contains(w))))
             .collect();
         (!keys.is_empty()).then_some((section, keys))
     }).collect()
@@ -4028,13 +4045,13 @@ fn help_sheet(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
                     .w_full()
                     .gap(16.0)
                     .items_start()
-                    .child(text(key.to_string()).font(mono).color(k.c.text_base).w(150.0))
-                    .child(text(what.to_string()).font(k.ty.text_small).color(k.c.text_muted).wrap().grow(1.0).min_w(0.0)),
+                    .child(text(keys::caps(key).into_owned()).font(mono).color(k.c.text_base).w(150.0))
+                    .child(text(keys::caps(what).into_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap().grow(1.0).min_w(0.0)),
             );
         }
     }
     if found.is_empty() {
-        list = list.child(text("No shortcut matches; the menu bar's Help search finds every command".to_owned()).font(k.ty.text_small).color(k.c.text_muted).key("none"));
+        list = list.child(text(if cfg!(target_os = "macos") { "No shortcut matches; the menu bar's Help search finds every command".to_owned() } else { keys::caps("No shortcut matches; ⇧⌘P finds every command").into_owned() }).font(k.ty.text_small).color(k.c.text_muted).key("none"));
     }
     Dialog::new("help", "Keyboard Shortcuts")
         .open(true)
@@ -4104,7 +4121,7 @@ fn project_cycler(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         .on_close(|s: &mut Collate| s.cycle = None)
         .child(col().key("cycle-body").w_full().px(16.0).pb(16.0).gap(8.0)
             .child(col().key("cycle-list").w_full().max_h(360.0).scroll(rune::ScrollSpec { stick_bottom: false }).children(rows))
-            .child(text("Let go of ⌘ to open, esc to stay".to_owned()).font(k.ty.text_small).color(k.c.text_muted)))
+            .child(text(keys::caps("Let go of ⌘ to open, esc to stay").into_owned()).font(k.ty.text_small).color(k.c.text_muted)))
         .build(k, layer);
 }
 
@@ -4573,7 +4590,7 @@ fn commit_box(s: &Collate, k: &Kit) -> El {
         _ if s.message.text.trim().is_empty() => "Write a commit message first".to_owned(),
         _ => format!("Commit what's staged (git commit{flags})"),
     };
-    let commit = Button::new(label).variant(ButtonVariant::Contrast).control_size(ControlSize::Small).shortcut("⌘↩").disabled(!ready).help(help)
+    let commit = Button::new(label).variant(ButtonVariant::Contrast).control_size(ControlSize::Small).shortcut(keys::caps("⌘↩").into_owned()).disabled(!ready).help(help)
         .on_press(|s: &mut Collate| s.commit()).build(k).hand(ready).key("commit");
     let options = IconButton::new(k.glyph.chevron_down).variant(IconButtonVariant::Contrast).control_size(ControlSize::Small).disabled(s.committing)
         .label("Commit options").help("Amend, Signoff, Skip Hooks").on_press_tx(|s: &mut Collate, tx: &mut Tx| s.commit_options_menu(tx)).build(k).hand(!s.committing).key("commit-options");
@@ -4780,7 +4797,7 @@ pub fn abbrev(id: &str) -> String {
 }
 
 fn open_url(url: &str) {
-    let _ = std::process::Command::new("open").arg(url).spawn();
+    let _ = desktop::open(url);
 }
 
 fn summary(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -4950,7 +4967,7 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
     if let Some(undo) = &note.undo {
         let help = match undo {
             Undo::Backup(_) => "Put the discarded file back from its backup".to_owned(),
-            Undo::Head(m) => format!("Take back {} (⌘Z)", m.what),
+            Undo::Head(m) => format!("Take back {} ({})", m.what, keys::caps("⌘Z")),
         };
         r = r.child(Button::new("Undo").variant(ButtonVariant::Outline).control_size(ControlSize::Small).help(help).on_press(|s: &mut Collate| s.undo_notice()).build(k).hand(true).key("undo"));
     }
@@ -4963,7 +4980,7 @@ fn status_bar(s: &Collate, k: &Kit) -> Option<El> {
     if note.end.is_some() {
         r = r
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Keep the terminal running").on_press(|s: &mut Collate| s.notice = None).build(k).hand(true).key("end-cancel"))
-            .child(Button::new("End Terminal").variant(ButtonVariant::Danger).control_size(ControlSize::Small).help("End the shell and what runs in it").shortcut("⌘W").on_press(|s: &mut Collate| s.confirm_end_terminal()).build(k).hand(true).key("end-terminal"));
+            .child(Button::new("End Terminal").variant(ButtonVariant::Danger).control_size(ControlSize::Small).help("End the shell and what runs in it").shortcut(keys::caps("⌘W").into_owned()).on_press(|s: &mut Collate| s.confirm_end_terminal()).build(k).hand(true).key("end-terminal"));
     }
     Some(r)
 }
@@ -5097,7 +5114,7 @@ fn find_extras(s: &Collate, k: &Kit) -> El {
             .role("checkbox")
             .label(format!("{name}{}", if on { ", on" } else { ", off" }))
             .help(name.to_owned())
-            .help_keys([keys])
+            .help_keys([keys::caps(keys).into_owned()])
             .on_press(move |s: &mut Collate| s.search_option(flip))
     };
     row()
@@ -5143,6 +5160,7 @@ fn found_list(s: &Collate, k: &Kit, place: Searched) -> El {
 
 /// Before every frame: retire a status message once it's been up long enough.
 fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
+    #[cfg(target_os = "macos")]
     commands::sync_menu(s);
     if let Some(left) = s.terminals.end_idle(now) {
         tx.wake_after(Duration::from_secs_f64(left));
@@ -5259,7 +5277,10 @@ fn main() {
     *START.lock().unwrap() = start;
 
     let spec = AppSpec {
+        #[cfg(target_os = "macos")]
         on_key: Some(on_key),
+        #[cfg(not(target_os = "macos"))]
+        on_key: Some(|s, ev, tx| on_key(s, ev, tx) || commands::run_key(s, ev, tx)),
         poll: Some(poll),
         setup: Some(|s: &mut Collate, waker| {
             // Shells' events, from their threads, run here on the UI thread.
@@ -5273,6 +5294,7 @@ fn main() {
                     app.update_if(move |s, tx| s.agent_chat.event(id, event, tx));
                 }
             }));
+            #[cfg(target_os = "macos")]
             keys::catch_backquote();
             pulls::watch_reviews();
             update::watch();
@@ -5336,6 +5358,9 @@ fn main() {
     // The traffic lights centred on the 48-point title band the toolbar and the sidebar's
     // toggle sit in (its middle 24 points down), 16 points in, as SplitView lays out for.
     let chrome = rune::Chrome { full_size_content: true, traffic_lights: Some((16.0, 17.0)), drag_regions: true };
+    // The desktop matches the window to `collate.desktop`, and so to its icon, by this id.
+    #[cfg(not(target_os = "macos"))]
+    rune::set_app_id("collate");
     let app = App::new(spec).chrome(chrome).modifier_keys().standard_menus();
     let (tx, rx) = mpsc::channel();
     let _ = WATCHER.set(tx);

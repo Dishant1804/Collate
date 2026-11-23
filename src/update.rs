@@ -1,6 +1,7 @@
 //! Updates: Collate looks for a newer version on GitHub, either the newest release or the
-//! newest commit on the main branch, and installs it in place of the running app. The running
-//! copy keeps going; the new one opens on the next launch, or at once with Restart.
+//! newest commit on the main branch, and installs it in place of the running app (Collate.app
+//! on macOS, the `collate` binary on Linux). The running copy keeps going; the new one opens
+//! on the next launch, or at once with Restart.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -93,7 +94,7 @@ impl Collate {
                     Ok(Some(u)) => Status::Available(u),
                     Err(e) => Status::Failed(e),
                 };
-                if s.settings.auto_update && app_bundle().is_some() {
+                if s.settings.auto_update && installed().is_some() {
                     s.install_update();
                 }
             });
@@ -121,9 +122,10 @@ impl Collate {
 
     /// Quit and open the installed app once this one has gone.
     pub fn restart(&mut self, tx: &mut rune::Tx) {
-        let Some(bundle) = app_bundle() else { return };
-        let wait = "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; open \"$2\"";
-        match Command::new("/bin/sh").args(["-c", wait, "sh", &std::process::id().to_string()]).arg(&bundle).spawn() {
+        let Some(app) = installed() else { return };
+        let start = if cfg!(target_os = "macos") { "open \"$2\"" } else { "\"$2\" >/dev/null 2>&1 &" };
+        let wait = format!("while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; {start}");
+        match Command::new("/bin/sh").args(["-c", &wait, "sh", &std::process::id().to_string()]).arg(&app).spawn() {
             Ok(_) => tx.quit(),
             Err(e) => self.say(format!("Couldn't restart: {e}"), true),
         }
@@ -134,7 +136,7 @@ impl Collate {
 fn newest(channel: Channel) -> Result<Option<Update>, String> {
     match channel {
         Channel::Release => {
-            let json = run("/usr/bin/curl", &["-fsSL", "-H", "Accept: application/vnd.github+json", "-H", "User-Agent: Collate", &format!("https://api.github.com/repos/{REPO}/releases/latest")], None)
+            let json = run(CURL, &["-fsSL", "-H", "Accept: application/vnd.github+json", "-H", "User-Agent: Collate", &format!("https://api.github.com/repos/{REPO}/releases/latest")], None)
                 .map_err(|e| format!("couldn't ask GitHub for the newest release: {e}"))?;
             release(&json, VERSION)
         }
@@ -156,7 +158,7 @@ fn release(json: &str, current: &str) -> Result<Option<Update>, String> {
     }
     let assets = v["assets"].as_array().map(Vec::as_slice).unwrap_or_default();
     let url = |pick: &dyn Fn(&str) -> bool| assets.iter().find(|a| a["name"].as_str().is_some_and(pick)).and_then(|a| Some((a["name"].as_str()?.to_owned(), a["browser_download_url"].as_str()?.to_owned())));
-    let (Some((name, zip)), Some((_, sums))) = (url(&|n| n.ends_with("-macos-universal.zip")), url(&|n| n == "SHA256SUMS")) else {
+    let (Some((name, zip)), Some((_, sums))) = (url(&|n| n.ends_with(&asset_suffix())), url(&|n| n == "SHA256SUMS")) else {
         return Err(format!("release {version} has no app to download; update from the latest source instead"));
     };
     Ok(Some(Update::Release { version, zip, sums, name }))
@@ -168,16 +170,29 @@ fn newer(a: &str, b: &str) -> bool {
     parts(a) > parts(b)
 }
 
-/// The Collate.app this process runs from; `None` from `cargo run`.
-pub fn app_bundle() -> Option<PathBuf> {
+/// curl, by full path on macOS for an app opened without the shell's PATH.
+const CURL: &str = if cfg!(target_os = "macos") { "/usr/bin/curl" } else { "curl" };
+
+/// How this platform's release download is named: the app on macOS, the tarball for this
+/// architecture on Linux.
+fn asset_suffix() -> String {
+    if cfg!(target_os = "macos") { "-macos-universal.zip".into() } else { format!("-linux-{}.tar.gz", std::env::consts::ARCH) }
+}
+
+/// What an update replaces: the Collate.app this process runs from on macOS, the `collate`
+/// binary on Linux when it's installed in a `bin` folder; `None` from `cargo run`.
+pub fn installed() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf)
+    if cfg!(target_os = "macos") {
+        return exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf);
+    }
+    exe.parent().is_some_and(|d| d.file_name().is_some_and(|n| n == "bin")).then_some(exe)
 }
 
 /// Download or build `u` and put it in place of the running app.
 fn install(u: &Update) -> Result<(), String> {
-    let bundle = app_bundle().ok_or("Collate isn't running from its app, so there's nothing to replace")?;
-    let cache = cache()?;
+    let app = installed().ok_or("Collate isn't running from its installed app, so there's nothing to replace")?;
+    let cache = crate::dirs::cache().ok_or("HOME is not set")?;
     let work = cache.join("update");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
@@ -185,32 +200,31 @@ fn install(u: &Update) -> Result<(), String> {
         Update::Release { zip, sums, name, .. } => download(&work, zip, sums, name),
         Update::Source { .. } => build(&cache.join("source"), &work),
     };
-    let done = built.and_then(|new| replace(&bundle, &new));
+    let done = built.and_then(|new| replace(&app, &new));
     let _ = std::fs::remove_dir_all(&work);
     done
 }
 
-fn cache() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
-    Ok(PathBuf::from(home).join("Library/Caches/Collate"))
-}
-
-/// The release's app, checked against its SHA-256 sum before it's unpacked.
+/// The release's app (or binary), checked against its SHA-256 sum before it's unpacked.
 fn download(work: &Path, zip: &str, sums: &str, name: &str) -> Result<PathBuf, String> {
     let file = work.join(name);
     let file_s = file.to_string_lossy();
-    run("/usr/bin/curl", &["-fsSL", "-o", &file_s, zip], None).map_err(|e| format!("couldn't download {name}: {e}"))?;
-    let list = run("/usr/bin/curl", &["-fsSL", sums], None).map_err(|e| format!("couldn't download SHA256SUMS: {e}"))?;
+    run(CURL, &["-fsSL", "-o", &file_s, zip], None).map_err(|e| format!("couldn't download {name}: {e}"))?;
+    let list = run(CURL, &["-fsSL", sums], None).map_err(|e| format!("couldn't download SHA256SUMS: {e}"))?;
     let want = list.lines().filter_map(|l| l.split_once(char::is_whitespace)).find(|(_, n)| n.trim() == name).map(|(sum, _)| sum.to_owned());
-    let got = run("/usr/bin/shasum", &["-a", "256", &file_s], None)?;
+    let got = if cfg!(target_os = "macos") { run("/usr/bin/shasum", &["-a", "256", &file_s], None)? } else { run("sha256sum", &[&file_s], None)? };
     if want.as_deref() != got.split_whitespace().next() {
         return Err(format!("{name} doesn't match its sum in SHA256SUMS"));
     }
-    run("/usr/bin/ditto", &["-x", "-k", &file_s, &work.to_string_lossy()], None)?;
-    Ok(work.join("Collate.app"))
+    if cfg!(target_os = "macos") {
+        run("/usr/bin/ditto", &["-x", "-k", &file_s, &work.to_string_lossy()], None)?;
+        return Ok(work.join("Collate.app"));
+    }
+    run("tar", &["-xzf", &file_s, "-C", &work.to_string_lossy()], None)?;
+    Ok(work.join(name.trim_end_matches(".tar.gz")).join("bin/collate"))
 }
 
-/// Pull the latest source into `source` and build and bundle it into `work`.
+/// Pull the latest source into `source` and build it (and on macOS, bundle it) into `work`.
 fn build(source: &Path, work: &Path) -> Result<PathBuf, String> {
     // An app opened from the Dock doesn't get the shell's PATH, so look where rustup puts cargo.
     let home = std::env::var("HOME").unwrap_or_default();
@@ -227,11 +241,16 @@ fn build(source: &Path, work: &Path) -> Result<PathBuf, String> {
         run("git", &["clone", "--quiet", &format!("https://github.com/{REPO}.git"), &src], None)?;
     }
     run("cargo", &["build", "--release", "--manifest-path", &source.join("Cargo.toml").to_string_lossy()], Some(&path))?;
-    run(&source.join("scripts/bundle.sh").to_string_lossy(), &[&source.join("target/release/collate").to_string_lossy(), &work.to_string_lossy()], Some(&path)).map_err(|e| format!("bundling failed: {e}"))?;
+    let binary = source.join("target/release/collate");
+    if !cfg!(target_os = "macos") {
+        return Ok(binary);
+    }
+    run(&source.join("scripts/bundle.sh").to_string_lossy(), &[&binary.to_string_lossy(), &work.to_string_lossy()], Some(&path)).map_err(|e| format!("bundling failed: {e}"))?;
     Ok(work.join("Collate.app"))
 }
 
 /// Put `new` where `bundle` is, keeping the old one until the new one is in place.
+#[cfg(target_os = "macos")]
 fn replace(bundle: &Path, new: &Path) -> Result<(), String> {
     if !new.join("Contents/MacOS/collate").exists() {
         return Err(format!("{} isn't a complete Collate.app", new.display()));
@@ -250,6 +269,25 @@ fn replace(bundle: &Path, new: &Path) -> Result<(), String> {
     // So Finder and the Dock see the new version and its icon.
     let lsregister = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
     let _ = run(lsregister, &["-f", &bundle.to_string_lossy()], None);
+    Ok(())
+}
+
+/// Put binary `new` where `binary` is: copied beside it, then renamed over it in one step, so
+/// the running process keeps its old file and nothing ever sees half a binary.
+#[cfg(not(target_os = "macos"))]
+fn replace(binary: &Path, new: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    if !new.is_file() {
+        return Err(format!("{} isn't a Collate binary", new.display()));
+    }
+    let next = binary.with_file_name(".collate-next");
+    let placed = std::fs::copy(new, &next)
+        .and_then(|_| std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755)))
+        .and_then(|_| std::fs::rename(&next, binary));
+    if let Err(e) = placed {
+        let _ = std::fs::remove_file(&next);
+        return Err(format!("couldn't replace {}: {e}", binary.display()));
+    }
     Ok(())
 }
 
@@ -282,21 +320,30 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_release_brings_its_app_and_sums() {
+    fn a_newer_release_brings_this_platforms_app_and_sums() {
         let json = r#"{"tag_name":"v9.0.0","assets":[
             {"name":"Collate-9.0.0-macos-universal.zip","browser_download_url":"https://x/zip"},
             {"name":"collate-9.0.0-macos-universal.tar.gz","browser_download_url":"https://x/tar"},
+            {"name":"collate-9.0.0-linux-x86_64.tar.gz","browser_download_url":"https://x/linux-x86_64"},
+            {"name":"collate-9.0.0-linux-aarch64.tar.gz","browser_download_url":"https://x/linux-aarch64"},
             {"name":"SHA256SUMS","browser_download_url":"https://x/sums"}]}"#;
+        let (name, zip) = if cfg!(target_os = "macos") {
+            ("Collate-9.0.0-macos-universal.zip".to_owned(), "https://x/zip".to_owned())
+        } else {
+            let arch = std::env::consts::ARCH;
+            (format!("collate-9.0.0-linux-{arch}.tar.gz"), format!("https://x/linux-{arch}"))
+        };
         let u = release(json, "1.1.0").unwrap().unwrap();
-        assert_eq!(u, Update::Release { version: "9.0.0".into(), zip: "https://x/zip".into(), sums: "https://x/sums".into(), name: "Collate-9.0.0-macos-universal.zip".into() });
+        assert_eq!(u, Update::Release { version: "9.0.0".into(), zip, sums: "https://x/sums".into(), name });
         assert_eq!(release(json, "9.0.0").unwrap(), None);
     }
 
     /// Downloads the newest release and swaps it in for a stand-in app in the temp folder.
     #[test]
     #[ignore]
+    #[cfg(target_os = "macos")]
     fn the_newest_release_downloads_and_replaces_an_app() {
-        let Update::Release { zip, sums, name, .. } = release(&run("/usr/bin/curl", &["-fsSL", "-H", "User-Agent: Collate", &format!("https://api.github.com/repos/{REPO}/releases/latest")], None).unwrap(), "0.0.0").unwrap().unwrap() else { unreachable!() };
+        let Update::Release { zip, sums, name, .. } = release(&run(CURL, &["-fsSL", "-H", "User-Agent: Collate", &format!("https://api.github.com/repos/{REPO}/releases/latest")], None).unwrap(), "0.0.0").unwrap().unwrap() else { unreachable!() };
         let dir = std::env::temp_dir().join(format!("collate-update-{}", std::process::id()));
         let (work, bundle) = (dir.join("work"), dir.join("Apps/Collate.app"));
         std::fs::create_dir_all(&work).unwrap();

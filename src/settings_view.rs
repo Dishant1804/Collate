@@ -98,7 +98,7 @@ fn icon_hit<S: 'static>(k: &Kit, glyph: &'static Icon, label: String, help: &str
 fn agent_settings(s: &Collate, k: &Kit, menus: &mut Vec<El>) -> Vec<El> {
     let st = &s.settings;
     let edit = |key: &'static str, pick: &'static str| Button::new("Edit…").variant(ButtonVariant::Ghost).control_size(ControlSize::Small).help("Open the file in the editor from Review settings").on_press(move |s: &mut Collate| s.agent_menu_pick(pick)).build(k).hand(true).key(key);
-    let runs = format!("{} in the terminal under the diff (⌘J); {} for what it fills in, like a commit message", st.agent.command(), st.agent.print_command());
+    let runs = format!("{} in the terminal under the diff ({}); {} for what it fills in, like a commit message", st.agent.command(), crate::keys::caps("⌘J"), st.agent.print_command());
     vec![
         setting(k, "agent", "Coding agent", &[], "Gets your comments, review questions, commit messages and conflicts; it never pushes", pick(s, k, menus, "agent", "Coding agent", &Agent::ALL.map(Agent::title), &Agent::ALL, st.agent, |c, v| c.agent = v)),
         setting(k, "agent-runs", "Runs as", &[], &runs, row()),
@@ -113,7 +113,7 @@ fn update_settings(s: &Collate, k: &Kit, menus: &mut Vec<El>) -> Vec<El> {
     use update::Status;
     static CHANNELS: [Channel; 2] = [Channel::Release, Channel::Source];
     let st = &s.settings;
-    let in_app = update::app_bundle().is_some();
+    let in_app = update::installed().is_some();
     let (state, error) = match &s.update {
         Status::Idle => (String::new(), false),
         Status::Checking => ("Checking…".to_owned(), false),
@@ -220,7 +220,7 @@ fn theme_picker(s: &Collate, k: &Kit, layer: &mut Vec<El>) -> El {
     let select = dropdown(s, k, layer, "theme", "Theme", &names, Some(current.name()), |s: &mut Collate, i| s.configure(|c| c.theme = Theme::ALL[i]));
     // Top-aligned rather than centred like the other rows, so the name sits by the dropdown
     // and the preview hangs below.
-    let words = col().grow(1.0).min_w(0.0).gap(4.0).child(text("Theme".to_owned()).font(k.ty.ui_medium).color(k.c.text_base)).child(text("System follows macOS between Light and Dark".to_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap());
+    let words = col().grow(1.0).min_w(0.0).gap(4.0).child(text("Theme".to_owned()).font(k.ty.ui_medium).color(k.c.text_base)).child(text(crate::desktop::local("System follows macOS between Light and Dark").into_owned()).font(k.ty.text_small).color(k.c.text_muted).wrap());
     row().key("theme").w_full().py(14.0).gap(24.0).items_start().child(words).child(col().min_w(CONTROL_W).gap(8.0).items_end().child(select).child(preview))
 }
 
@@ -273,7 +273,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         0 => vec![
             theme_picker(s, k, menus),
             setting(k, "font", "Code size", &[], "In points, for code and line numbers", pick(s, k, menus, "font", "Code size", &FONT_LABELS, &FONT_SIZES, st.font_size, |c, v| c.font_size = v)),
-            setting(k, "scroll-zoom", "Scroll to zoom", &[], "⌘-scroll or pinch over the diff to change the code size", switch(k, "Scroll to zoom", st.scroll_zoom, |c, v| c.scroll_zoom = v)),
+            setting(k, "scroll-zoom", "Scroll to zoom", &[], &crate::keys::caps("⌘-scroll or pinch over the diff to change the code size"), switch(k, "Scroll to zoom", st.scroll_zoom, |c, v| c.scroll_zoom = v)),
             setting(k, "density", "Line spacing", &[], "", pick(s, k, menus, "density", "Line spacing", &["Compact", "Comfortable", "Spacious"], &DENSITIES, st.density, |c, v| c.density = v)),
             setting(k, "swap", "Swap sidebars", &[], "The staging panel on the left, the views on the right", switch(k, "Swap sidebars", st.swap_panes, |c, v| c.swap_panes = v)),
             setting(k, "motion", "Animations", &[], "Reduced plays every animation in half the time", pick(s, k, menus, "motion", "Animations", &["Default", "Reduced"], &MOTIONS, st.motion, |c, v| c.motion = v)),
@@ -364,7 +364,7 @@ pub fn settings_panel(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
     }
     let mut content = col().key("settings-content").w_full().px(24.0).pb(16.0);
     if tab == PROJECTS_TAB {
-        let add = Button::new(ADD_PROJECT).variant(ButtonVariant::Outline).control_size(ControlSize::Small).on_press(|s: &mut Collate| s.add_project()).build(k).hand(true).key("settings-add");
+        let add = Button::new(ADD_PROJECT).variant(ButtonVariant::Outline).control_size(ControlSize::Small).on_press_tx(|s: &mut Collate, tx: &mut Tx| s.add_project(tx)).build(k).hand(true).key("settings-add");
         content = content.child(row().key("projects-head").w_full().pt(12.0).pb(4.0).justify_end().child(add));
     }
     let content = content.child(list);

@@ -1,5 +1,5 @@
 //! Commit authors' pictures, as Zed shows them: the GitHub avatar of the account behind an
-//! email. Each is looked up once, off the UI thread, and kept in `~/Library/Caches/Collate/avatars`;
+//! email. Each is looked up once, off the UI thread, and kept in Collate's cache folder (`dirs::cache`);
 //! an author GitHub doesn't know keeps their initials. The authors waiting are looked up
 //! together, in one GraphQL query through `gh`, so a long history costs one request.
 use std::collections::HashMap;
@@ -187,11 +187,11 @@ fn save(file: &Path, url: Option<&str>) -> Option<Vec<u8>> {
     (!bytes.is_empty()).then_some(bytes)
 }
 
-/// `~/Library/Caches/Collate/avatars/<hash of the email>`.
+/// `avatars/<hash of the email>` in Collate's cache folder.
 fn cache_file(email: &str) -> Option<PathBuf> {
     // FNV-1a: stable across builds, unlike the standard library's hasher.
     let h = email.trim().to_lowercase().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
-    Some(PathBuf::from(std::env::var_os("HOME")?).join(format!("Library/Caches/Collate/avatars/{h:016x}")))
+    Some(crate::dirs::cache()?.join(format!("avatars/{h:016x}")))
 }
 
 /// A GitHub no-reply address names its account outright: `123+name@users.noreply.github.com`

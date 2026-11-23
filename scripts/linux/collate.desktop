@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Collate
+GenericName=Git Diff Viewer
+Comment=Review, stage and commit changes in a git repository
+Exec=collate %f
+Icon=collate
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;diff;review;commit;
+StartupWMClass=collate

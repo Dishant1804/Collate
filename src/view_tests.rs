@@ -1311,13 +1311,15 @@ fn the_review_loop_stages_discards_and_commits() {
     rt.frame(1.0 / 60.0);
     // ⌘` as ⌘Tab: a press picks the last project, another goes on and ⇧ comes back, Escape
     // stays put, and letting go of ⌘ opens the one picked.
-    let cmd = rune::Mods { cmd: true, ..Default::default() };
+    // Off macOS the primary key is Ctrl, which Rune reports as both `ctrl` and `cmd`.
+    let cmd = rune::Mods { cmd: true, ctrl: !cfg!(target_os = "macos"), ..Default::default() };
     let press = |rt: &mut Runtime<Collate>, key: Key, mods: rune::Mods| {
         rt.key(KeyEvent { key, mods });
         rt.frame(1.0 / 60.0);
     };
     rt.set_modifier_keys(true);
-    let let_go = Key::Modifier { modifier: rune::Modifier::SuperLeft, pressed: false };
+    let primary = if cfg!(target_os = "macos") { rune::Modifier::SuperLeft } else { rune::Modifier::ControlLeft };
+    let let_go = Key::Modifier { modifier: primary, pressed: false };
     press(&mut rt, Key::Command('`'), cmd);
     assert!(rt.state.cycle == Some(1) && rt.find("cycle-1").is_some(), "the cycler shows, the last project picked");
     let n = rt.state.cycle_projects().len();

@@ -229,13 +229,6 @@ crate::lucide!(CHECK_ICON, "collate-check", r#"<path d="M20 6 9 17l-5-5"/>"#);
 crate::lucide!(pub(crate) MESSAGE_ICON, "collate-message", r#"<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>"#);
 crate::lucide!(pub(crate) CLOCK_ICON, "collate-clock", r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#);
 
-/// A macOS notification, through AppleScript: no permission to ask for, and nothing to bundle.
-fn notify(title: &str, body: &str) {
-    let quote = |t: &str| t.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!("display notification \"{}\" with title \"{}\"", quote(body), quote(title));
-    let _ = std::process::Command::new("osascript").args(["-e", &script]).spawn();
-}
-
 fn gh() -> Option<Gh> {
     current_repo().map(|r| Gh::new(&r.root))
 }
@@ -356,7 +349,7 @@ impl Collate {
         let (now, fresh) = fresh_requests(self.pulls.asking.as_ref(), pulls, me);
         if self.settings.notify_reviews {
             for p in fresh {
-                notify(&format!("Review requested on {}", self.name), &format!("#{} {} - by {}", p.number, p.title, p.author));
+                crate::desktop::notify(&format!("Review requested on {}", self.name), &format!("#{} {} - by {}", p.number, p.title, p.author));
             }
         }
         self.pulls.asking = Some(now);
@@ -1317,7 +1310,7 @@ pub fn pr_overview(s: &Collate, k: &Kit) -> Option<El> {
         let held = s.held();
         if held > 0 {
             let why = if s.pr_whole() { "outside GitHub's diff" } else { "on part of the pull request" };
-            review = review.child(text(format!("{held} comment{} {why} stay on this Mac", if held == 1 { "" } else { "s" })).font(k.ty.text_small).color(k.c.warning.icon).wrap().w_full().pl(44.0));
+            review = review.child(text(crate::desktop::local(&format!("{held} comment{} {why} stay on this Mac", if held == 1 { "" } else { "s" })).into_owned()).font(k.ty.text_small).color(k.c.warning.icon).wrap().w_full().pl(44.0));
         }
         main = main.child(review);
     }
@@ -1579,6 +1572,7 @@ pub fn compose_dialog(s: &Collate, k: &Kit, layer: &mut Vec<El>) {
         Compose::Review(_) if held > 0 => format!("{what} {held} outside GitHub's diff stay on this Mac."),
         _ => what,
     };
+    let what = crate::desktop::local(&what).into_owned();
     let area = TextArea::new(&s.pulls.text).placeholder(placeholder.to_owned()).label(placeholder.to_owned()).rows(6).max_height(180.0)
         .on_edit(|s: &mut Collate| &mut s.pulls.text).width(None).build(k).key("compose-text").w_full();
     let empty = s.pulls.text.text.trim().is_empty();

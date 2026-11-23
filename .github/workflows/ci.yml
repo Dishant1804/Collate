@@ -10,8 +10,15 @@ permissions:
 
 jobs:
   check:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
+      # Rune's window and keyboard libraries, and poppler for the PDF previews' test.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libfontconfig-dev pkg-config poppler-utils
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:

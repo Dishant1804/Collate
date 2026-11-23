@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Installs Collate on this Mac: `npx collate-app@latest`.
+// Installs Collate on a Mac or a Linux computer: `npx collate-app@latest`.
 //
-// Checks the Mac, installs Xcode's command line tools when git is missing, then puts the newest
-// release's Collate.app in Applications and a `collate` command in ~/.local/bin. With --build
-// (or when the newest release has no app to download) it builds the latest source instead,
-// installing Rust first if it isn't there.
+// On macOS it installs Xcode's command line tools when git is missing, then puts the newest
+// release's Collate.app in Applications and a `collate` command in ~/.local/bin. On Linux it
+// puts the binary in ~/.local/bin and Collate in the app launcher. With --build (or when the
+// newest release has nothing to download for this computer) it builds the latest source
+// instead, installing Rust first if it isn't there.
 //
 //   npx collate-app@latest              install or update to the newest release
 //   npx collate-app@latest --build      build and install the latest source
@@ -20,7 +21,12 @@ const path = require('node:path');
 const REPO = 'Dishant1804/Collate';
 const HOME = os.homedir();
 const BIN = path.join(HOME, '.local', 'bin');
-const SOURCE = path.join(HOME, 'Library', 'Caches', 'Collate', 'source');
+const LINUX = process.platform === 'linux';
+const SOURCE = LINUX
+  ? path.join(process.env.XDG_CACHE_HOME || path.join(HOME, '.cache'), 'collate', 'source')
+  : path.join(HOME, 'Library', 'Caches', 'Collate', 'source');
+/** The Linux download's architecture, as `uname -m` names it. */
+const LINUX_ARCH = { x64: 'x86_64', arm64: 'aarch64' }[os.arch()];
 const CARGO_BIN = path.join(HOME, '.cargo', 'bin');
 const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister';
 
@@ -41,8 +47,14 @@ function step(cmd, args, opts = {}) {
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-function checkMac() {
-  if (process.platform !== 'darwin') fail('Collate runs on macOS only.');
+function checkPlatform() {
+  if (LINUX) {
+    if (!LINUX_ARCH) fail(`Collate runs on x86_64 and arm64 Linux; this computer is ${os.arch()}.`);
+    if (!run('git', ['--version']).ok) fail('Collate needs git. Install it with your package manager and run this again.');
+    say(`Linux on ${LINUX_ARCH}`);
+    return;
+  }
+  if (process.platform !== 'darwin') fail('Collate runs on macOS and Linux only.');
   const version = run('sw_vers', ['-productVersion']).out;
   if (Number(version.split('.')[0]) < 13) fail(`Collate needs macOS 13 or newer; this Mac has ${version || 'an unknown version'}.`);
   say(`macOS ${version} on ${os.arch() === 'arm64' ? 'Apple silicon' : 'Intel'}`);
@@ -59,6 +71,8 @@ async function ensureCommandLineTools() {
 
 /** The installer can't replace an app that is running. */
 async function quitCollate() {
+  // Linux replaces the binary by renaming over it, which a running Collate doesn't mind.
+  if (LINUX) return;
   if (!run('pgrep', ['-x', 'Collate']).ok) return;
   say('quitting Collate to replace it');
   run('osascript', ['-e', 'quit app "Collate"']);
@@ -77,12 +91,13 @@ async function download(url, file) {
   fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
 }
 
-/** Installs the newest release's app. Returns false when that release has no app to download. */
+/** Installs the newest release's app. Returns false when that release has nothing to download for this computer. */
 async function installRelease() {
   const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { 'User-Agent': 'collate-app', Accept: 'application/vnd.github+json' } });
   if (!res.ok) fail(`couldn't ask GitHub for the newest release: ${res.status} ${res.statusText}`);
   const release = await res.json();
-  const zip = release.assets.find(a => a.name.endsWith('-macos-universal.zip'));
+  const suffix = LINUX ? `-linux-${LINUX_ARCH}.tar.gz` : '-macos-universal.zip';
+  const zip = release.assets.find(a => a.name.endsWith(suffix));
   const sums = release.assets.find(a => a.name === 'SHA256SUMS');
   if (!zip || !sums) return false;
 
@@ -95,6 +110,12 @@ async function installRelease() {
     const want = fs.readFileSync(path.join(work, 'SHA256SUMS'), 'utf8').split('\n').map(l => l.split(/\s+/)).find(([, name]) => name === zip.name);
     const got = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
     if (!want || want[0] !== got) fail(`${zip.name} doesn't match its checksum in SHA256SUMS; not installing it.`);
+
+    if (LINUX) {
+      installTarball(file, work);
+      say(`installed Collate ${release.tag_name.replace(/^v/, '')}`);
+      return true;
+    }
 
     step('ditto', ['-x', '-k', file, work]);
     await quitCollate();
@@ -109,6 +130,13 @@ async function installRelease() {
     fs.rmSync(work, { recursive: true, force: true });
   }
   return true;
+}
+
+/** Unpacks a Linux download in `work` and runs the install.sh inside it. */
+function installTarball(file, work) {
+  step('tar', ['-xzf', file, '-C', work]);
+  const folder = path.basename(file, '.tar.gz');
+  step('sh', [path.join(work, folder, 'install.sh')]);
 }
 
 /** `collate` from a terminal: the same script scripts/install.sh writes. On its own or with a
@@ -145,14 +173,25 @@ async function build() {
   }
   say('building (the first build takes a few minutes)');
   await quitCollate();
-  step(path.join(SOURCE, 'scripts', 'install.sh'), [], { cwd: SOURCE, env });
+  if (!LINUX) return step(path.join(SOURCE, 'scripts', 'install.sh'), [], { cwd: SOURCE, env });
+  say('the build needs the X11, Wayland and fontconfig headers: on Debian or Ubuntu, `sudo apt install libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libfontconfig-dev pkg-config`');
+  step(path.join(SOURCE, 'scripts', 'package-linux.sh'), [], { cwd: SOURCE, env: { ...env, CARGO_TARGET_DIR: path.join(SOURCE, 'target') } });
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'collate-'));
+  try {
+    const dist = path.join(SOURCE, 'dist');
+    const tarball = fs.readdirSync(dist).find(n => n.endsWith(`-linux-${LINUX_ARCH}.tar.gz`));
+    if (!tarball) fail(`the build left no Linux download in ${dist}`);
+    installTarball(path.join(dist, tarball), work);
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
 }
 
 /** Adds ~/.local/bin to the shell's PATH so `collate` works in a new terminal. */
 function ensurePath() {
   if ((process.env.PATH || '').split(':').includes(BIN)) return;
   const shell = path.basename(process.env.SHELL || 'zsh');
-  const profile = path.join(HOME, shell === 'bash' ? '.bash_profile' : shell === 'fish' ? '.config/fish/config.fish' : '.zshrc');
+  const profile = path.join(HOME, shell === 'bash' ? (LINUX ? '.bashrc' : '.bash_profile') : shell === 'fish' ? '.config/fish/config.fish' : '.zshrc');
   const line = shell === 'fish' ? 'fish_add_path $HOME/.local/bin' : 'export PATH="$HOME/.local/bin:$PATH"';
   const current = fs.existsSync(profile) ? fs.readFileSync(profile, 'utf8') : '';
   if (!current.includes('.local/bin')) {
@@ -163,6 +202,13 @@ function ensurePath() {
 }
 
 async function uninstall() {
+  if (LINUX) {
+    const data = process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share');
+    for (const f of [path.join(BIN, 'collate'), path.join(data, 'applications', 'collate.desktop'), path.join(data, 'icons', 'hicolor', 'scalable', 'apps', 'collate.svg')]) fs.rmSync(f, { force: true });
+    fs.rmSync(SOURCE, { recursive: true, force: true });
+    say(`removed Collate. Settings are still in ${path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'collate')} and data in ${path.join(data, 'collate')}; delete those folders to remove them too.`);
+    return;
+  }
   await quitCollate();
   for (const app of ['/Applications/Collate.app', path.join(HOME, 'Applications', 'Collate.app')]) fs.rmSync(app, { recursive: true, force: true });
   fs.rmSync(path.join(BIN, 'collate'), { force: true });
@@ -173,21 +219,22 @@ async function uninstall() {
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: npx collate-app@latest [--build | --uninstall]\n\n  (none)       install or update Collate from the newest release\n  --build      build and install the latest source (installs Rust if needed)\n  --uninstall  remove Collate.app and the collate command');
+    console.log('Usage: npx collate-app@latest [--build | --uninstall]\n\n  (none)       install or update Collate from the newest release\n  --build      build and install the latest source (installs Rust if needed)\n  --uninstall  remove Collate and the collate command');
     return;
   }
   const unknown = args.filter(a => !['--build', '--uninstall'].includes(a));
   if (unknown.length) fail(`unknown option ${unknown[0]}; see --help`);
-  checkMac();
+  checkPlatform();
   if (args.includes('--uninstall')) return uninstall();
 
-  await ensureCommandLineTools();
+  if (!LINUX) await ensureCommandLineTools();
   if (args.includes('--build')) await build();
   else if (!await installRelease()) {
-    say('the newest release has no app to download; building from source instead');
+    say('the newest release has nothing to download for this computer; building from source instead');
     await build();
   }
   ensurePath();
+  if (LINUX) return say('done. Open Collate from your app launcher, or run `collate` in a repository.');
   run('open', ['-a', 'Collate']);
   say('done. Open Collate from Launchpad, or run `collate` in a repository.');
 }

@@ -33,7 +33,13 @@ Applications. \`Collate-$version-macos-universal.zip\` is the same app, for the 
 updater and the installer. Both are signed with a Developer ID and notarized by Apple.
 
 The \`collate-$version-macos-universal.tar.gz\` download holds the bare binary for a
-terminal: \`collate <repository>\`. \`SHA256SUMS\` lists every download's checksum.
+terminal: \`collate <repository>\`.
+
+On Linux (x86_64 or aarch64, glibc 2.35 or later, X11 or Wayland), unpack
+\`collate-$version-linux-<arch>.tar.gz\` and run its \`install.sh\`, which puts \`collate\` in
+\`~/.local/bin\` and Collate in the app launcher. \`npx collate-app@latest\` does the same.
+
+\`SHA256SUMS\` lists every download's checksum.
 NOTES
 [[ -n $previous ]] && echo "\n**Full changelog:** https://github.com/$repo/compare/$previous...$tag"
 true

@@ -26,11 +26,9 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(15);
 const FILES_CAP: usize = 400;
 const DIFF_CAP: usize = 200_000;
 
-/// `~/Library/Application Support/Collate/control`: one socket per running window, named by
-/// its process id.
+/// One socket per running window, named by its process id (`dirs::control`).
 fn socket_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Application Support/Collate/control"))
+    crate::dirs::control()
 }
 
 fn own_socket() -> Option<PathBuf> {
@@ -560,10 +558,7 @@ fn launch(dir: &str) -> Result<Value, String> {
     if let Some(w) = windows().into_iter().find(|w| w.repo.as_deref() == Some(&root.display().to_string())) {
         return Ok(json!({ "window": w.pid, "repo": w.repo, "already_open": true }));
     }
-    let status = std::process::Command::new("open").args(["-n", "-a", "Collate", "--args"]).arg(&root).status().map_err(|e| format!("Couldn't run open: {e}"))?;
-    if !status.success() {
-        return Err("open couldn't start Collate: is Collate.app installed?".into());
-    }
+    crate::desktop::launch(&root)?;
     for _ in 0..100 {
         std::thread::sleep(Duration::from_millis(100));
         if let Some(w) = windows().into_iter().find(|w| w.repo.as_deref() == Some(&root.display().to_string())) {

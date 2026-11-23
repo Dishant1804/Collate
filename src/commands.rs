@@ -1,13 +1,18 @@
 //! Every command the review offers, once: the menu bar is built from this list, so each
 //! action can be found by name there (and in Help's search) with its key beside it.
+#[cfg(target_os = "macos")]
 use std::cell::RefCell;
 
-use rune::{MenuError, MenuItem, PopupItem, Tx};
+#[cfg(target_os = "macos")]
+use rune::{MenuError, MenuItem};
+use rune::{PopupItem, Tx};
 
 use crate::diff::DiffMode;
 use crate::git::Scope;
 use crate::search::{self, fuzzy};
-use crate::{Collate, HANDLE, PanelTab, Screen, keys, refresh};
+#[cfg(target_os = "macos")]
+use crate::HANDLE;
+use crate::{Collate, PanelTab, Screen, keys, refresh};
 
 pub struct Command {
     /// Unique; empty for a separator.
@@ -15,7 +20,8 @@ pub struct Command {
     pub title: &'static str,
     /// The menu bar menu it's in; "" is the app menu.
     pub menu: &'static str,
-    /// Its key as `rune::Shortcut` parses it (`j`, `shift+a`, `cmd+shift+g`), or "".
+    /// Its key as `rune::Shortcut` parses it (`j`, `shift+a`, `mod+shift+g`), or "". `mod` is ⌘
+    /// on macOS and Ctrl elsewhere.
     pub key: &'static str,
     pub run: fn(&mut Collate, &mut Tx),
     pub enabled: fn(&Collate) -> bool,
@@ -75,13 +81,13 @@ fn letter(s: &mut Collate, key: &str, tx: &mut Tx) {
 }
 
 pub const COMMANDS: &[Command] = &[
-    cmd("settings", "Settings…", "", "cmd+comma", always, |s, _| s.screen = Screen::Settings),
-    cmd("add-project", "Add Project…", "File", "cmd+o", |s| !s.picking, |s, _| s.add_project()),
+    cmd("settings", "Settings…", "", "mod+comma", always, |s, _| s.screen = Screen::Settings),
+    cmd("add-project", "Add Project…", "File", "mod+o", |s| !s.picking, |s, tx| s.add_project(tx)),
     cmd("last-project", "Switch to Last Project", "File", "", |s| s.cycle_projects().len() > 1 && !s.modal_open(), |s, tx| {
         s.step_cycle(true);
         s.end_cycle(tx);
     }),
-    cmd("reread", "Reread Repository", "File", "cmd+r", ready, |_, _| {
+    cmd("reread", "Reread Repository", "File", "mod+r", ready, |_, _| {
         refresh();
     }),
     check(cmd("view-all", "All Changes", "View", "1", ready, |s, _| s.show_scope(Scope::Uncommitted)), |s| shows(s, Scope::Uncommitted)),
@@ -105,32 +111,32 @@ pub const COMMANDS: &[Command] = &[
     cmd("collapse", "Collapse All Files", "View", "z", diffing, |s, tx| letter(s, "z", tx)),
     cmd("expand", "Expand All Files", "View", "shift+z", diffing, |s, tx| letter(s, "Z", tx)),
     sep("View"),
-    check(cmd("sidebar", "Sidebar", "View", "cmd+shift+b", ready, |s, _| s.sidebar.toggle()), |s| s.sidebar.is_open()),
-    check(cmd("panel", "Staging Panel", "View", "cmd+alt+0", ready, |s, _| s.inspector.toggle()), |s| s.inspector.is_open()),
-    check(cmd("files-tab", "Files", "View", "cmd+alt+1", ready, |s, _| s.show_panel_tab(PanelTab::Files)), |s| s.inspector.is_open() && s.panel_tab == PanelTab::Files),
-    check(cmd("agent-tab", "Agent Chat", "View", "cmd+alt+2", ready, |s, _| s.show_panel_tab(PanelTab::Agent)), |s| s.inspector.is_open() && s.panel_tab == PanelTab::Agent),
+    check(cmd("sidebar", "Sidebar", "View", "mod+shift+b", ready, |s, _| s.sidebar.toggle()), |s| s.sidebar.is_open()),
+    check(cmd("panel", "Staging Panel", "View", "mod+alt+0", ready, |s, _| s.inspector.toggle()), |s| s.inspector.is_open()),
+    check(cmd("files-tab", "Files", "View", "mod+alt+1", ready, |s, _| s.show_panel_tab(PanelTab::Files)), |s| s.inspector.is_open() && s.panel_tab == PanelTab::Files),
+    check(cmd("agent-tab", "Agent Chat", "View", "mod+alt+2", ready, |s, _| s.show_panel_tab(PanelTab::Agent)), |s| s.inspector.is_open() && s.panel_tab == PanelTab::Agent),
     check(cmd("swap-panes", "Swap Sidebars", "View", "", ready, |s, _| s.configure(|c| c.swap_panes = !c.swap_panes)), |s| s.settings.swap_panes),
-    check(cmd("terminal", "Terminal", "View", "cmd+j", |s| s.has_project && !s.modal_open(), |s, _| s.toggle_terminal()), |s| s.terminals.open),
+    check(cmd("terminal", "Terminal", "View", "mod+j", |s| s.has_project && !s.modal_open(), |s, _| s.toggle_terminal()), |s| s.terminals.open),
     cmd("next-change", "Next Change", "Go", "j", diffing, |s, tx| letter(s, "j", tx)),
     cmd("prev-change", "Previous Change", "Go", "k", diffing, |s, tx| letter(s, "k", tx)),
     cmd("next-file", "Next File", "Go", "bracketright", diffing, |s, tx| letter(s, "]", tx)),
     cmd("prev-file", "Previous File", "Go", "bracketleft", diffing, |s, tx| letter(s, "[", tx)),
     cmd("moved-twin", "Other End of the Move", "Go", "m", diffing, |s, tx| letter(s, "m", tx)),
     sep("Go"),
-    cmd("go-file", "Go to File…", "Go", "cmd+p", ready, |s, _| s.start_jump("")),
-    cmd("go-line", "Go to Line…", "Go", "cmd+l", ready, |s, _| s.start_jump(":")),
-    cmd("back", "Back", "Go", "cmd+bracketleft", ready, |s, _| s.go(true)),
-    cmd("forward", "Forward", "Go", "cmd+bracketright", ready, |s, _| s.go(false)),
+    cmd("go-file", "Go to File…", "Go", "mod+p", ready, |s, _| s.start_jump("")),
+    cmd("go-line", "Go to Line…", "Go", "mod+l", ready, |s, _| s.start_jump(":")),
+    cmd("back", "Back", "Go", "mod+bracketleft", ready, |s, _| s.go(true)),
+    cmd("forward", "Forward", "Go", "mod+bracketright", ready, |s, _| s.go(false)),
     sep("Go"),
     cmd("older", "Older Commit", "Go", "shift+comma", |s| ready(s) && shows(s, Scope::History), |s, tx| letter(s, "<", tx)),
     cmd("newer", "Newer Commit", "Go", "shift+period", |s| ready(s) && shows(s, Scope::History), |s, tx| letter(s, ">", tx)),
     sep("Go"),
-    cmd("find", "Find…", "Go", "cmd+f", ready, |s, _| s.focus_search()),
-    cmd("find-next", "Find Next", "Go", "cmd+g", ready, |s, tx| s.next_hit(true, tx)),
-    cmd("find-prev", "Find Previous", "Go", "cmd+shift+g", ready, |s, tx| s.next_hit(false, tx)),
-    check(cmd("find-case", "Match Case", "Go", "cmd+alt+c", ready, |s, _| s.search_option(|s| s.find_case ^= true)), |s| s.find_case),
-    check(cmd("find-word", "Whole Words", "Go", "cmd+alt+w", ready, |s, _| s.search_option(|s| s.find_word ^= true)), |s| s.find_word),
-    check(cmd("find-regex", "Regular Expression", "Go", "cmd+alt+r", ready, |s, _| s.search_option(|s| s.find_regex ^= true)), |s| s.find_regex),
+    cmd("find", "Find…", "Go", "mod+f", ready, |s, _| s.focus_search()),
+    cmd("find-next", "Find Next", "Go", "mod+g", ready, |s, tx| s.next_hit(true, tx)),
+    cmd("find-prev", "Find Previous", "Go", "mod+shift+g", ready, |s, tx| s.next_hit(false, tx)),
+    check(cmd("find-case", "Match Case", "Go", "mod+alt+c", ready, |s, _| s.search_option(|s| s.find_case ^= true)), |s| s.find_case),
+    check(cmd("find-word", "Whole Words", "Go", "mod+alt+w", ready, |s, _| s.search_option(|s| s.find_word ^= true)), |s| s.find_word),
+    check(cmd("find-regex", "Regular Expression", "Go", "mod+alt+r", ready, |s, _| s.search_option(|s| s.find_regex ^= true)), |s| s.find_regex),
     cmd("stage", "Stage Lines or Hunk", "Changes", "a", editable, |s, tx| letter(s, "a", tx)),
     cmd("unstage", "Unstage Lines or Hunk", "Changes", "u", editable, |s, tx| letter(s, "u", tx)),
     cmd("discard", "Discard Lines or Hunk…", "Changes", "x", editable, |s, tx| letter(s, "x", tx)),
@@ -142,7 +148,7 @@ pub const COMMANDS: &[Command] = &[
     sep("Changes"),
     cmd("stage-all", "Stage All", "Changes", "", |s| idle(s) && s.unstaged > 0, |s, _| s.stage_all()),
     cmd("unstage-all", "Unstage All", "Changes", "", |s| idle(s) && s.staged > 0, |s, _| s.unstage_all()),
-    cmd("commit", "Commit", "Changes", "cmd+enter", |s| idle(s) && (s.staged > 0 || s.amend), |s, _| s.commit()),
+    cmd("commit", "Commit", "Changes", "mod+enter", |s| idle(s) && (s.staged > 0 || s.amend), |s, _| s.commit()),
     check(cmd("amend", "Amend Last Commit", "Changes", "", |s| idle(s) && s.head.is_some() && !s.committing, |s, _| s.toggle_amend()), |s| s.amend),
     check(cmd("signoff", "Sign Off Commits", "Changes", "", |s| !s.committing, |s, _| s.signoff = !s.signoff), |s| s.signoff),
     check(cmd("skip-hooks", "Skip Commit Hooks", "Changes", "", |s| !s.committing, |s, _| s.skip_hooks = !s.skip_hooks), |s| s.skip_hooks),
@@ -210,10 +216,11 @@ pub const COMMANDS: &[Command] = &[
         s.check_update();
     }),
     cmd("git-tool", "Use Collate for git difftool and mergetool", "Help", "", always, |s, _| s.register_git_tool()),
-    cmd("palette", "Command Palette…", "Help", "cmd+shift+p", |s| s.screen != Screen::Settings && !s.modal_open(), |s, _| s.open_palette()),
+    cmd("palette", "Command Palette…", "Help", "mod+shift+p", |s| s.screen != Screen::Settings && !s.modal_open(), |s, _| s.open_palette()),
     cmd("keys", "Keyboard Shortcuts", "Help", "shift+slash", |s| ready(s) || !s.has_project, |s, _| s.open_help()),
 ];
 
+#[cfg(target_os = "macos")]
 thread_local! {
     /// Each command's enabled and checked state as the menu bar last got it.
     static SHOWN: RefCell<Option<Vec<(bool, bool)>>> = const { RefCell::new(None) };
@@ -254,7 +261,7 @@ pub fn palette_matches(s: &Collate, q: &str) -> Vec<&'static Command> {
     scored.into_iter().take(search::LIMIT).map(|(_, i)| &COMMANDS[i]).collect()
 }
 
-/// A command's key as the app writes it: `j`, `A`, `?`, `⇧⌘G`.
+/// A command's key as the app writes it: `j`, `A`, `?`, `⇧⌘G` (Ctrl+Shift+G off macOS).
 pub fn keycap(key: &str) -> String {
     if key.is_empty() {
         return String::new();
@@ -284,15 +291,27 @@ pub fn keycap(key: &str) -> String {
         return plain.into();
     }
     let mut out = String::new();
-    for (m, sym) in [("ctrl", "⌃"), ("alt", "⌥"), ("shift", "⇧"), ("cmd", "⌘")] {
+    for (m, sym) in [("ctrl", "⌃"), ("alt", "⌥"), ("shift", "⇧"), ("mod", "⌘")] {
         if has(m) {
             out.push_str(sym);
         }
     }
-    out + &plain.to_uppercase()
+    crate::keys::caps(&(out + &plain.to_uppercase())).into_owned()
+}
+
+/// Off macOS there's no menu bar to take a command's key when the window leaves it, so the
+/// window runs it here, after its own keys, as macOS does with `keys_first`.
+#[cfg(not(target_os = "macos"))]
+pub fn run_key(s: &mut Collate, ev: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    let Some(c) = COMMANDS.iter().find(|c| !c.key.is_empty() && c.key.parse::<rune::Chord>().is_ok_and(|k| k.matches_tx(ev, tx))) else { return false };
+    if (c.enabled)(s) {
+        (c.run)(s, tx);
+    }
+    true
 }
 
 /// Gives the menu bar the commands' current state when it changed. Called each frame.
+#[cfg(target_os = "macos")]
 pub fn sync_menu(s: &mut Collate) {
     let Some(app) = HANDLE.get() else { return };
     let now: Vec<(bool, bool)> = COMMANDS.iter().map(|c| ((c.enabled)(s), (c.checked)(s))).collect();
@@ -332,8 +351,8 @@ mod tests {
 
     #[test]
     fn keycaps_read_as_the_app_writes_keys() {
-        for (key, cap) in [("j", "j"), ("shift+a", "A"), ("shift+slash", "?"), ("shift+comma", "<"), ("cmd+shift+g", "⇧⌘G"), ("cmd+enter", "⌘↩"), ("cmd+alt+0", "⌥⌘0"), ("cmd+bracketleft", "⌘["), ("", "")] {
-            assert_eq!(keycap(key), cap, "{key}");
+        for (key, cap) in [("j", "j"), ("shift+a", "A"), ("shift+slash", "?"), ("shift+comma", "<"), ("mod+shift+g", "⇧⌘G"), ("mod+enter", "⌘↩"), ("mod+alt+0", "⌥⌘0"), ("mod+bracketleft", "⌘["), ("", "")] {
+            assert_eq!(keycap(key), crate::keys::caps(cap), "{key}");
         }
     }
 }

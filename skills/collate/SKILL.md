@@ -1,6 +1,6 @@
 ---
 name: collate
-description: Use when the reader has Collate (the macOS git diff viewer) open, or asks to show, walk through or review a change in Collate - point them at a file or line, select lines, leave comments, switch views (staged, unstaged, branch, history), open a commit, or run any Collate command (stage, commit, fetch, push). Drives the running window through the `collate` MCP server's `collate_*` tools.
+description: Use when the reader has Collate (the git diff viewer for macOS and Linux) open, or asks to show, walk through or review a change in Collate - point them at a file or line, select lines, leave comments, switch views (staged, unstaged, branch, history), open a commit, or run any Collate command (stage, commit, fetch, push). Drives the running window through the `collate` MCP server's `collate_*` tools.
 ---
 
 # Driving Collate

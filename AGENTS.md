@@ -1,6 +1,7 @@
 # Collate
 
-A git diff viewer for macOS, in Rust, on the Rune UI framework. One binary crate.
+A git diff viewer for macOS and Linux, in Rust, on the Rune UI framework. One binary crate.
+Linux code is behind `cfg(target_os = ...)`, so the Mac build carries none of it.
 
 ## Commands
 
@@ -16,6 +17,11 @@ A git diff viewer for macOS, in Rust, on the Rune UI framework. One binary crate
   change to it with `npm publish` there after bumping its `package.json` version. The
   workflow also sets the new version in the Homebrew cask (`Dishant1804/homebrew-tap`,
   `Casks/collate.rb`), pushing with the deploy key in the `HOMEBREW_TAP_KEY` secret.
+  Before it, a job per architecture on Ubuntu 22.04 runs `scripts/package-linux.sh`, whose
+  tarballs join the release and its `SHA256SUMS`.
+- Linux: CI builds and tests on Ubuntu too. To check Linux from a Mac, build in a Linux
+  container with `libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libfontconfig-dev
+  pkg-config` (and `poppler-utils` for the PDF test).
 
 Run all three checks before saying a change is done. Never run `cargo fmt`: the code is
 laid out by hand and `rustfmt.toml` disables the formatter.
@@ -43,9 +49,12 @@ install failed; a `cargo build` alone doesn't update the app.
 - `src/terminal.rs`: the terminal drawer (⌘J), shells on `alacritty_terminal`.
 - `src/update.rs`: checks GitHub for a newer release or commit and installs it over the app.
 - `src/control.rs`: agents drive a window over its socket (`~/Library/Application Support/Collate/
-  control/<pid>.sock`), and `collate --mcp` serves those sockets as MCP tools. A new command in
+  control/<pid>.sock`; `$XDG_RUNTIME_DIR/collate/` on Linux), and `collate --mcp` serves those sockets as MCP tools. A new command in
   `src/commands.rs` reaches agents by its id; a new kind of request goes in `handle` and `TOOLS`.
   `skills/collate/SKILL.md` teaches agents the tools; `scripts/install-agent.sh` installs both.
+- `src/dirs.rs`: where files live (Library on macOS, XDG on Linux). `src/desktop.rs`: opening
+  links and files, notifications, new windows (`open` and AppleScript, or `xdg-open` and
+  `notify-send`). Put a new platform difference in one of these, not at the call site.
 - `src/settings.rs`, `src/avatars.rs`, `src/nav.rs`.
 
 Rune's source is the reference for its API: `~/.cargo/git/checkouts/rune-*/<rev>/crates/`

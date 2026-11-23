@@ -151,15 +151,8 @@ impl Collate {
                 return;
             }
         }
-        let mut cmd = std::process::Command::new("open");
-        match self.settings.editor.app() {
-            Some(app) => cmd.args(["-a", app]),
-            None => cmd.arg("-t"),
-        };
-        match cmd.arg(&path).status() {
-            Ok(st) if st.success() => {}
-            Ok(_) => self.say(format!("Couldn't open {}", path.display()), true),
-            Err(e) => self.say(format!("Couldn't run open: {e}"), true),
+        if let Err(e) = crate::desktop::edit(self.settings.editor, &path, true) {
+            self.say(e, true);
         }
     }
 

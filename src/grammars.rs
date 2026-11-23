@@ -2,7 +2,7 @@
 //! grammars fetched and built on demand. The app ships only the parser runtime; a grammar is a
 //! repository at a pinned commit, fetched with `git`, compiled with the system C compiler
 //! (Xcode's command line tools) into a dynamic library, and kept with its highlight queries
-//! under `~/Library/Application Support/Collate/grammars/<id>/`.
+//! under `grammars/<id>/` in Collate's data folder (`dirs::data`).
 //!
 //! [`prepare`] installs (if asked) and loads one grammar, off the UI thread. [`Languages`] is
 //! the UI's side: what is loaded, being prepared, or failed. [`colour`] highlights code with a
@@ -124,8 +124,7 @@ pub fn root() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join("Library/Application Support/Collate/grammars"))
+    Some(crate::dirs::data()?.join("grammars"))
 }
 
 const LIBRARY: &str = "grammar.dylib";

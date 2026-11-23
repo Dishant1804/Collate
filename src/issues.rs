@@ -1015,7 +1015,7 @@ fn composer(s: &Collate, k: &Kit) -> El {
     let area = TextArea::new(&s.issues.reply).placeholder("Add a comment").label("Add a comment").rows(4).max_height(240.0)
         .on_edit(|s: &mut Collate| &mut s.issues.reply).width(None).build(k).key("issue-message").w_full();
     let doing = |idle: String, running: &str| if s.busy.as_deref() == Some(running) { running.to_owned() } else { idle };
-    let send = Button::new(doing("Comment".into(), "Commenting…")).variant(ButtonVariant::Contrast).disabled(blocked).help("Add it to the issue (⌘↩)")
+    let send = Button::new(doing("Comment".into(), "Commenting…")).variant(ButtonVariant::Contrast).disabled(blocked).help(format!("Add it to the issue ({})", crate::keys::caps("⌘↩")))
         .on_press(|s: &mut Collate| s.send_issue_comment()).build(k).hand(!blocked).key("issue-comment-send");
     // As GitHub words it: what's written goes with the closing or reopening.
     let detail = s.issues.detail.as_ref().and_then(|d| d.as_ref().ok());

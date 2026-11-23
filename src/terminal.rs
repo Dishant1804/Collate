@@ -161,18 +161,36 @@ impl Session {
         if front <= 0 || front as u32 == self.shell {
             return None;
         }
-        // SAFETY: `info` is plain data, written for the size given.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-        let got = unsafe { libc::proc_pidinfo(front, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
-        // On macOS the shell runs under `login`, our child: in front, it's at its prompt.
-        if got == size && info.pbi_ppid == self.shell {
-            return None;
-        }
-        let name = if info.pbi_name[0] != 0 { &info.pbi_name[..] } else { &info.pbi_comm[..] };
-        let name: String = name.iter().take_while(|&&c| c != 0).map(|&c| c as u8 as char).collect();
+        let name = front_name(front, self.shell)?;
         Some(if name.is_empty() { format!("process {front}") } else { name })
     }
+}
+
+/// The name of process `front`, or `None` when it's the `login` above `shell`.
+#[cfg(target_os = "macos")]
+fn front_name(front: libc::pid_t, shell: u32) -> Option<String> {
+    // SAFETY: `info` is plain data, written for the size given.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    let got = unsafe { libc::proc_pidinfo(front, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    // On macOS the shell runs under `login`, our child: in front, it's at its prompt.
+    if got == size && info.pbi_ppid == shell {
+        return None;
+    }
+    let name = if info.pbi_name[0] != 0 { &info.pbi_name[..] } else { &info.pbi_comm[..] };
+    Some(name.iter().take_while(|&&c| c != 0).map(|&c| c as u8 as char).collect())
+}
+
+/// The name of process `front`; on Linux the shell is our child, with no `login` between.
+#[cfg(not(target_os = "macos"))]
+fn front_name(front: libc::pid_t, _shell: u32) -> Option<String> {
+    Some(std::fs::read_to_string(format!("/proc/{front}/comm")).unwrap_or_default().trim().to_owned())
+}
+
+/// The drawer's own copy, paste and clear: ⌘C, ⌘V and ⌘K on macOS. Off it Ctrl+C, V and K
+/// are the shell's, so they take Shift as well, as GNOME Terminal and Konsole do.
+fn own(ev: &KeyEvent, c: char) -> bool {
+    ev.is_command(c) && (cfg!(target_os = "macos") || ev.mods.shift)
 }
 
 /// The drawer's state: open or not, its height, and the shells.
@@ -233,7 +251,8 @@ impl Terminals {
     /// Runs `command` in `dir` through the reader's login shell, for their PATH, without a
     /// prompt round it: the session ends when the command does.
     pub fn exec(&mut self, dir: &Path, command: &str) -> Result<(), String> {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.into());
         self.start(dir, Some(tty::Shell::new(shell, vec!["-ilc".into(), command.into()])))
     }
 
@@ -949,7 +968,7 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
             if t.keys.preedit.is_some() {
                 return false;
             }
-            if ev.is_command('c') {
+            if own(ev, 'c') {
                 return match t.copy_selection() {
                     Some(sel) => {
                         tx.copy(sel);
@@ -958,13 +977,18 @@ fn grid<S: 'static>(t: &Session, k: &Kit, bg: Color, access: Access<S>) -> El {
                     None => false,
                 };
             }
-            if ev.is_command('k') {
+            if own(ev, 'k') {
                 // Clear as Terminal does: the shell redraws its prompt on a fresh screen.
                 t.term.lock().grid_mut().clear_history();
                 t.input(&b"\x0c"[..]);
                 return true;
             }
-            if ev.is_command('v') {
+            if own(ev, 'v') {
+                return false;
+            }
+            // Off macOS, Ctrl and a key belong to the shell; with Shift too, they're Collate's,
+            // as terminal emulators keep theirs.
+            if !cfg!(target_os = "macos") && ev.mods.ctrl && ev.mods.shift && matches!(ev.key, Key::Command(_)) {
                 return false;
             }
             if ev.mods.shift && matches!(ev.key, Key::PageUp | Key::PageDown) && !ev.mods.cmd {

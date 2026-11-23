@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/bash
 # Lets coding agents drive Collate: installs the `collate` skill for Claude Code and registers
 # `collate --mcp` as an MCP server for it. Run after scripts/install.sh, which installs the
 # `collate` command the server runs.

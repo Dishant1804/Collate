@@ -1,6 +1,6 @@
 //! The keyboard: what each key does in each place, for the keys the focused control leaves
 //! alone.
-use rune::{Key, KeyEvent, Modifier, PhysicalKeyCode, Tx};
+use rune::{Key, KeyEvent, Modifier, Mods, PhysicalKeyCode, Tx};
 use rune_kit::shell;
 
 use crate::diff::DiffMode;
@@ -9,12 +9,12 @@ use crate::merge::Take;
 use crate::{Collate, PanelTab, Screen, merge_view, refresh};
 
 pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
-    // ⌘` switches projects as ⌘Tab does apps: each press while ⌘ is held picks the next
-    // recent one, and letting go of ⌘ opens it.
+    // ⌘` (Ctrl+` off macOS) switches projects as ⌘Tab does apps: each press while ⌘ is held
+    // picks the next recent one, and letting go of ⌘ opens it.
     let backquote = tx.physical_key() == Some(PhysicalKeyCode::Backquote) || matches!(ev.key, Key::Command('`' | '~'));
     if s.cycle.is_some() {
         match ev.key {
-            Key::Modifier { modifier: Modifier::SuperLeft | Modifier::SuperRight, .. } if !ev.mods.cmd => s.end_cycle(tx),
+            Key::Modifier { modifier, .. } if primary_key(modifier) && !ev.mods.cmd => s.end_cycle(tx),
             Key::Escape => s.cycle = None,
             _ if backquote && ev.mods.cmd => s.step_cycle(!ev.mods.shift),
             // ⌘ went up where the window didn't hear it, as when it lost focus meanwhile.
@@ -24,7 +24,7 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return true;
     }
-    if backquote && ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt && s.screen != Screen::Settings && !s.modal_open() && !s.palette {
+    if backquote && primary_alone(ev.mods) && s.screen != Screen::Settings && !s.modal_open() && !s.palette {
         s.step_cycle(!ev.mods.shift);
         return true;
     }
@@ -169,7 +169,7 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if ev.is_command('o') {
-        s.add_project();
+        s.add_project(tx);
         return true;
     }
     // ⌘K too, as in Slack and Linear; in a focused terminal it clears, as Terminal does, and
@@ -386,9 +386,61 @@ pub fn letter(s: &mut Collate, t: &str, tx: &mut Tx) -> bool {
     }
 }
 
+/// Shortcuts in `text` as this platform writes them: as they are on macOS (`⇧⌘P`), spelled out
+/// elsewhere (`Ctrl+Shift+P`), where ⌘ is Ctrl. Takes any text, so a sentence naming a
+/// shortcut, or ⌘ alone, reads right on both.
+pub fn caps(text: &str) -> std::borrow::Cow<'_, str> {
+    const MODS: [char; 4] = ['⌃', '⌥', '⇧', '⌘'];
+    if cfg!(target_os = "macos") || !text.contains(MODS) {
+        return text.into();
+    }
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !MODS.contains(&c) {
+            out.push(c);
+            continue;
+        }
+        let (mut ctrl, mut alt, mut shift) = (false, false, false);
+        let mut m = Some(c);
+        while let Some(c) = m {
+            match c {
+                '⌥' => alt = true,
+                '⇧' => shift = true,
+                _ => ctrl = true,
+            }
+            m = chars.next_if(|c| MODS.contains(c));
+        }
+        let names: Vec<&str> = [(ctrl, "Ctrl"), (alt, "Alt"), (shift, "Shift")].into_iter().filter(|&(on, _)| on).map(|(_, n)| n).collect();
+        out.push_str(&names.join("+"));
+        // The key they go with; none before a space or a closing mark ("hold ⌘ and…", "⌘-scroll").
+        if let Some(k) = chars.next_if(|k| !k.is_whitespace() && !matches!(k, '-' | ')' | ';')) {
+            out.push('+');
+            match k {
+                '↩' | '⏎' => out.push_str("Enter"),
+                k => out.push(k),
+            }
+        }
+    }
+    out.into()
+}
+
+/// Whether `m` holds the primary modifier (⌘ on macOS, Ctrl elsewhere) and no other but Shift.
+/// Off macOS, Rune reports Ctrl as both `cmd` and `ctrl`.
+fn primary_alone(m: Mods) -> bool {
+    let other = if cfg!(target_os = "macos") { m.ctrl } else { m.logo };
+    m.cmd && !other && !m.alt
+}
+
+/// Whether `m` is one of the primary modifier's keys.
+fn primary_key(m: Modifier) -> bool {
+    if cfg!(target_os = "macos") { matches!(m, Modifier::SuperLeft | Modifier::SuperRight) } else { matches!(m, Modifier::ControlLeft | Modifier::ControlRight) }
+}
+
 /// AppKit takes ⌘` and ⇧⌘` in `sendEvent:` to cycle the app's windows, so they never reach
 /// `on_key`. A local monitor sees them first: it hands them to the window's first responder,
 /// Rune's view, as a plain key press, and keeps them from AppKit. Call it once, on the main thread.
+#[cfg(target_os = "macos")]
 pub fn catch_backquote() {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};

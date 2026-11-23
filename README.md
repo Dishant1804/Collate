@@ -1,6 +1,6 @@
 # Collate
 
-A fast, lightweight git diff viewer for macOS, built on [Rune](https://github.com/anomalyco/rune).
+A fast, lightweight git diff viewer for macOS and Linux, built on [Rune](https://github.com/anomalyco/rune).
 
 Collate shows what changed in a git repository beside a file tree and refreshes as you edit.
 Review, stage, discard and commit without leaving the diff; review GitHub pull requests too.
@@ -13,11 +13,14 @@ Review, stage, discard and commit without leaving the diff; review GitHub pull r
 npx collate-app@latest
 ```
 
-That checks your Mac, installs anything missing, puts Collate in Applications and adds a
-`collate` command. Run it again to update; add `--uninstall` to remove it.
+That checks your computer, installs anything missing, puts Collate in Applications (on Linux,
+in the app launcher) and adds a `collate` command. Run it again to update; add `--uninstall`
+to remove it.
 
-You need macOS 13 or newer and [Node.js](https://nodejs.org) 18 or newer. Then open Collate
-from Launchpad, or run `collate` in a repository.
+You need [Node.js](https://nodejs.org) 18 or newer, and macOS 13 or newer or a Linux with
+glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later) on x86_64 or arm64, with
+X11 or Wayland. Then open Collate from Launchpad or the app launcher, or run `collate` in a
+repository.
 
 Or with [Homebrew](https://brew.sh): `brew install --cask dishant1804/tap/collate`. Collate
 updates itself, so `brew upgrade` leaves it alone unless you add `--greedy`.
@@ -27,8 +30,12 @@ Or download `Collate-<version>-macos-universal.dmg` from the
 Collate to Applications. Releases are signed with a Developer ID and notarized by Apple, so
 they open without a warning. Collate can check for newer releases and install them (Settings).
 
-Optional: the GitHub CLI (`brew install gh`, then `gh auth login`) for pull requests and
-commit authors' pictures.
+On Linux, download `collate-<version>-linux-<arch>.tar.gz` from the same release, unpack it and
+run its `install.sh`: it puts `collate` in `~/.local/bin` and Collate in the app launcher.
+PDF previews there need `pdftoppm` (`poppler-utils`), and notifications `notify-send`.
+
+Optional: the GitHub CLI (`brew install gh` or your package manager, then `gh auth login`) for
+pull requests and commit authors' pictures.
 
 ## A look around
 
@@ -86,7 +93,9 @@ discard still waits for you in its dialog.
 ## Keys
 
 Every command is also in the menu bar (File, View, Go, Changes, Branch, Agent), with its key
-beside it; `⇧⌘P` finds and runs one by name. Right-click a line, a file (in the diff or the
+beside it; `⇧⌘P` finds and runs one by name. On Linux, where there is no menu bar, `⌘` is
+`Ctrl` and the in-app help (`?`) lists every key; the terminal copies and pastes with
+`Ctrl+Shift+C` and `Ctrl+Shift+V`. Right-click a line, a file (in the diff or the
 lists), a commit in the Git Graph or a project for what acts on it.
 
 | Key | Action |
@@ -129,6 +138,9 @@ Collate keeps its files under your home folder and nowhere else:
 - `~/Library/Application Support/Collate/`: settings, the list of projects, viewed marks,
   comments.
 - `~/Library/Caches/Collate/avatars/`: commit authors' pictures.
+
+On Linux they follow the XDG folders: settings in `~/.config/collate/`, the rest in
+`~/.local/share/collate/`, pictures in `~/.cache/collate/avatars/`.
 
 Fetch, pull and push talk to your remotes when you ask, through `git` and your own
 credentials. Apart from those, the only network use is the pictures and the grammars for

@@ -54,7 +54,7 @@ pub fn history_graph(s: &Collate, k: &Kit) -> El {
     let refresh = IconButton::new(&REFRESH_ICON)
         .variant(IconButtonVariant::GhostMuted)
         .label("Refresh history")
-        .help("Read the history again").shortcut("⌘R")
+        .help("Read the history again").shortcut(crate::keys::caps("⌘R").into_owned())
         .on_press(|s: &mut Collate| { s.load_history(); refresh(); })
         .build(k).hand(true)
         .key("graph-refresh");

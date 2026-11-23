@@ -26,7 +26,8 @@ pub fn command() -> Command {
     static GIT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     Command::new(GIT.get_or_init(|| {
         let first = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("git")).find(|g| g.is_file()));
-        if first.as_deref() == Some(Path::new("/usr/bin/git"))
+        if cfg!(target_os = "macos")
+            && first.as_deref() == Some(Path::new("/usr/bin/git"))
             && let Ok(out) = Command::new("/usr/bin/xcrun").args(["--find", "git"]).stderr(Stdio::null()).output()
             && out.status.success()
         {

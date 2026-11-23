@@ -1,5 +1,5 @@
-//! Collate's settings: what they are, their defaults, and a small `key = value` file under
-//! `~/Library/Application Support/Collate/settings.conf`. Unknown keys and bad values are
+//! Collate's settings: what they are, their defaults, and a small `key = value` file,
+//! `settings.conf` in Collate's config folder (`dirs::config`). Unknown keys and bad values are
 //! skipped, so a file from a newer or older version still loads.
 
 use std::path::PathBuf;
@@ -51,7 +51,7 @@ const REDUCED_SPEED: f32 = 2.0;
 /// Where "Open" sends a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Editor {
-    /// The app macOS opens the file type with.
+    /// The app the system opens the file type with.
     System,
     Zed,
     VsCode,
@@ -62,12 +62,24 @@ impl Editor {
     pub const ALL: [Editor; 4] = [Editor::System, Editor::Zed, Editor::VsCode, Editor::Cursor];
 
     /// The application `open -a` takes; `None` for the system default.
+    #[cfg(target_os = "macos")]
     pub fn app(self) -> Option<&'static str> {
         match self {
             Editor::System => None,
             Editor::Zed => Some("Zed"),
             Editor::VsCode => Some("Visual Studio Code"),
             Editor::Cursor => Some("Cursor"),
+        }
+    }
+
+    /// The command-line tool that opens a file in it on Linux; `None` for the system default.
+    #[cfg(not(target_os = "macos"))]
+    pub fn command(self) -> Option<&'static str> {
+        match self {
+            Editor::System => None,
+            Editor::Zed => Some("zed"),
+            Editor::VsCode => Some("code"),
+            Editor::Cursor => Some("cursor"),
         }
     }
 
@@ -245,8 +257,7 @@ impl Settings {
     }
 
     fn path() -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join("Library/Application Support/Collate/settings.conf"))
+        Some(crate::dirs::config()?.join("settings.conf"))
     }
 
     pub fn load() -> Settings {

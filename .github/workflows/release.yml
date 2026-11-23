@@ -10,7 +10,27 @@ permissions:
   contents: write
 
 jobs:
+  # The Linux tarballs, built on the oldest supported Ubuntu so they run on its glibc and newer.
+  linux:
+    strategy:
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libfontconfig-dev pkg-config poppler-utils
+      - run: cargo test
+      - run: scripts/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.runner }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   release:
+    needs: linux
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +78,19 @@ jobs:
         run: |
           [ -n "$COLLATE_SIGN_IDENTITY" ] || { echo "MACOS_SIGN_IDENTITY isn't set"; exit 1; }
           scripts/package.sh
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: linux
+          merge-multiple: true
+
+      - name: Add the Linux downloads and sum them all
+        run: |
+          cp linux/*.tar.gz dist/
+          rm dist/SHA256SUMS
+          (cd dist && shasum -a 256 * > SHA256SUMS)
+          cat dist/SHA256SUMS
       - run: scripts/release-notes.sh "$GITHUB_REF_NAME" > notes.md
 
       - name: Publish
