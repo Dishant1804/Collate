@@ -16,7 +16,7 @@ const site = Astro.site!;
 // A page kept out of search results names no canonical address.
 const canonical = noindex ? undefined : new URL(Astro.url.pathname, site).href;
 const image = new URL('/og.png', site).href;
-const imageAlt = 'Collate, a git diff viewer for Mac, showing a split diff with a review comment';
+const imageAlt = 'Collate, a git diff viewer for Mac and Linux, showing a split diff with a review comment';
 ---
 <!doctype html>
 <html lang="en">

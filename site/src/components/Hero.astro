@@ -3,7 +3,7 @@ import { release } from '../lib/release';
 import DemoVideo from './DemoVideo.astro';
 ---
 <section id="top" style="max-width: 1100px; margin: 0 auto; padding: 88px 24px 56px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 22px">
-  <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--accent)">A fast, lightweight git diff viewer for Mac</p>
+  <p style="margin: 0; font-size: 14px; font-weight: 500; color: var(--accent)">A fast, lightweight git diff viewer for Mac and Linux</p>
   <h1 style="margin: 0; font-size: clamp(44px, 7vw, 76px); line-height: 1.04; font-weight: 400; letter-spacing: -0.03em">See every change.<br>Commit with confidence.</h1>
   <p style="margin: 0; font-size: 19px; line-height: 1.5; color: var(--fg-2)">Review, stage and commit without leaving the diff.</p>
   <div style="display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 10px">
@@ -20,5 +20,5 @@ import DemoVideo from './DemoVideo.astro';
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"></path><path d="M8 7h9v9"></path></svg>
     </a>
   </div>
-  <p style="margin: 0; font-size: 14px; color: var(--fg-3)"><span style="color: var(--fg); font-weight: 500">Version {release.version}</span> - Free and open source - macOS 13 or newer - Universal</p>
+  <p style="margin: 0; font-size: 14px; color: var(--fg-3)"><span style="color: var(--fg); font-weight: 500">Version {release.version}</span> - Free and open source - macOS 13 or newer, universal - <a href="https://github.com/Dishant1804/Collate/releases/latest" style="color: var(--fg-2)">Linux</a></p>
 </section>

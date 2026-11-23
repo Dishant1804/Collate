@@ -3,7 +3,7 @@ import Logo from './Logo.astro';
 import { release } from '../lib/release';
 const methods = [
   { id: 'brew', cmd: 'brew install --cask dishant1804/tap/collate', note: 'Collate updates itself, so brew upgrade leaves it alone unless you add --greedy.' },
-  { id: 'npx', cmd: 'npx collate-app@latest', note: 'Puts Collate in Applications and adds the collate command. Needs Node.js 18 or newer.' },
+  { id: 'npx', cmd: 'npx collate-app@latest', note: 'Puts Collate in Applications (on Linux, the app launcher) and adds the collate command. Needs Node.js 18 or newer.' },
 ];
 const [first] = methods;
 ---
@@ -30,7 +30,7 @@ const [first] = methods;
     </div>
   </div>
   <p data-note style="margin: 0; font-size: 14px; color: var(--fg-3)">{first.note}</p>
-  <p style="margin: 0; font-size: 13px; color: var(--fg-4)">macOS 13 or newer</p>
+  <p style="margin: 0; font-size: 13px; color: var(--fg-4)">macOS 13 or newer. On Linux (x86_64 or aarch64, X11 or Wayland), use npx or the <a href="https://github.com/Dishant1804/Collate/releases/latest" style="color: var(--fg-3)">release tarball</a>.</p>
 </section>
 
 <style>

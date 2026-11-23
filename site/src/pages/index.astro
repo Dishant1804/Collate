@@ -12,13 +12,13 @@ import Install from '../components/Install.astro';
 import Footer from '../components/Footer.astro';
 import { release } from '../lib/release';
 
-const title = 'Collate - Fast git diff viewer for Mac';
-const description = 'Collate is a fast, free and open-source git diff viewer for Mac. Review changes, stage hunks, lines or words, and commit without leaving the diff.';
+const title = 'Collate - Fast git diff viewer for Mac and Linux';
+const description = 'Collate is a fast, free and open-source git diff viewer for Mac and Linux. Review changes, stage hunks, lines or words, and commit without leaving the diff.';
 const site = Astro.site!;
 const abs = (path: string) => new URL(path, site).href;
 const shots = ['diff', 'graph', 'pr', 'map', 'issues', 'agent'];
 
-// What search engines show for an app: free, for macOS, its version, download and screenshots.
+// What search engines show for an app: free, for macOS and Linux, its version, download and screenshots.
 const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
@@ -26,7 +26,7 @@ const jsonLd = {
   description,
   applicationCategory: 'DeveloperApplication',
   applicationSubCategory: 'Git client',
-  operatingSystem: 'macOS 13 or later',
+  operatingSystem: 'macOS 13 or later, Linux',
   softwareVersion: release.version,
   downloadUrl: release.dmgUrl,
   url: site.href,
