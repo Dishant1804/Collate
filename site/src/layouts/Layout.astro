@@ -1,5 +1,6 @@
 ---
 import '../styles/fonts.css';
+import Analytics from '@vercel/analytics/astro';
 
 interface Props {
   title: string;
@@ -63,6 +64,7 @@ const imageAlt = 'Collate, a git diff viewer for Mac, showing a split diff with 
     <div style="background: var(--bg); color: var(--fg); font-family: Geist, system-ui, sans-serif; min-height: 100vh">
       <slot />
     </div>
+    <Analytics />
   </body>
 </html>
 
