@@ -229,6 +229,16 @@ pub struct DiffState {
     blame: Option<HashMap<String, Rc<[BlameNote]>>>,
     /// Bumped whenever the blame shown changes, so lines rebuild.
     pub(crate) blame_rev: u64,
+    editing: Option<LineEdit>,
+    /// The text of the line being edited.
+    pub line_edit: rune::TextEdit,
+    /// A refresh or a fold took away the line being edited, and closed the edit.
+    edit_lost: bool,
+    /// The new side is the working tree, so a click on its code edits it.
+    editable: bool,
+    /// Where the pointer last was over code, from the text's left edge: where a click puts the
+    /// caret. Set without a rebuild.
+    pub(crate) pointer: (f32, f32),
 }
 
 /// Who last changed a line, for the gutter: its commit (all zeros when not committed yet),
@@ -238,6 +248,17 @@ pub struct BlameNote {
     pub id: Rc<str>,
     pub who: Rc<str>,
     pub help: Rc<str>,
+}
+
+/// A new-side line being edited in place, in a field where its text was.
+#[derive(Clone, Debug)]
+pub struct LineEdit {
+    pub path: String,
+    pub line: u32,
+    /// The line as the edit found it: the file must still hold it when it's saved.
+    pub base: String,
+    pub(crate) file: usize,
+    row: u32,
 }
 
 /// A selection, the revision it was looked up at, and the rows it covers then.
@@ -297,6 +318,11 @@ impl DiffState {
             nav_range: None,
             blame: None,
             blame_rev: 0,
+            editing: None,
+            line_edit: rune::TextEdit::default(),
+            edit_lost: false,
+            editable: false,
+            pointer: (0.0, 0.0),
         };
         s.set_files(files);
         s
@@ -513,6 +539,76 @@ impl DiffState {
             }
         }
         None
+    }
+
+    /// Whether a click on new-side code edits it. Takes effect at the next rebuild.
+    pub fn set_editable(&mut self, on: bool) {
+        self.editable = on;
+        if !on {
+            self.end_edit();
+        }
+    }
+
+    pub fn editable(&self) -> bool {
+        self.editable
+    }
+
+    /// Opens a field on new-side line `n` of file `f`, its caret at byte `caret`. Rows don't
+    /// rebuild: only the line's own row draws differently.
+    pub fn start_edit(&mut self, f: usize, n: u32, caret: usize) -> bool {
+        let (Some(text), Some(row)) = (self.side_line(f, Side::New, n), self.row_at(f, LineRef::new(Side::New, n))) else { return false };
+        let mut edit = rune::TextEdit::new(text);
+        edit.set_caret(caret.min(text.len()));
+        edit.focused = true;
+        self.editing = Some(LineEdit { path: self.files[f].path().to_owned(), line: n, base: text.to_owned(), file: f, row });
+        self.line_edit = edit;
+        true
+    }
+
+    pub fn editing(&self) -> Option<&LineEdit> {
+        self.editing.as_ref()
+    }
+
+    pub fn end_edit(&mut self) {
+        self.editing = None;
+        self.line_edit = rune::TextEdit::default();
+    }
+
+    /// Whether the edit closed by itself since last asked, its line gone from the diff.
+    pub fn take_edit_lost(&mut self) -> bool {
+        std::mem::take(&mut self.edit_lost)
+    }
+
+    /// Whether new-side line `n` of file `f` is the one being edited.
+    pub(crate) fn is_editing(&self, f: usize, n: u32) -> bool {
+        self.editing.as_ref().is_some_and(|e| e.file == f && e.line == n)
+    }
+
+    /// Changes whenever row `r`'s field changes, as it's typed into; 0 for every other row.
+    pub(crate) fn edit_version(&self, r: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let Some(e) = self.editing.as_ref().filter(|e| e.row as usize == r) else { return 0 };
+        let mut h = std::hash::DefaultHasher::new();
+        (&e.path, e.line, &self.line_edit.text, self.line_edit.range(), self.line_edit.focused).hash(&mut h);
+        h.finish() | 1
+    }
+
+    /// Finds the edit's row again after the rows changed; closes it when its file no longer
+    /// shows the same line at the same place.
+    fn anchor_edit(&mut self) {
+        let Some(e) = &self.editing else { return };
+        let found = self.file_index(&e.path).filter(|&f| self.side_line(f, Side::New, e.line) == Some(e.base.as_str()))
+            .and_then(|f| Some((f, self.row_at(f, LineRef::new(Side::New, e.line))?)));
+        match found {
+            Some((f, row)) => {
+                let e = self.editing.as_mut().expect("checked above");
+                (e.file, e.row) = (f, row);
+            }
+            None => {
+                self.end_edit();
+                self.edit_lost = true;
+            }
+        }
     }
 
     /// Colour code with `h`, in the languages `colours` says it knows; of those, the built-in
@@ -1129,14 +1225,7 @@ impl DiffState {
                 text.push('\n');
             }
             starts.push(text.len() as u32);
-            // The built-in scanners skip the highlighter's own cache: this one already keeps
-            // the blocks, and that one holds a copy of each block's text besides.
-            let hl = if self.highlighter.is_builtin() || rune_kit::syntax::known(lang) {
-                rune_kit::syntax::builtin(Some(lang), &text).into()
-            } else {
-                self.highlighter.highlight(Some(lang), &text)
-            };
-            let chunk = Rc::new(Chunk { starts, hl });
+            let chunk = Rc::new(Chunk { starts, hl: self.colour(lang, &text) });
             let mut cache = self.chunks.borrow_mut();
             if cache.len() > CHUNKS_KEPT {
                 cache.clear();
@@ -1153,6 +1242,22 @@ impl DiffState {
             .map(|(r, p)| (r.start.max(a) - a..r.end.min(b) - a, *p))
             .filter(|(r, _)| !r.is_empty())
             .collect()
+    }
+
+    /// `text` coloured as file `f`'s language, on its own: the line being edited, as it's typed.
+    pub(crate) fn highlight_text(&self, f: usize, text: &str) -> Vec<(std::ops::Range<usize>, rune_kit::syntax::Paint)> {
+        let Some(lang) = self.files.get(f).and_then(|d| d.language()).filter(|l| (self.colours)(l)) else { return Vec::new() };
+        self.colour(lang, text).to_vec()
+    }
+
+    fn colour(&self, lang: &str, text: &str) -> Rc<[Highlight]> {
+        // The built-in scanners skip the highlighter's own cache: the chunks already keep their
+        // blocks, and that cache holds a copy of each block's text besides.
+        if self.highlighter.is_builtin() || rune_kit::syntax::known(lang) {
+            rune_kit::syntax::builtin(Some(lang), text).into()
+        } else {
+            self.highlighter.highlight(Some(lang), text)
+        }
     }
 
     /// Row `r`'s line number on `side`.
@@ -1289,6 +1394,7 @@ impl DiffState {
         self.keys_rev = KEYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         rows.shrink_to_fit();
         self.rows = rows;
+        self.anchor_edit();
     }
 
     /// A row's key: the same for an unchanged or removed line in both modes, so switching
@@ -1478,6 +1584,30 @@ mod tests {
         s.press_line(0, one.start);
         s.drag_to(0, LineRef::new(Side::New, 2));
         assert_eq!(s.release_line(), Some(LineRange { end: LineRef::new(Side::New, 2), ..one }));
+    }
+
+    #[test]
+    fn an_edit_opens_on_a_new_line_and_follows_its_row() {
+        let mut s = sample();
+        let at = |s: &DiffState, line| s.row_at(0, LineRef::new(Side::New, line)).unwrap() as usize;
+        assert!(!s.start_edit(0, 500, 0), "no such line");
+        let rev = s.rev;
+        assert!(s.start_edit(0, 50, 4));
+        assert_eq!((s.line_edit.text.as_str(), s.line_edit.range()), ("line fifty", (4, 4)));
+        assert_eq!(s.rev, rev, "opening it rebuilds no rows");
+        assert!(s.is_editing(0, 50) && !s.is_editing(0, 49));
+        assert!(s.edit_version(at(&s, 50)) != 0 && s.edit_version(at(&s, 49)) == 0);
+        let before = s.edit_version(at(&s, 50));
+        s.line_edit.insert("!");
+        assert_ne!(s.edit_version(at(&s, 50)), before, "typing rebuilds its row");
+        // Rows above it come in: it moves down with its line.
+        s.expand(0, 0, Expand::Up);
+        assert!(s.edit_version(at(&s, 50)) != 0);
+        assert!(!s.take_edit_lost());
+        // Its line changes underneath: it closes, and says so once.
+        s.set_files(vec![FileDiff::from_texts("a.txt", &numbered(100), &numbered(100).replace("line 50\n", "line 50!\n"))]);
+        assert!(s.editing().is_none());
+        assert!(s.take_edit_lost() && !s.take_edit_lost());
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod control;
 mod desktop;
 mod diff;
 mod dirs;
+mod edit;
 mod git;
 mod github;
 mod github_issues;
@@ -657,6 +658,7 @@ impl Collate {
             self.close_pull();
         }
         if self.scope != scope {
+            self.save_line_edit();
             if self.scope == Scope::History {
                 self.shrink_history();
             }
@@ -2717,7 +2719,11 @@ impl Collate {
             }
         }
         self.images = images;
+        self.diff.set_editable(self.can_edit_lines());
         self.diff.set_files_folded(files, &folded);
+        if self.diff.take_edit_lost() {
+            self.say("The line being edited changed on disk, so the edit closed without saving", true);
+        }
         self.want_languages();
         self.load_inline_blame();
         // Opened before the window could read it (a scene, a switch of project).
@@ -3604,6 +3610,7 @@ fn review(s: &Collate, cx: &mut Cx<Collate>, k: &Kit, layer: &mut Vec<El>) -> El
             .dim(|s: &Collate, f| s.is_viewed(f))
             .copy_path(|s: &mut Collate, f, tx| s.copy_path(f, tx), |s: &Collate, f| s.copied_path(f))
             .on_zoom(|s: &mut Collate, steps| s.zoom(steps))
+            .on_save_edit(|s: &mut Collate, _| s.save_line_edit())
             .on_visible_file(|s: &mut Collate, f| {
                 if let Some(p) = s.diff.files().get(f).map(|f| f.path().to_owned()) {
                     s.select_in_lists(&p);
@@ -3996,6 +4003,7 @@ const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         ("⇧↓  ⇧↑", "Select lines from the keyboard; ↓ and ↑ alone move the selection, Esc clears it"),
         ("Right-click", "What acts on a line, a file, a commit or a project"),
         ("c", "Comment on the selected line"),
+        ("Click code", "Edit the line in place, in All Changes and Unstaged; click away or Esc saves it, ⌘S saves at once"),
         ("i", "Add the selected lines to the agent's chat"),
         ("y  Y", "Copy the selected lines' reference (path#L10-L25), or the lines as a diff for an agent"),
         ("o", "Open the file in your editor"),
@@ -5188,11 +5196,13 @@ fn found_list(s: &Collate, k: &Kit, place: Searched) -> El {
 fn poll(s: &mut Collate, now: f64, tx: &mut Tx) -> bool {
     #[cfg(target_os = "macos")]
     commands::sync_menu(s);
+    // A click away from the line being edited, or Escape, saves it; the view then drops the field.
+    let settled = s.settle_line_edit();
     if let Some(left) = s.terminals.end_idle(now) {
         tx.wake_after(Duration::from_secs_f64(left));
     }
     // Whatever moved the reader since the last frame, back now returns there.
-    let moved = s.note_place();
+    let moved = s.note_place() | settled;
     let Some(n) = &mut s.notice else { return moved };
     // A question stays until it's answered.
     if n.end.is_some() {

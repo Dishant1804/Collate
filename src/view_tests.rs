@@ -1271,6 +1271,53 @@ fn the_review_loop_stages_discards_and_commits() {
     assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.contains("Stage it from Unstaged")), "says where it can be staged");
     assert_eq!(git(&dir, &["show", ":w.rs"]), "fn a() {\n    let total = price * quantity;\n}\n", "the index is untouched");
 
+    // Edit a line in place: a click in its code opens a field with the caret there, and
+    // leaving the field writes the file on disk.
+    rt.update(|s, _| s.diff.set_mode(DiffMode::Unified));
+    rt.frame(1.0 / 60.0);
+    let line = format!("df{f}.n2/code/text");
+    let (x, y) = rt.find(&line).expect("the added line is drawn");
+    // The text spans the row: find its left edge, then click a little way into the line.
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    let x = x - rt.state.diff.pointer.0 + 60.0;
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    for _ in 0..5 {
+        rt.frame(1.0 / 60.0);
+    }
+    let text = "    let sum = price * quantity;";
+    assert_eq!(rt.state.diff.line_edit.text, text);
+    let (caret, _) = rt.state.diff.line_edit.range();
+    assert!(caret > 4 && caret < text.len() - 4, "the caret lands where the click did, not at an end: {caret}");
+    assert!(rt.find("line-edit").is_some(), "the field is in the diff");
+    rt.update(|s, _| s.diff.line_edit.set_caret(text.len()));
+    rt.key(KeyEvent { key: Key::Text("!".into()), mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.diff.line_edit.text, format!("{text}!"), "typing goes into the field, not to shortcuts");
+    rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    assert!(!rt.state.diff.line_edit.focused, "Escape leaves the field");
+    rt.update(|s, _| { s.settle_line_edit(); });
+    assert_eq!(std::fs::read_to_string(dir.join("w.rs")).unwrap(), "fn a() {\n    let sum = price * quantity;!\n}\n");
+    assert!(rt.state.diff.editing().is_none(), "saving closes it");
+    // Changed on disk under an open edit: nothing is written, and the field stays with its text.
+    reread(&mut rt);
+    rt.update(move |s, _| assert!(s.diff.start_edit(f, 2, 0)));
+    std::fs::write(dir.join("w.rs"), "fn a() {\n    total\n}\n").unwrap();
+    rt.update(|s, _| s.diff.line_edit.insert("// "));
+    rt.update(|s, _| s.save_line_edit());
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.contains("changed on disk")), "says why");
+    assert!(rt.state.diff.editing().is_some() && rt.state.diff.line_edit.focused);
+    assert_eq!(std::fs::read_to_string(dir.join("w.rs")).unwrap(), "fn a() {\n    total\n}\n");
+    // The refresh that sees the change closes the edit, and says so.
+    reread(&mut rt);
+    assert!(rt.state.diff.editing().is_none());
+    assert!(rt.state.notice.as_ref().is_some_and(|n| n.error && n.text.contains("edit closed")));
+    std::fs::write(dir.join("w.rs"), "fn a() {\n    let sum = price * quantity;\n}\n").unwrap();
+    reread(&mut rt);
+
     // Switch to another project: the review starts over there, and the list remembers both.
     let other = std::env::temp_dir().join(format!("collate-other-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&other);
@@ -1800,13 +1847,20 @@ fn text_dragged_across_the_code_selects_its_lines() {
         assert!(rt.find("selection-bar").is_some(), "and the bar offers Comment and Ask");
     };
     drag(&mut rt);
-    // A click elsewhere in the code ends the text selection, and the lines with it.
+    // A click elsewhere in the code ends the text selection, and the lines with it, and edits
+    // the line clicked; leaving it unchanged writes nothing.
     rt.pointer_down(x0, y0);
     rt.pointer_up(x0, y0);
     for _ in 0..30 {
         rt.frame(1.0 / 60.0);
     }
     assert_eq!(rt.state.diff.selection(), None);
+    assert_eq!(rt.state.diff.editing().map(|e| e.line), Some(12));
+    rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+    rt.frame(1.0 / 60.0);
+    rt.update(|s, _| { s.settle_line_edit(); });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.diff.editing().is_none());
     // A press on the bar, held over frames as a hand does, leaves the text and its lines
     // selected, so the bar is still there to take the release.
     drag(&mut rt);
@@ -1818,6 +1872,54 @@ fn text_dragged_across_the_code_selects_its_lines() {
     rt.pointer_up(bx, by);
     rt.frame(1.0 / 60.0);
     assert!(rt.state.notice.is_some(), "the bar's buttons take a click");
+}
+
+#[test]
+fn escape_or_a_click_away_closes_the_line_being_edited() {
+    let mut rt = loaded();
+    rt.poll = Some(crate::poll);
+    rt.update(|s, tx| s.diff.scroll_to_line(0, LineRef::new(diff::Side::New, 12), tx));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let open = |rt: &mut Runtime<Collate>| {
+        rt.update(|s, _| assert!(s.diff.start_edit(0, 12, 0)));
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(rt.find("line-edit").is_some(), "the field is drawn");
+    };
+    let closed = |rt: &mut Runtime<Collate>, how: &str| {
+        for _ in 0..3 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(rt.state.diff.editing().is_none(), "{how} closes the edit");
+        assert!(rt.find("line-edit").is_none(), "{how} takes the field away");
+    };
+    open(&mut rt);
+    rt.key(KeyEvent { key: Key::Escape, mods: Default::default() });
+    closed(&mut rt, "Escape");
+    // A click on another line's number, outside the field.
+    open(&mut rt);
+    let d = &rt.state.diff;
+    let r = (0..d.rows.len()).find(|&r| d.rows[r].file() == 0 && d.row_line(d.rows[r], diff::Side::New) == Some(14)).unwrap();
+    let key = d.row_key(r);
+    let (x, y) = rt.elements().into_iter().find(|e| e.path.contains(&key) && e.path.ends_with("/gutter/nn")).map(|e| (e.rect[0] + 2.0, e.rect[1] + e.rect[3] / 2.0)).expect("line 14's number is drawn");
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    closed(&mut rt, "a click away");
+    // A click in another line's code closes this one and edits that one.
+    open(&mut rt);
+    let (x, y) = rt.find(&format!("{key}/code/text")).expect("line 14's code is drawn");
+    rt.pointer_move(x, y);
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    for _ in 0..3 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(rt.state.diff.editing().map(|e| e.line), Some(14));
+    assert!(rt.state.diff.line_edit.focused, "the new field has the keys");
 }
 
 #[test]

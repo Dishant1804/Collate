@@ -164,7 +164,7 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     // Fields take their own ⌘Z first, for their text.
-    if ev.is_command('z') && !ev.mods.shift && s.has_project && tx.focused().is_none_or(|f| !(f.contains("filter") || f.contains("message") || f.contains("search"))) {
+    if ev.is_command('z') && !ev.mods.shift && s.has_project && tx.focused().is_none_or(|f| !(f.contains("filter") || f.contains("message") || f.contains("search") || f.contains("line-edit"))) {
         s.undo_move();
         return true;
     }
@@ -207,7 +207,7 @@ pub fn on_key(s: &mut Collate, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     // Typing in a field isn't a shortcut.
-    if tx.focused().is_some_and(|f| f.contains("filter") || f.contains("message") || f.contains("search")) {
+    if tx.focused().is_some_and(|f| f.contains("filter") || f.contains("message") || f.contains("search") || f.contains("line-edit")) {
         return false;
     }
     if s.issues.open && s.issues.number.is_some() && ev.key == Key::Escape {

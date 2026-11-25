@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 
-use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, MagnifyEvent, Phase, ScrollSpec, Span, TextStyle, Tx, WheelEvent, col, icon, memo, rich, row, text};
+use rune::{Color, Cursor, Drag, El, GrowthSpec, Icon, Key, MagnifyEvent, Phase, ScrollSpec, Span, TextStyle, Tx, WheelEvent, col, icon, memo, rich, row, text};
 
 use super::model::{FileStatus, LineKind, Side};
 use super::state::{DiffMode, DiffState, EXPAND_STEP, Expand, GAP_H, HEADER_H, LineRef, NOTE_H, Row, Style};
@@ -75,6 +75,7 @@ pub struct DiffView<S> {
     images: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
     comments: Option<(u64, Rc<dyn Fn(&S, usize) -> El>)>,
     on_zoom: Option<Rc<dyn Fn(&mut S, f32) -> bool>>,
+    save_edit: Option<Rc<dyn Fn(&mut S, &mut Tx)>>,
 }
 
 impl<S: 'static> DiffView<S> {
@@ -91,6 +92,7 @@ impl<S: 'static> DiffView<S> {
             images: None,
             comments: None,
             on_zoom: None,
+            save_edit: None,
         }
     }
 
@@ -139,6 +141,13 @@ impl<S: 'static> DiffView<S> {
     /// returns whether it took them, or the scroll goes on as usual.
     pub fn on_zoom(mut self, f: impl Fn(&mut S, f32) -> bool + 'static) -> Self {
         self.on_zoom = Some(Rc::new(f));
+        self
+    }
+
+    /// Writes the lines being edited in place ([`DiffState::start_edit`]) when ⌘↩ or ⌘S is
+    /// pressed in the editor, or its Save.
+    pub fn on_save_edit(mut self, f: impl Fn(&mut S, &mut Tx) + 'static) -> Self {
+        self.save_edit = Some(Rc::new(f));
         self
     }
 
@@ -253,6 +262,7 @@ struct Look {
     selected_gutter: Color,
     selection: Color,
     accent: Color,
+    radius: f32,
     triangle_down: &'static Icon,
     triangle_right: &'static Icon,
     syntax: SyntaxTheme,
@@ -312,6 +322,7 @@ impl Look {
             selected_gutter: tint(bg, info, if dark { 0.32 } else { 0.26 }),
             selection: k.selection(),
             accent: info,
+            radius: k.radius.sm,
             triangle_down: k.glyph.triangle_down,
             triangle_right: k.glyph.triangle_right,
             syntax: style.scheme.map_or_else(|| SyntaxTheme::from_kit(k), |s| s.syntax(k)),
@@ -447,7 +458,7 @@ impl<S: 'static> View<S> {
             Row::Gap { f, gap } if self.d.hunk.is_some() => self.gap(s, st, f as usize, gap as usize),
             Row::Gap { f, gap } => memo(key, (self.look.version, st.rev, st.view_width().to_bits()), || self.gap(s, st, f as usize, gap as usize)),
             _ => {
-                let version = (self.look.version, st.rev, st.row_selected(i, None), st.copy_side(), st.selection().map(|s| s.start.side), st.search_rev(), st.blame_rev);
+                let version = (self.look.version, st.rev, st.row_selected(i, None), st.copy_side(), st.selection().map(|s| s.start.side), st.search_rev(), st.blame_rev, st.edit_version(i));
                 memo(key, version, || self.line(st, i))
             }
         }
@@ -538,7 +549,7 @@ impl<S: 'static> View<S> {
             .role("listitem")
             .label(c.label())
             .child(gutter)
-            .child(self.code(st, f, &c, copy, hover_side, &st.row_key(i)).key("code"))
+            .child(self.code(st, f, &c, copy, hover_side, &st.row_key(i), c.new.filter(|_| c.kind != LineKind::Removed)).key("code"))
     }
 
     fn split<'a>(&self, st: &'a DiffState, i: usize, f: usize, old: Option<Cell<'a>>, new: Option<Cell<'a>>) -> El {
@@ -569,7 +580,7 @@ impl<S: 'static> View<S> {
                 .child(self.number(st, i, f, n, side, kind, c.moved, selected, digits).key("n"))
                 .child(self.twin_help(st, &c, self.marker(kind, c.moved).fill(l.gutter_fill(kind, c.moved, selected))))
                 .child(self.bar(kind, c.moved))
-                .child(self.code(st, f, &cell, copy, side, &st.row_key(i)).key("code"))
+                .child(self.code(st, f, &cell, copy, side, &st.row_key(i), n.filter(|_| side == Side::New)).key("code"))
         };
         let line = row().w_full().min_h(self.look.line_h).items_stretch();
         // An added or deleted file has one side: it takes the whole width, as one column.
@@ -685,8 +696,15 @@ impl<S: 'static> View<S> {
     }
 
     /// The code of a line: syntax colours under word changes, tabs padded to four columns.
-    fn code(&self, st: &DiffState, f: usize, c: &Cell<'_>, copy: bool, side: Side, row_key: &str) -> El {
+    /// `edit`: the line's new-side number when a click on it may edit it.
+    #[allow(clippy::too_many_arguments)]
+    fn code(&self, st: &DiffState, f: usize, c: &Cell<'_>, copy: bool, side: Side, row_key: &str, edit: Option<u32>) -> El {
         let l = &self.look;
+        let edit = edit.filter(|_| st.editable());
+        if edit.is_some_and(|n| st.is_editing(f, n)) {
+            // The field is marked out from the line's tint so the line reads as open for typing.
+            return col().grow(1.0).min_w(0.0).pl(CODE_PAD.0).pr(CODE_PAD.1).fill(l.bg).border(1.0, l.accent).radius(l.radius).child(self.field(st, f));
+        }
         let (src, n) = c.source();
         let syntax: Vec<(Range<usize>, Color)> = st
             .highlights(f, src, n)
@@ -709,10 +727,69 @@ impl<S: 'static> View<S> {
         let mut code = col().grow(1.0).min_w(0.0).pl(CODE_PAD.0).pr(CODE_PAD.1).child(t).on_hover_change(move |s: &mut S, inside, tx: &mut Tx| {
             if !get(s).hover_text(side, &cell, inside) { tx.live_only(); }
         });
+        if let Some(n) = edit {
+            let (moved, press, font, wraps) = (self.d.get_mut.clone(), self.d.get_mut.clone(), l.font, st.wraps());
+            let save = self.d.save_edit.clone();
+            code = code
+                .on_pointer_move_local(move |s: &mut S, p, tx: &mut Tx| {
+                    moved(s).pointer = (p.x - CODE_PAD.0, p.y);
+                    tx.live_only();
+                })
+                .on_press_tx(move |s: &mut S, tx: &mut Tx| {
+                    // A drag across the text selects it to copy; only a plain click edits.
+                    if tx.text_selection().is_some() {
+                        return;
+                    }
+                    // The press lands before the old field's blur settles it: save it here, and
+                    // keep it open when it couldn't be saved.
+                    if press(s).editing().is_some_and(|e| (e.file, e.line) != (f, n)) {
+                        if let Some(save) = &save { save(s, tx) }
+                        if press(s).editing().is_some() {
+                            return;
+                        }
+                    }
+                    let st = press(s);
+                    let Some(line) = st.side_line(f, Side::New, n) else { return };
+                    let caret = caret_at(line, font, st.pointer.0, wraps);
+                    if st.start_edit(f, n, caret) {
+                        tx.clear_text_selection();
+                    }
+                });
+        }
         if c.no_newline {
             code = code.child(text("No newline at end of file").font(l.small).color(l.muted).opacity(0.6).key("eof").pb(2.0));
         }
         code
+    }
+
+    /// The line being edited: a field where its text was. Return breaks the line, Tab types a
+    /// tab, ⌘S saves, and clicking away or Escape saves and closes it.
+    fn field(&self, st: &DiffState, f: usize) -> El {
+        let l = &self.look;
+        let text = &st.line_edit.text;
+        let syntax: Vec<(Range<usize>, Color)> = st.highlight_text(f, text).into_iter().map(|(r, p)| (r, l.syntax.paint(p))).collect();
+        let (edit, submit, keys) = (self.d.get_mut.clone(), self.d.get_mut.clone(), self.d.get_mut.clone());
+        let save = self.d.save_edit.clone();
+        let line = st.editing().map_or(0, |e| e.line);
+        rune::text_input(&st.line_edit, l.font)
+            .key("line-edit")
+            .w_full()
+            .color(l.text)
+            .spans(layer(text.len(), &syntax, &[], None))
+            .caret(l.accent, l.selection)
+            .label(format!("Edit line {line}"))
+            .on_edit(rune::edit_access(move |s: &mut S| &mut edit(s).line_edit))
+            .on_submit(move |s: &mut S, _| submit(s).line_edit.insert("\n"))
+            .on_input_key(move |s: &mut S, ev: &rune::KeyEvent, tx: &mut Tx| {
+                let plain = !ev.mods.cmd && !ev.mods.ctrl && !ev.mods.alt && !ev.mods.shift;
+                match ev.key {
+                    Key::Escape => tx.blur(),
+                    Key::Tab if plain => keys(s).line_edit.insert("\t"),
+                    _ if ev.is_command('s') => save.as_ref().map_or((), |f| f(s, tx)),
+                    _ => return false,
+                }
+                true
+            })
     }
 
     fn gutter_w(&self, st: &DiffState, f: usize) -> f32 {
@@ -988,6 +1065,22 @@ fn mark(text: &str, spans: Vec<Span>, q: &super::Finder, bg: Color) -> Vec<Span>
         out.push(sp);
     }
     out
+}
+
+/// The byte of `code` nearest `x` points from its left edge, as drawn in `font`. Wrapped
+/// lines take `x` on their first line.
+fn caret_at(code: &str, font: TextStyle, x: f32, wrap: bool) -> usize {
+    let width = |b: usize| rune::text::measure(&tabbed(&code[..b], Vec::new(), wrap).0, &[], font, None).0;
+    let bounds: Vec<usize> = code.char_indices().map(|(i, _)| i).chain([code.len()]).collect();
+    let after = bounds.partition_point(|&b| width(b) < x);
+    match after {
+        0 => 0,
+        n if n == bounds.len() => code.len(),
+        n => {
+            let (a, b) = (bounds[n - 1], bounds[n]);
+            if x - width(a) <= width(b) - x { a } else { b }
+        }
+    }
 }
 
 /// `code` as drawn: text layout draws a tab as one space, so each tab is followed by spaces up
